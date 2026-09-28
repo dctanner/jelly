@@ -1,8 +1,14 @@
 # Jelly
 
 <p align="center">
-  <img src="docs/images/jelly-mobile.gif" width="360" alt="Jelly on mobile: choose an agent, chat, follow its work, create an image, and manage its workspace.">
+  <a href="docs/media/jelly-mobile.mp4">
+    <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
+  </a>
+  <br>
+  <a href="docs/media/jelly-mobile.mp4">Watch the 65-second mobile walkthrough (MP4)</a>
 </p>
+
+Recorded UI animations with disposable test data; sudo execution and website sign-in are simulated.
 
 A local-first workspace for persistent AI agents. Give each agent a name, instructions, and a project folder, then chat through a simple web interface.
 
