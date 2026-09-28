@@ -1,5 +1,9 @@
 # Jelly
 
+<p align="center">
+  <img src="docs/images/jelly-mobile.gif" width="360" alt="Jelly on mobile: choose an agent, chat, follow its work, create an image, and manage its workspace.">
+</p>
+
 A local-first workspace for persistent AI agents. Give each agent a name, instructions, and a project folder, then chat through a simple web interface.
 
 Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
