@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Watch Jelly's mobile workspace: chat with agents, review sudo requests, and take over the browser for private sign-in.">
+    <title>Jelly — mobile walkthrough</title>
+    <style>
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f6f8; color: #17202e; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 28px 18px 48px; }
+      main { max-width: 520px; margin: auto; }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+      h1 { margin: 0; font-size: 28px; letter-spacing: -.6px; }
+      a { color: #0969da; text-underline-offset: 3px; }
+      .intro { line-height: 1.6; color: #566171; }
+      video { display: block; width: 100%; max-height: 80svh; background: #10141a; border-radius: 18px; }
+      .links { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+      .note, details { font-size: 14px; line-height: 1.65; }
+      .note { color: #566171; }
+      summary { cursor: pointer; padding: 8px 0; }
+      li { margin-bottom: 8px; }
+      @media (prefers-color-scheme: dark) {
+        :root { background: #111318; color: #edf1f7; }
+        a { color: #8cbdff; }
+        .intro, .note { color: #acb6c5; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><h1>Jelly, on mobile.</h1><a href="https://github.com/dctanner/jelly">View on GitHub</a></header>
+      <p class="intro">Chat with your agents. Review administrator commands. Take the browser into your own hands, then hand it back.</p>
+      <video controls playsinline preload="metadata" poster="images/jelly-mobile-preview.jpg" aria-label="65-second mobile walkthrough of Jelly" aria-describedby="demo-note">
+        <source src="media/jelly-mobile.mp4" type="video/mp4">
+        <p>Your browser cannot play this video. <a href="media/jelly-mobile.mp4">Download the MP4</a>.</p>
+      </video>
+      <nav class="links" aria-label="Video resources"><a href="media/jelly-mobile.mp4" download>Download MP4 · 1.5 MB</a><a href="https://github.com/dctanner/jelly#quick-start">Try Jelly</a></nav>
+      <p class="note" id="demo-note">Recorded UI animations with disposable test data. Sudo execution and website sign-in are simulated; no real credentials are entered. The video is silent. Using Jelly requires a ChatGPT subscription or OpenAI API key.</p>
+      <details>
+        <summary>Walkthrough transcript</summary>
+        <ol>
+          <li><strong>0:00 — Agents and chat.</strong> Choose an agent, send a message, and watch the animated working indicator before the reply arrives.</li>
+          <li><strong>0:12 — Request sudo.</strong> The agent requests an administrator command. Review the exact command and enter a fictional password in Jelly's private authentication card, not in chat. The simulated command completes without changing any files.</li>
+          <li><strong>0:32 — Browser use.</strong> Ask an agent to open a fictional team workspace and view its shared browser.</li>
+          <li><strong>0:47 — Private handover.</strong> The agent requests browser sign-in. Open the browser, choose Take control, and sign in with a fictional account. Agent browser tools are paused while the user has control.</li>
+          <li><strong>0:57 — Return control.</strong> Choose Return to agent. The browser handover completes and the conversation continues.</li>
+        </ol>
+      </details>
+    </main>
+  </body>
+</html>

@@ -1,11 +1,11 @@
 # Jelly
 
 <p align="center">
-  <a href="docs/media/jelly-mobile.mp4">
+  <a href="https://dctanner.github.io/jelly/">
     <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
   </a>
   <br>
-  <a href="docs/media/jelly-mobile.mp4">Watch the 65-second mobile walkthrough (MP4)</a>
+  <a href="https://dctanner.github.io/jelly/">Watch the 65-second mobile walkthrough</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
 </p>
 
 Recorded UI animations with disposable test data; sudo execution and website sign-in are simulated.
