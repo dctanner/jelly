@@ -11,6 +11,7 @@ Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/ear
 - Persistent conversations, project workspaces, and background agent runs
 - File editing, shell tools, subagents, and MCP connections
 - Browser control with private sign-in handoffs; Linux desktop support
+- Administrator commands via `request_sudo`, with private password handoffs
 - File uploads, inline images, and downloadable artifacts
 - ChatGPT subscription or OpenAI API access (required)
 
@@ -47,6 +48,12 @@ bun run setup:desktop
 ```
 
 Set `JELLY_BROWSER_PATH` if the browser is outside its usual system location.
+
+### Administrator commands
+
+Agents can use `request_sudo` to run commands with root privileges—for example, to install packages or manage system services. If your sudo policy permits, the command runs immediately. Otherwise, Jelly shows the command for review and asks for your password in a private authentication card, never in chat. The password is not sent to the model or saved by Jelly.
+
+Requires Linux, `sudo` with askpass support, and `/usr/bin/python3`.
 
 ## Security and local data
 
