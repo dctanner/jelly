@@ -1094,6 +1094,12 @@ export function App() {
       },
     });
   }, []);
+  // A newly built client can briefly be served by the previous backend.
+  const connectionReady = data?.config.ready ?? (
+    data?.config.activeMode === "chatgpt"
+      ? data.config.chatgptReady
+      : data?.config.activeMode === "api" && data.config.apiReady
+  );
   const agent = data?.agents.find(
     (a) =>
       a.id === selected && a.id === data.selectedAgentId && belongs(a, scope),
@@ -1158,10 +1164,11 @@ export function App() {
       observer?.disconnect();
       window.removeEventListener("resize", resize);
     };
-  }, [draft, agent?.id, actionError]);
+  }, [draft, agent?.id, actionError, connectionReady]);
   const running = agent?.status === "running" || agent?.status === "waiting";
   const selectionReady = !!data && (data.selectedAgentId ?? "") === selected;
   const canSend =
+    connectionReady &&
     selectionReady &&
     !!agent &&
     !agent.archivedAt &&
@@ -1796,7 +1803,7 @@ export function App() {
                         type="button"
                         onClick={() => void steerMessage(message.id)}
                         disabled={
-                          !connected || !!steering || stopping === agent.id
+                          !connected || !connectionReady || !!steering || stopping === agent.id
                         }
                       >
                         {steering === message.id ? "Steering…" : "Steer now"}
@@ -1812,6 +1819,14 @@ export function App() {
           </button>
         )}
         <div className="composer-wrap">
+          {data && !connectionReady && (
+            <div className="connection-required" role="status">
+              <span>{data.config.notice}</span>
+              <button type="button" onClick={() => setModal("settings")}>
+                Connect an account
+              </button>
+            </div>
+          )}
           {actionError && (
             <p role="alert" className="error-text">
               {actionError}
@@ -2022,7 +2037,7 @@ export function App() {
           running={running}
           archiving={archiving}
           refreshing={refreshing}
-          canCompact={data?.config.activeMode !== "demo"}
+          canCompact={!!connectionReady}
           onFreshSession={() => void freshSession()}
           onClose={() => setModal(null)}
           onUpload={() => {

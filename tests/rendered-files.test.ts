@@ -1,3 +1,4 @@
+import { useTestModel } from "./fixtures/app";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdtempSync,
@@ -41,10 +42,11 @@ test("render_file is registered and shows an image with metadata only, no prior 
   mkdirSync(agent.cwd, { recursive: true });
   writeFileSync(join(agent.cwd, "ad.png"), Buffer.from(PNG, "base64"));
   const h = f.app.service.harness;
+  useTestModel(h);
   const session = await h.create(
     agent,
     [],
-    h.config("demo"),
+    h.config("api"),
     f.app.store.instance(),
     [],
     (type, data) => {

@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { Snapshot } from "../src/shared/types";
 async function launch(dir: string) {
-  const child = Bun.spawn(["bun", "src/server/index.ts"], {
+  const child = Bun.spawn(["bun", "tests/fixtures/server.ts"], {
     cwd: resolve(import.meta.dir, ".."),
     env: {
       ...process.env,
@@ -60,7 +60,7 @@ test("a fresh process recovers SQLite identity, profiles, transcript and interru
   try {
     const initial = await state();
     const id = initial.agents[0]!.id;
-    await request("/api/config", "PUT", { mode: "demo" });
+    await request("/api/config", "PUT", { mode: "api" });
     await request(`/api/agents/${id}`, "PATCH", {
       name: "Persistent Jelly",
 
@@ -89,7 +89,7 @@ test("a fresh process recovers SQLite identity, profiles, transcript and interru
     expect(recovered.agents[0]?.id).toBe(id);
     expect(recovered.agents[0]?.name).toBe("Persistent Jelly");
     expect(recovered.agents[0]?.instructions).toBe("Remember the context");
-    expect(recovered.config.mode).toBe("demo");
+    expect(recovered.config.mode).toBe("api");
     expect(recovered.runs[0]?.status).toBe("completed");
     expect(recovered.runs[1]?.status).toBe("interrupted");
     expect(recovered.agents[0]?.status).toBe("interrupted");

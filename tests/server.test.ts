@@ -3,7 +3,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 import type { Activity, Snapshot } from "../src/shared/types";
 const eventControllers = new WeakMap<Response, AbortController>();
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -17,11 +17,11 @@ async function fixture(extra: Partial<Parameters<typeof startApp>[0]> = {}) {
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
-    demoDelayMs: 1,
+    fixtureDelayMs: 1,
     ...extra,
   });
   cleanups.push(() => app.close());
-  app.service.setMode("demo");
+  app.service.setMode("api");
   const url = `http://127.0.0.1:${app.server.port}`;
   const id = app.store.agents()[0]!.id;
   const request = async (
@@ -181,7 +181,7 @@ describe("Jelly local client/server foundation", () => {
     expect(replayed.map((e) => e.id)).toEqual(events.slice(3).map((e) => e.id));
   });
   test("idempotency prevents duplicate sends and busy agents queue work in order", async () => {
-    const { app, id, request } = await fixture({ demoDelayMs: 30 });
+    const { app, id, request } = await fixture({ fixtureDelayMs: 30 });
     const first = await (
       await request(`/api/agents/${id}/messages`, "POST", {
         text: "First",
@@ -276,7 +276,7 @@ describe("Jelly local client/server foundation", () => {
     );
   });
   test("cancellation and provider failures settle runs and allow subsequent work", async () => {
-    const { app, id, request } = await fixture({ demoDelayMs: 500 });
+    const { app, id, request } = await fixture({ fixtureDelayMs: 500 });
     await request(`/api/agents/${id}/messages`, "POST", {
       text: "Stop me",
       requestId: "stop",
@@ -290,7 +290,7 @@ describe("Jelly local client/server foundation", () => {
     app.service.start(id, "after-stop", "Continue");
     await app.service.settled();
     expect(app.store.runs(id)[1]?.status).toBe("completed");
-    const failing = await fixture({ demoFail: true });
+    const failing = await fixture({ fixtureFail: true });
     failing.app.service.start(failing.id, "fail", "Hello");
     await failing.app.service.settled();
     expect(failing.app.store.runs(failing.id)[0]?.status).toBe("failed");
@@ -299,20 +299,27 @@ describe("Jelly local client/server foundation", () => {
       "run_failed",
     );
   });
-  test("missing credentials produce a useful failure and demo remains available", async () => {
+  test("missing credentials reject messages before persistence and demo cannot be selected", async () => {
     const { app, id, request } = await fixture();
-    app.service.harness.auth.hasAuth = (provider) => provider === "jelly-demo";
-    await request("/api/config", "PUT", { mode: "chatgpt" });
-    app.service.start(id, "missing", "Hello");
-    await app.service.settled();
-    expect(app.store.runs(id)[0]?.status).toBe("failed");
-    expect(app.store.runs(id)[0]?.error).toContain("Connection settings");
-    await request("/api/config", "PUT", { mode: "demo" });
-    app.service.start(id, "demo", "Continue without login");
-    await app.service.settled();
-    expect(app.store.runs(id)[1]?.status).toBe("completed");
+    app.service.harness.auth.hasAuth = () => false;
+    for (const mode of ["auto", "chatgpt", "api"] as const) {
+      await request("/api/config", "PUT", { mode });
+      const response = await request(`/api/agents/${id}/messages`, "POST", {
+        text: "Hello", requestId: `missing-${mode}`,
+      });
+      expect(response.status).toBe(409);
+      expect(await response.text()).toContain("Settings");
+      expect(() => app.service.start(id, `direct-${mode}`, "Hello")).toThrow("Settings");
+      expect(() => app.service.freshSession(id, `fresh-${mode}`)).toThrow("Settings");
+    }
+    expect((await request("/api/config", "PUT", { mode: "demo" })).status).toBe(400);
+    expect(() => app.service.setMode("demo" as never)).toThrow("Unknown connection mode");
+    expect(app.store.runs(id)).toEqual([]);
+    expect(app.store.pendingMessages(id)).toEqual([]);
+    expect(app.store.historyPage(id).events.filter((e) => e.type === "message")).toEqual([]);
+    expect(app.store.agent(id)?.status).toBe("idle");
   });
-  test("OpenAI is preferred, with subscription before API and demo only when neither is available", async () => {
+  test("Automatic prefers ChatGPT then API, and requires a connection when neither is available", async () => {
     const { app } = await fixture();
     const auth = app.service.harness.auth;
     const original = auth.hasAuth.bind(auth);
@@ -322,7 +329,8 @@ describe("Jelly local client/server foundation", () => {
     auth.hasAuth = (provider) => provider === "openai";
     expect(app.service.harness.config("auto").activeMode).toBe("api");
     auth.hasAuth = () => false;
-    expect(app.service.harness.config("auto").activeMode).toBe("demo");
+    expect(app.service.harness.config("auto")).toMatchObject({ activeMode: null, ready: false });
+    expect(app.service.harness.config("api").ready).toBe(false);
     expect(app.service.harness.config("api").activeMode).toBe("api");
     auth.hasAuth = original;
     expect(
@@ -357,7 +365,7 @@ describe("Jelly local client/server foundation", () => {
         await request(
           "/api/config",
           "PUT",
-          { mode: "demo" },
+          { mode: "api" },
           { Origin: "https://evil.example" },
         )
       ).status,
@@ -485,7 +493,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 7,
+        user_version: 8,
       });
     } finally {
       store.close();
@@ -494,7 +502,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
 });
 
 test("queued messages can be promoted to steer without duplication and remaining messages stay queued", async () => {
-  const { app, id, request } = await fixture({ demoDelayMs: 100 });
+  const { app, id, request } = await fixture({ fixtureDelayMs: 100 });
   const first = app.service.start(id, "steer-first", "First");
   app.service.start(id, "queue-second", "Second");
   app.service.start(id, "queue-third", "Third");
@@ -545,7 +553,7 @@ test("queued messages can be promoted to steer without duplication and remaining
 });
 
 test("steering reaches a running Pi session and does not start another run", async () => {
-  const { app, id, request } = await fixture({ demoDelayMs: 100 });
+  const { app, id, request } = await fixture({ fixtureDelayMs: 100 });
   const first = app.service.start(id, "direct-first", "First");
   for (
     let count = 0;
@@ -585,7 +593,7 @@ test("steering reaches a running Pi session and does not start another run", asy
 test.each([false, true])(
   "stopped or failed runs keep queued messages visible as unsent (failure=%s)",
   async (fail) => {
-    const { app, id } = await fixture({ demoDelayMs: 100, demoFail: fail });
+    const { app, id } = await fixture({ fixtureDelayMs: 100, fixtureFail: fail });
     app.service.start(id, "cancel-first", "First");
     app.service.start(id, "cancel-queued", "Do this later");
     if (!fail) await app.service.stop(id);
@@ -606,7 +614,7 @@ test.each([false, true])(
 );
 
 test("message modes and steering targets are validated and isolated by agent", async () => {
-  const { app, id, request } = await fixture({ demoDelayMs: 100 });
+  const { app, id, request } = await fixture({ fixtureDelayMs: 100 });
   expect(
     (
       await request(`/api/agents/${id}/messages`, "POST", {
@@ -703,7 +711,7 @@ test("steering arriving while a run settles is delivered once by the next run", 
 });
 
 test("distinct steering requests with identical text are each delivered exactly once", async () => {
-  const { app, id } = await fixture({ demoDelayMs: 30 });
+  const { app, id } = await fixture({ fixtureDelayMs: 30 });
   app.service.start(id, "identical-first", "First");
   app.service.start(id, "identical-one", "Keep going", "steer");
   app.service.start(id, "identical-two", "Keep going", "steer");
@@ -789,4 +797,58 @@ test("agent activity previews follow outstanding tools across all agents without
   expect(activityPreview("functions.edit", null)).toBe("Editing files…");
   expect(activityPreview("unknown_sensitive_tool", null)).toBe("Using a tool…");
   expect(activityPreview("generate_image", null)).toBe("Creating an image…");
+});
+
+test("disconnecting cancels queued work instead of starting a credential-free run", async () => {
+  const { app, id } = await fixture({ fixtureDelayMs: 20 });
+  let removed = false;
+  const unsubscribe = app.service.subscribe((event) => {
+    // Lose credentials only after the first real session has started.
+    if (!removed && event.type === "tool_started") {
+      app.service.start(id, "queued-before-disconnect", "Keep this unsent");
+      app.service.harness.auth.hasAuth = () => false;
+      removed = true;
+      expect(() => app.service.start(id, "new-after-disconnect", "No new queue")).toThrow("Settings");
+      expect(() => app.service.steer(id, "queued-before-disconnect")).toThrow("Settings");
+    }
+  });
+  try {
+    app.service.start(id, "connected-run", "First message");
+    await app.service.settled();
+    expect(removed).toBe(true);
+    expect(app.store.runs(id)).toHaveLength(1);
+    expect(app.store.runs(id)[0]?.status).toBe("completed");
+    expect(app.store.pendingMessages(id)).toEqual([]);
+    expect(app.store.pendingMessage("queued-before-disconnect")?.status).toBe("cancelled");
+    expect(app.store.pendingMessage("new-after-disconnect")).toBeNull();
+    expect(app.store.historyPage(id).events.find((e) => e.data.messageId === "queued-before-disconnect" && e.data.deliveryStatus === "cancelled")?.data.reason).toContain("Settings");
+  } finally {
+    unsubscribe();
+  }
+});
+
+test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely without changing conversation history", async (mode) => {
+  const { Store } = await import("../src/server/store");
+  const dir = mkdtempSync(join(tmpdir(), "jelly-access-migrate-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "jelly.sqlite");
+  let store = new Store(path);
+  const agent = store.addAgent({ name: "Existing", instructions: "Keep me", color: "#ffffff" });
+  const run = store.createRun(agent.id, "legacy", "Hello", "demo", "local-demo");
+  const event = store.event(agent.id, run.id, "message", { role: "assistant", text: "Existing conversation" });
+  store.finishRun(run.id, "completed", null);
+  const id = store.instance().id;
+  store.db.query("UPDATE instance SET mode=?").run(mode);
+  store.db.exec("PRAGMA user_version=7;");
+  store.close();
+  store = new Store(path);
+  try {
+    expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 8 });
+    expect(store.agent(agent.id)).toEqual(agent);
+    expect(store.run(run.id)?.mode).toBe("demo");
+    expect(store.historyPage(agent.id).events).toContainEqual(event);
+  } finally {
+    store.close();
+  }
 });

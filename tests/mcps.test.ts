@@ -1,3 +1,4 @@
+import { useTestModel } from "./fixtures/app";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdtempSync,
@@ -29,10 +30,9 @@ test("the agent can configure, discover, call and remove user-wide MCPs through 
   const harness = await Harness.create(
     join(root, "instance"),
     undefined,
-    1,
-    false,
     configDir,
   );
+  useTestModel(harness);
   const session = await harness.create(
     {
       id: "mcp-agent",
@@ -48,7 +48,7 @@ test("the agent can configure, discover, call and remove user-wide MCPs through 
       archivedAt: null,
     },
     [],
-    harness.config("demo"),
+    harness.config("api"),
     { id: "test", name: "Test" },
   );
   cleanups.push(() => harness.dispose(session));
@@ -80,8 +80,6 @@ test("the agent can configure, discover, call and remove user-wide MCPs through 
   const other = await Harness.create(
     join(root, "another-instance"),
     undefined,
-    1,
-    false,
     configDir,
   );
   expect(await other.mcps.status()).toEqual({

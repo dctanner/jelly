@@ -1,5 +1,5 @@
 import type { ModelId, Effort } from "./models";
-export type Mode = "auto" | "demo" | "chatgpt" | "api";
+export type Mode = "auto" | "chatgpt" | "api";
 export type Status = "idle" | "running" | "waiting" | "error" | "interrupted";
 export type MessageMode = "queue" | "steer";
 export interface PendingMessage {
@@ -55,7 +55,8 @@ export interface ConnectionConfig {
   selectedModel: ModelId;
   effort: Effort;
   mode: Mode;
-  activeMode: "demo" | "chatgpt" | "api";
+  activeMode: "chatgpt" | "api" | null;
+  ready: boolean;
   provider: string;
   model: string;
   chatgptReady: boolean;

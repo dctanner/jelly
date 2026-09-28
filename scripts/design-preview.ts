@@ -2,7 +2,7 @@
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { startApp } from "../src/server/app";
+import { startApp } from "../tests/fixtures/app";
 const dir = mkdtempSync(join(tmpdir(), "jelly-design-review-"));
 const workingPreview = process.argv.includes("--working");
 const app = await startApp({
@@ -10,9 +10,9 @@ const app = await startApp({
   configDir: join(dir, "config"),
   port: 0,
   staticDir: resolve("dist"),
-  demoDelayMs: workingPreview ? 120_000 : 400,
+  fixtureDelayMs: workingPreview ? 120_000 : 400,
 });
-app.service.setMode("demo");
+app.service.setMode("api");
 const website = join(dir, "website");
 mkdirSync(website);
 mkdirSync(join(website, "src"));
@@ -63,8 +63,8 @@ const run = app.store.createRun(
   milo.id,
   "design-reference",
   "Homepage refresh",
-  "demo",
-  "local-demo",
+  "api",
+  "gpt-6-astra",
 );
 app.store.event(milo.id, run.id, "message", {
   role: "user",

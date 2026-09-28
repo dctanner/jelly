@@ -27,8 +27,6 @@ export interface AppOptions {
   chatgptLogin?: ChatGPTLogin;
   loginTtlMs?: number;
   port?: number;
-  demoDelayMs?: number;
-  demoFail?: boolean;
   allowedOrigins?: string[];
   staticDir?: string;
 }
@@ -115,8 +113,6 @@ export async function startApp(options: AppOptions) {
       await Harness.create(
         dataDir,
         options.authPath,
-        options.demoDelayMs,
-        options.demoFail,
         options.configDir,
       ),
       options,
@@ -596,7 +592,7 @@ export async function startApp(options: AppOptions) {
               const input = await body(req);
               if (
                 input.mode !== undefined &&
-                !["auto", "demo", "chatgpt", "api"].includes(String(input.mode))
+                !["auto", "chatgpt", "api"].includes(String(input.mode))
               )
                 throw new HttpError(400, "Unknown connection mode.");
               if (

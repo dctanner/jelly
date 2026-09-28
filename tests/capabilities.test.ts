@@ -1,3 +1,4 @@
+import { useTestModel } from "./fixtures/app";
 import { test, expect, afterAll } from "bun:test";
 import { Harness } from "../src/server/harness";
 import { ALL_PI_TOOLS } from "../src/server/pi-setup";
@@ -35,8 +36,9 @@ const agent = {
 };
 const instance = { id: "test", name: "Test" };
 test("all Pi tools and the subagent package load; filesystem and shell execute without approval", async () => {
-  const h = await Harness.create(dir, undefined, undefined, undefined, join(dir, "config"));
-  const s = await h.create(agent, [], h.config("demo"), instance);
+  const h = await Harness.create(dir, undefined, join(dir, "config"));
+  useTestModel(h);
+  const s = await h.create(agent, [], h.config("api"), instance);
   const call = (name: string, args: unknown) =>
     s.agent.state.tools
       .find((t) => t.name === name)!
@@ -81,7 +83,7 @@ test("all Pi tools and the subagent package load; filesystem and shell execute w
   }
 });
 test("real pi-subagents workflow uses the parent provider and effort and supports abort", async () => {
-  const h = await Harness.create(dir, undefined, undefined, undefined, join(dir, "config"));
+  const h = await Harness.create(dir, undefined, join(dir, "config"));
   await h.auth.saveKey("sk-local-test-not-real");
   let slow = false;
   const requests: any[] = [];

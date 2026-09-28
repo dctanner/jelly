@@ -228,8 +228,9 @@ test("subscription image tool uses native WebSocket generation, private files an
   } finally {
     await app.service.harness.dispose(session);
   }
-  app.service.setMode("demo");
-  const demo = await app.service.harness.create(
+  await app.service.harness.auth.setRuntimeApiKey("openai", "test-api-key");
+  app.service.setMode("api");
+  const apiSession = await app.service.harness.create(
     agent,
     [],
     app.service.snapshot().config,
@@ -237,10 +238,10 @@ test("subscription image tool uses native WebSocket generation, private files an
   );
   try {
     expect(
-      demo.getAllTools().some((tool) => tool.name === "generate_image"),
+      apiSession.getAllTools().some((tool) => tool.name === "generate_image"),
     ).toBe(false);
   } finally {
-    await app.service.harness.dispose(demo);
+    await app.service.harness.dispose(apiSession);
   }
 });
 

@@ -1,3 +1,4 @@
+// Deterministic model fixture. Never imported by the production server.
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -6,10 +7,10 @@ import {
   type Api,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-export const demoModel: Model<Api> = {
-  id: "local-demo",
-  name: "Local demo",
-  provider: "jelly-demo",
+export const fixtureModel: Model<Api> = {
+  id: "gpt-6-astra",
+  name: "Test model",
+  provider: "openai",
   api: "openai-responses",
   baseUrl: "http://localhost/unused",
   reasoning: false,
@@ -18,7 +19,7 @@ export const demoModel: Model<Api> = {
   contextWindow: 128000,
   maxTokens: 4096,
 };
-export function demoStream(delayMs = 220, fail = false) {
+export function fixtureStream(delayMs = 220, fail = false) {
   return (
     model: Model<Api>,
     context: Context,
@@ -56,7 +57,7 @@ export function demoStream(delayMs = 220, fail = false) {
           }, delayMs);
           options?.signal?.addEventListener("abort", onAbort, { once: true });
         });
-        if (fail) throw new Error("Demo provider failure");
+        if (fail) throw new Error("Fixture provider failure");
         const last = context.messages.at(-1);
         const currentUser = context.messages
           .filter((m) => m.role === "user")
@@ -68,8 +69,8 @@ export function demoStream(delayMs = 220, fail = false) {
                 .filter((c) => c.type === "text")
                 .map((c) => c.text)
                 .join("\n") ?? "");
-        const sudo = command.trim() === "/demo sudo";
-        const login = command.startsWith("/demo login ");
+        const sudo = command.trim() === "/fixture sudo";
+        const login = command.startsWith("/fixture login ");
         if (last?.role !== "toolResult") {
           message.content = [
             {
@@ -97,7 +98,7 @@ export function demoStream(delayMs = 220, fail = false) {
                   }
                 : login
                   ? {
-                      url: command.slice(12).trim(),
+                      url: command.slice(15).trim(),
                       reason:
                         "Sign in privately, then return browser control to this agent.",
                     }
@@ -121,7 +122,7 @@ export function demoStream(delayMs = 220, fail = false) {
               text:
                 sudo || login
                   ? `The tool finished. Result: ${JSON.stringify(last.content)}\n\nThis is a scripted demonstration through the real Pi tool loop.`
-                  : `Your local agent is working. I received: “${text}”\n\nI used the instance_info tool and completed this turn through Pi. This conversation has ${users.length} saved user message${users.length === 1 ? "" : "s"}.\n\nThis is a deterministic demo, not an AI-generated answer. Choose ChatGPT or an OpenAI API key in Connection settings for real model responses.`,
+                  : `Your local agent is working. I received: “${text}”\n\nI used the instance_info tool and completed this turn through Pi. This conversation has ${users.length} saved user message${users.length === 1 ? "" : "s"}.\n\nThis is a deterministic test fixture, not an AI-generated answer.`,
             },
           ];
         }
@@ -135,7 +136,7 @@ export function demoStream(delayMs = 220, fail = false) {
       } catch (error) {
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage =
-          error instanceof Error ? error.message : "Demo failed";
+          error instanceof Error ? error.message : "Fixture failed";
         stream.push({
           type: "error",
           reason: message.stopReason,

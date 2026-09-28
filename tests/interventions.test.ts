@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createSudoExecutor } from "../src/server/sudo";
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
   for (const fn of cleanups.splice(0).reverse()) await fn();
@@ -119,7 +119,7 @@ async function fixture(ttl = 10000, delay = false) {
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
-    demoDelayMs: 1,
+    fixtureDelayMs: 1,
     interventionTtlMs: ttl,
     sudoExecutor: async (_command, password, signal) => {
       if (!password.length)
@@ -146,7 +146,7 @@ async function fixture(ttl = 10000, delay = false) {
       };
     },
   });
-  app.service.setMode("demo");
+  app.service.setMode("api");
   cleanups.push(() => app.close());
   const url = String(app.server.url).replace(/\/$/, "");
   const id = app.store.agents()[0]!.id;
@@ -168,7 +168,7 @@ async function session(req: Awaited<ReturnType<typeof fixture>>["req"]) {
   return { cookie, "x-jelly-csrf": (await res.json()).csrf as string };
 }
 async function requestSudo(f: Awaited<ReturnType<typeof fixture>>) {
-  f.app.service.start(f.id, crypto.randomUUID(), "/demo sudo");
+  f.app.service.start(f.id, crypto.randomUUID(), "/fixture sudo");
   await until(() =>
     f.app.store.interventions().some((i) => i.status === "pending"),
   );
@@ -290,7 +290,7 @@ test("sudo executes without approval when the OS permits, and ordinary failures 
       dataDir: dir,
       configDir: join(dir, "config"),
       port: 0,
-      demoDelayMs: 1,
+      fixtureDelayMs: 1,
       sudoExecutor: async (_command, password) => {
         executions++;
         expect(password.length).toBe(0);
@@ -304,9 +304,9 @@ test("sudo executes without approval when the OS permits, and ordinary failures 
       },
     });
     try {
-      app.service.setMode("demo");
+      app.service.setMode("api");
       const id = app.store.agents()[0]!.id;
-      app.service.start(id, crypto.randomUUID(), "/demo sudo");
+      app.service.start(id, crypto.randomUUID(), "/fixture sudo");
       await app.service.settled();
       expect(executions).toBe(1);
       expect(app.store.interventions()).toHaveLength(0);

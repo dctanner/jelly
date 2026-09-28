@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 import { Store } from "../src/server/store";
 import { Harness } from "../src/server/harness";
 import { directories } from "../src/server/directories";
@@ -25,10 +25,10 @@ async function fixture() {
     dataDir: join(dir, "state"),
     configDir: join(dir, "config"),
     port: 0,
-    demoDelayMs: 10,
+    fixtureDelayMs: 10,
   });
   cleanup.push(() => app.close());
-  app.service.setMode("demo");
+  app.service.setMode("api");
   const base = `http://127.0.0.1:${app.server.port}`;
   const session = await fetch(base + "/api/control-session");
   const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
@@ -280,7 +280,7 @@ test("two real sessions share project files and cwd while keeping context and co
   const h = app.service.harness;
   const sessions = await Promise.all(
     [a, b].map((agent) =>
-      h.create(agent, [], h.config("demo"), app.store.instance()),
+      h.create(agent, [], h.config("api"), app.store.instance()),
     ),
   );
   try {

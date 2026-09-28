@@ -12,7 +12,7 @@ Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/ear
 - File editing, shell tools, subagents, and MCP connections
 - Browser control with private sign-in handoffs; Linux desktop support
 - File uploads, inline images, and downloadable artifacts
-- ChatGPT subscription or OpenAI API access, plus a no-key local demo
+- ChatGPT subscription or OpenAI API access (required)
 
 ## Quick start
 
@@ -25,7 +25,7 @@ bun install
 bun run dev
 ```
 
-Open **http://127.0.0.1:5173**. Without credentials, Jelly uses a labeled, scripted local demo. Connect ChatGPT or add an OpenAI API key in Settings for real model responses. Model availability depends on your account.
+Open **http://127.0.0.1:5173**. **A ChatGPT subscription or OpenAI API key is required to run agents.** Connect your account or add a key in Settings before sending a message. Automatic mode prefers ChatGPT, then an API key; there is no no-key demo mode. Model availability depends on your account.
 
 Optional environment settings are documented in [`.env.example`](.env.example). Put local values in `.env.local`, which is ignored by Git. Set `FIRECRAWL_API_KEY` to enable web search and fetching.
 

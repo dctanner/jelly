@@ -24,7 +24,7 @@ The accepted user message, run, status, and initial events are committed togethe
 
 Schema v7 adds `pending_messages`, keyed by the client's request ID. Messages accepted during a run default to `queue`; successful run completion starts the next pending message in FIFO order. `steer` messages are submitted to Pi's core steering queue and become durable user transcript messages when Pi emits `message_start`. Promotion changes a pending message to `steer` without creating a second message. Snapshots include the selected agent's pending messages independently of paginated history. Pending messages arriving during startup or teardown remain tracked until consumed or started in a subsequent run. Stop, failure, and restart cancel pending messages with visible unsent entries; they never silently restart work.
 
-Pi's `SessionManager.inMemory()` loads the latest successful working-context checkpoint from SQLite, retaining compaction summaries, entry IDs, kept messages and context edits. Legacy conversations bootstrap from completed raw messages. Checkpoints commit atomically with successful terminal run state; failed/cancelled/interrupted runs cannot replace them. Pi is responsible for the execution loop and tool semantics; parent sessions do not write a second transcript. Profile instructions become the Pi system prompt. Standard extensions, skills, prompts and context files are discovered, all built-in and registered tools are enabled, and project resources are trusted by default. Pi automatic compaction is enabled for real model sessions and disabled for the scripted demo. Summarized prefixes leave the working checkpoint while full raw messages and activity remain in SQLite.
+Pi's `SessionManager.inMemory()` loads the latest successful working-context checkpoint from SQLite, retaining compaction summaries, entry IDs, kept messages and context edits. Legacy conversations bootstrap from completed raw messages. Checkpoints commit atomically with successful terminal run state; failed/cancelled/interrupted runs cannot replace them. Pi is responsible for the execution loop and tool semantics; parent sessions do not write a second transcript. Profile instructions become the Pi system prompt. Standard extensions, skills, prompts and context files are discovered, all built-in and registered tools are enabled, and project resources are trusted by default. Pi automatic compaction is enabled for model sessions. Summarized prefixes leave the working checkpoint while full raw messages and activity remain in SQLite.
 
 Cancelled, failed, and interrupted runs stay visible in the activity history but are excluded from future model context. This avoids replaying unmatched tool calls or incomplete answers. The client can send a new message to continue with the last successful context. A user should restate any needed instructions from an interrupted run. There is no automatic rerun of tools.
 
@@ -62,9 +62,9 @@ Clients first load a snapshot containing the latest 100 activity entries, then s
 
 Pi `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` are pinned at 0.87.1. `ModelRuntime` owns model discovery, authentication, credential refresh and request dispatch. Native GPT-6 catalog entries and effort levels replace Jelly's prior compatibility overrides. SQLite schema v3 persists Astra/Sol and reasoning effort, with Astra/Medium defaults. All built-in and registered extension tools are enabled; standard resources load from the Jelly Pi directory and agent workspace. `pi-subagents` 0.71.0 supplies delegation through the native extension loader. [Capability research and integration](../plans_done/02-pi-capabilities.md) describes package selection, child lifecycle and automatic execution.
 
-Automatic mode selects ChatGPT when configured, otherwise OpenAI API, otherwise the demo. Explicit modes never silently fall back. No live credentials are automatically imported from unrelated applications.
+Automatic mode selects ChatGPT when configured, otherwise OpenAI API. With neither, the connection is not ready and new runs are rejected before messages or runs are persisted. Explicit modes require their selected credentials and never silently fall back. Legacy instances set to demo migrate to Automatic without changing historical conversations. No live credentials are automatically imported from unrelated applications.
 
-The deterministic demo overrides only the Pi model stream function. Pi still executes `instance_info`, emits real lifecycle events, and supplies previous conversation context. The mock Responses server tests the actual OpenAI API and ChatGPT adapters separately, including request authentication, every offered model/effort combination, tool schema, and history transmission.
+The deterministic model exists only under `tests/fixtures/` and is explicitly injected by tests and the disposable design-preview script. Production has no scripted provider, demo mode, or environment-variable bypass. Tests still execute `instance_info`, emit real lifecycle events, and supply previous conversation context. The mock Responses server tests the actual OpenAI API and ChatGPT adapters separately, including request authentication, every offered model/effort combination, tool schema, and history transmission.
 
 ## Runtime boundaries and current limits
 
@@ -120,7 +120,7 @@ The dev supervisor passes discovered origins through `JELLY_PUBLIC_ORIGINS`. Vit
 ## ChatGPT model WebSocket transport
 
 ChatGPT subscription sessions explicitly select Pi's `websocket-cached` transport;
-API-key and demo sessions select SSE. These are server-to-model connections, not
+API-key sessions select SSE. These are server-to-model connections, not
 browser-to-Jelly connections (the browser still receives durable SSE activity).
 
 `ChatGPTTransport` assigns an ephemeral, per-agent provider session ID scoped to

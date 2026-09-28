@@ -333,7 +333,7 @@ test("fresh-session work is exclusive, stoppable and queues the next prompt agai
   expect(f.app.store.pendingMessages(f.id)).toHaveLength(0);
 });
 
-test("empty sessions rotate without invented summaries; demo, missing and archived agents reject the action", async () => {
+test("empty sessions rotate without invented summaries; unconnected, missing and archived agents reject the action", async () => {
   const f = await fixture();
   const run = f.app.service.freshSession(f.id, crypto.randomUUID()).run;
   await f.app.service.settled();
@@ -353,7 +353,8 @@ test("empty sessions rotate without invented summaries; demo, missing and archiv
     "Restore this agent",
   );
   f.app.service.archiveAgent(f.id, false);
-  f.app.service.setMode("demo");
+  f.app.service.harness.auth.hasAuth = () => false;
+  f.app.service.setMode("auto");
   expect(() => f.app.service.freshSession(f.id, crypto.randomUUID())).toThrow(
     "Connect ChatGPT",
   );

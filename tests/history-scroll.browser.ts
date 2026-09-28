@@ -1,4 +1,4 @@
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 import { chromium } from "playwright-core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ const app = await startApp({
   configDir: join(dir, "config"),
   port: 0,
 });
-app.service.setMode("demo");
+app.service.setMode("api");
 const id = app.store.agents()[0]!.id;
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",

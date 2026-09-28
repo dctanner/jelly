@@ -13,7 +13,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { App } from "../src/client/App";
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 import { registerWorkspaceTools } from "../src/client/webmcp";
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
@@ -36,10 +36,10 @@ async function setup(extra: Partial<Parameters<typeof startApp>[0]> = {}) {
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
-    demoDelayMs: 5,
+    fixtureDelayMs: 5,
     ...extra,
   });
-  app.service.setMode("demo");
+  app.service.setMode("api");
   const origin = `http://127.0.0.1:${app.server.port}`;
   let cookie = "";
   globalThis.fetch = (async (input: any, init: any) => {
@@ -61,7 +61,7 @@ async function setup(extra: Partial<Parameters<typeof startApp>[0]> = {}) {
   return app;
 }
 test("React client connects, creates an agent, sends through Pi, renders tool completion and restores history on remount", async () => {
-  const app = await setup({ demoDelayMs: 300 });
+  const app = await setup({ fixtureDelayMs: 300 });
   let ui = render(<App />);
   await waitFor(() =>
     expect(
@@ -110,13 +110,13 @@ test("React client connects, creates an agent, sends through Pi, renders tool co
     () =>
       expect(
         within(screen.getByRole("main")).getByText(
-          /This is a deterministic demo/,
+          /This is a deterministic test fixture/,
         ),
       ).toBeDefined(),
     { timeout: 3000 },
   );
   expect(screen.getByText("Workspace checked")).toBeDefined();
-  expect(screen.getByText("Local demo")).toBeDefined();
+  expect(screen.queryByText("Local demo")).toBeNull();
   expect(screen.getByText(/^Worked for /)).toBeDefined();
   expect(document.querySelectorAll(".work-activity")).toHaveLength(1);
   expect(document.querySelectorAll(".tool-group, .working")).toHaveLength(0);
@@ -267,7 +267,7 @@ test("sudo approval card submits privately, clears its input, and reflects the c
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
-    demoDelayMs: 1,
+    fixtureDelayMs: 1,
     sudoExecutor: async (_command, password) => {
       if (!password.length)
         return {
@@ -302,9 +302,9 @@ test("sudo approval card submits privately, clears its input, and reflects the c
   }) as typeof fetch;
   const { InterventionCard } = await import("../src/client/InterventionCard");
   try {
-    server.service.setMode("demo");
+    server.service.setMode("api");
     const id = server.store.agents()[0]!.id;
-    server.service.start(id, crypto.randomUUID(), "/demo sudo");
+    server.service.start(id, crypto.randomUUID(), "/fixture sudo");
     await waitFor(() => expect(server.store.interventions()).toHaveLength(1));
     const item = server.store.interventions()[0]!;
     let changed = false;
@@ -895,7 +895,7 @@ test("chat model menu persists choices without changing connection mode and dism
   expect(app.service.snapshot().config).toMatchObject({
     selectedModel: "gpt-6-sol",
     effort: "high",
-    mode: "demo",
+    mode: "api",
   });
   fireEvent.keyDown(effort, { key: "Escape" });
   expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
@@ -1101,7 +1101,7 @@ test("composer upload button opens the shared modal and partial failures retry o
 });
 
 test("busy composer defaults to Queued, can promote a sent message, and resets Steer after sending", async () => {
-  const app = await setup({ demoDelayMs: 800 });
+  const app = await setup({ fixtureDelayMs: 800 });
   const id = app.store.agents()[0]!.id;
   let ui = render(<App />);
   await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
@@ -1231,7 +1231,7 @@ test("dismissed sudo cards disappear from chat without duplicating the inline to
   render(<App />);
   await screen.findByRole("textbox", { name: /Message Jelly/ });
   const id = app.store.agents()[0]!.id;
-  app.service.start(id, crypto.randomUUID(), "/demo sudo");
+  app.service.start(id, crypto.randomUUID(), "/fixture sudo");
   await screen.findByText("Administrator password required");
   fireEvent.click(screen.getByRole("button", { name: "Deny" }));
   expect(screen.queryByText("Administrator password required")).toBeNull();
@@ -2019,6 +2019,8 @@ test("conversation groups each run once without hiding messages, images or error
 
 test("Fresh Session menu action preserves chat and shows a durable session boundary", async () => {
   const app = await setup();
+  const hasAuth = app.service.harness.auth.hasAuth.bind(app.service.harness.auth);
+  app.service.harness.auth.hasAuth = () => false;
   const id = app.store.agents()[0]!.id;
   app.store.event(id, null, "message", { role: "assistant", text: "An earlier reply stays visible." });
   let ui = render(<App />);
@@ -2026,6 +2028,7 @@ test("Fresh Session menu action preserves chat and shows a durable session bound
   fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   expect(screen.getByRole("button", { name: "Fresh Session" }).hasAttribute("disabled")).toBe(true);
   await app.service.harness.auth.setRuntimeApiKey("openai", "local-test-key");
+  app.service.harness.auth.hasAuth = hasAuth;
   app.service.setMode("api");
   await waitFor(() => expect(screen.getByRole("button", { name: "Fresh Session" }).hasAttribute("disabled")).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Fresh Session" }));
@@ -2348,3 +2351,61 @@ test("anchor restoration preserves intervening user scrolling and skips momentum
   restoreAnchor(chat, stable);
   expect(writes).toBe(1);
 });
+
+test("a connection is required to send, Settings has no demo option, and connecting preserves the draft", async () => {
+  const app = await setup();
+  app.service.harness.auth.hasAuth = () => false;
+  app.service.setMode("auto");
+  render(<App />);
+  const input = await screen.findByRole("textbox", { name: "Message Jelly" });
+  await screen.findByRole("button", { name: "Connect an account" });
+  fireEvent.change(input, { target: { value: "Keep this draft until I connect" } });
+  const send = screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement;
+  expect(send.disabled).toBe(true);
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(app.store.runs(app.store.agents()[0]!.id)).toEqual([]);
+  fireEvent.click(screen.getByRole("button", { name: "Connect an account" }));
+  fireEvent.click(screen.getByRole("button", { name: "Model access" }));
+  expect(screen.getAllByRole("radio")).toHaveLength(3);
+  expect(screen.queryByRole("radio", { name: /demo/i })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+  await act(async () => {
+    app.service.harness.auth.hasAuth = (provider) => provider === "openai";
+    app.service.setMode("api");
+  });
+  await waitFor(() => expect(send.disabled).toBe(false));
+  expect(screen.queryByRole("button", { name: "Connect an account" })).toBeNull();
+  expect((input as HTMLTextAreaElement).value).toBe("Keep this draft until I connect");
+  await act(async () => {
+    app.service.harness.auth.hasAuth = () => false;
+    app.service.setMode("auto");
+  });
+  await waitFor(() => expect(send.disabled).toBe(true));
+  expect((input as HTMLTextAreaElement).value).toBe("Keep this draft until I connect");
+});
+
+for (const chatgptReady of [true, false]) {
+  test(`legacy backend connection status keeps chat ${chatgptReady ? "enabled" : "disabled"}`, async () => {
+    const app = await setup();
+    app.service.harness.auth.hasAuth = (provider) => provider === "openai-codex" && chatgptReady;
+    app.service.setMode("chatgpt");
+    const fetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init: any) => {
+      const response = await fetch(input, init);
+      if (typeof input === "string" && input.startsWith("/api/state")) {
+        const state = await response.json();
+        delete state.config.ready;
+        return Response.json(state);
+      }
+      return response;
+    }) as typeof globalThis.fetch;
+    render(<App />);
+    const input = await screen.findByRole("textbox", { name: "Message Jelly" });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(input, { target: { value: "My subscription is connected" } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(!chatgptReady));
+    expect(!!screen.queryByRole("button", { name: "Connect an account" })).toBe(!chatgptReady);
+  });
+}

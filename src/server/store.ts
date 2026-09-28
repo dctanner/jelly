@@ -35,7 +35,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 7)
+    if (version > 8)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -116,6 +116,11 @@ export class Store {
           CREATE INDEX IF NOT EXISTS idx_pending_messages_agent ON pending_messages(agentId, status);
           PRAGMA user_version=7;
         `);
+      })();
+    if (version < 8)
+      this.db.transaction(() => {
+        // Keep historical demo conversations, but require credentials for new runs.
+        this.db.exec("UPDATE instance SET mode='auto' WHERE mode='demo'; PRAGMA user_version=8;");
       })();
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);

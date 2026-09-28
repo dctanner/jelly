@@ -31,7 +31,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentRecord, ConnectionConfig, Mode } from "../shared/types";
-import { demoModel, demoStream } from "./demo";
+import { HttpError } from "./errors";
 
 export class Harness {
   private sessions = new WeakMap<AgentSession, SessionWork>();
@@ -45,8 +45,6 @@ export class Harness {
     readonly dataDir: string,
     readonly runtime: ModelRuntime,
     authPath: string,
-    readonly demoDelayMs = 220,
-    readonly demoFail = false,
     configDir?: string,
   ) {
     this.images = new GeneratedImages(dataDir);
@@ -54,19 +52,10 @@ export class Harness {
     this.mcps = new Mcps(configDir);
     this.auth = new JellyAuth(runtime, authPath);
     this.registry = new ModelRegistry(runtime);
-    runtime.registerProvider("jelly-demo", {
-      api: "openai-responses",
-      baseUrl: demoModel.baseUrl,
-      apiKey: "local-demo",
-      models: [demoModel],
-      streamSimple: demoStream(demoDelayMs, demoFail),
-    });
   }
   static async create(
     dataDir: string,
     authPath = join(dataDir, "auth.json"),
-    demoDelayMs = 220,
-    demoFail = false,
     configDir?: string,
   ) {
     preparePi(dataDir);
@@ -75,7 +64,7 @@ export class Harness {
       modelsPath: null,
       allowModelNetwork: false,
     });
-    return new Harness(dataDir, runtime, authPath, demoDelayMs, demoFail, configDir);
+    return new Harness(dataDir, runtime, authPath, configDir);
   }
   config(
     mode: Mode,
@@ -89,35 +78,33 @@ export class Harness {
     const apiReady = this.auth.hasAuth("openai");
     const activeMode =
       mode === "auto"
-        ? chatgptReady
-          ? "chatgpt"
-          : apiReady
-            ? "api"
-            : "demo"
+        ? chatgptReady ? "chatgpt" : apiReady ? "api" : null
         : mode;
-    const provider =
-      activeMode === "demo"
-        ? "jelly-demo"
-        : activeMode === "chatgpt"
-          ? "openai-codex"
-          : "openai";
-    const model = activeMode === "demo" ? "local-demo" : settings.model;
+    const ready = activeMode === "chatgpt" ? chatgptReady : activeMode === "api" && apiReady;
+    const provider = activeMode === "chatgpt" ? "openai-codex" : activeMode === "api" ? "openai" : "";
     return {
       mode,
       selectedModel: settings.model,
       effort: settings.effort,
       activeMode,
+      ready,
       provider,
-      model,
+      model: settings.model,
       chatgptReady,
       apiReady,
-      notice:
-        activeMode === "demo"
-          ? "Local demo · No account needed"
-          : activeMode === "chatgpt"
-            ? "ChatGPT subscription"
-            : "OpenAI API · Usage billed separately",
+      notice: !ready
+        ? activeMode === "chatgpt"
+          ? "ChatGPT is not connected. Connect your ChatGPT subscription in Settings."
+          : activeMode === "api"
+            ? "No OpenAI API key is configured. Add an API key in Settings."
+            : "Connect ChatGPT or add an OpenAI API key in Settings to use Jelly."
+        : activeMode === "chatgpt"
+          ? "ChatGPT subscription"
+          : "OpenAI API · Usage billed separately",
     };
+  }
+  requireConnection(config: ConnectionConfig) {
+    if (!config.ready || !config.activeMode) throw new HttpError(409, config.notice);
   }
   async create(
     agent: AgentRecord,
@@ -128,18 +115,8 @@ export class Harness {
     report: (type: string, data: Record<string, unknown>) => void = () => {},
     context: FileEntry[] | null = null,
   ): Promise<AgentSession> {
-    if (config.activeMode === "chatgpt" && !config.chatgptReady)
-      throw new Error(
-        "ChatGPT is not connected. Open Connection settings to connect ChatGPT, or choose Local demo.",
-      );
-    if (config.activeMode === "api" && !config.apiReady)
-      throw new Error(
-        "No OpenAI API key is configured. Open Connection settings to enter a key, or choose Local demo.",
-      );
-    let model =
-      config.activeMode === "demo"
-        ? demoModel
-        : this.registry.find(config.provider, config.model);
+    this.requireConnection(config);
+    const model = this.registry.find(config.provider, config.model);
     if (!model)
       throw new Error(
         `Model ${config.provider}/${config.model} is not in the installed Pi catalog. Choose a supported model in Connection settings.`,
@@ -151,10 +128,9 @@ export class Harness {
     const applySettings = () => settingsManager.applyOverrides({
       defaultTools: ALL_PI_TOOLS,
       transport: config.activeMode === "chatgpt" ? "websocket-cached" : "sse",
-      defaultThinkingLevel:
-        config.activeMode === "demo" ? "off" : config.effort,
+      defaultThinkingLevel: config.effort,
       defaultProjectTrust: "always",
-      compaction: { enabled: config.activeMode !== "demo" },
+      compaction: { enabled: true },
       retry: { enabled: false },
     });
     applySettings();
@@ -193,7 +169,7 @@ export class Harness {
       sessionManager,
       settingsManager,
       resourceLoader: loader,
-      thinkingLevel: config.activeMode === "demo" ? "off" : config.effort,
+      thinkingLevel: config.effort,
       customTools: [
         ...(config.activeMode === "chatgpt" ? [imageGenerationTool(this.runtime, model, this.images, report)] : []),
         renderFileTool(this.files, cwd, report),
@@ -237,7 +213,7 @@ export class Harness {
             ...input,
             model:
               input.model ??
-              `${config.provider}/${config.model}:${config.activeMode === "demo" ? "off" : config.effort}`,
+              `${config.provider}/${config.model}:${config.effort}`,
             sessionDir:
               input.sessionDir ??
               join(this.dataDir, "subagent-sessions", agent.id),

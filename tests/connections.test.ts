@@ -82,6 +82,7 @@ test("API keys require private session+CSRF, save with private permissions and p
   expect(saved.status).toBe(200);
   expect(await saved.text()).not.toContain(key);
   expect(f.app.service.snapshot().config.activeMode).toBe("api");
+  expect(f.app.service.snapshot().config.ready).toBe(true);
   expect(f.app.service.harness.auth.get("openai")).toEqual({
     type: "api_key",
     key,
@@ -152,6 +153,7 @@ test("OAuth belongs to the starting session, validates callback state and saves 
   ).toBe(200);
   await until(async () => f.app.service.snapshot().config.chatgptReady);
   expect(f.app.service.snapshot().config.activeMode).toBe("chatgpt");
+  expect(f.app.service.snapshot().config.ready).toBe(true);
   expect(f.app.service.harness.auth.get("openai-codex")).toEqual({
     ...credentials,
     type: "oauth",
@@ -241,4 +243,29 @@ test("the installed Pi OAuth provider starts its real browser flow and cancels w
     async () => !(await (await f.req("/status", {}, headers)).json()).busy,
   );
   expect(f.app.service.harness.auth.has("openai-codex")).toBe(false);
+});
+
+test("production startup has no scripted provider and requires credentials even for direct session creation", async () => {
+  const { app } = await fixture();
+  const h = app.service.harness;
+  h.auth.hasAuth = () => false;
+  const snapshot = app.service.snapshot();
+  expect(snapshot.config).toMatchObject({ mode: "auto", activeMode: null, ready: false, provider: "" });
+  expect(h.registry.find("jelly-demo", "local-demo")).toBeUndefined();
+  expect(h.runtime.getProviders().some((p) => p.id === "jelly-demo")).toBe(false);
+  await expect(h.create(snapshot.agents[0]!, [], snapshot.config, snapshot.instance)).rejects.toThrow("Connect ChatGPT");
+  const headers = await (async () => {
+    const res = await fetch(new URL("/api/control-session", app.server.url));
+    return {
+      cookie: res.headers.get("set-cookie")!.split(";")[0]!,
+      "x-jelly-csrf": (await res.json()).csrf,
+      "Content-Type": "application/json",
+    };
+  })();
+  const response = await fetch(new URL(`/api/agents/${snapshot.agents[0]!.id}/fresh-session`, app.server.url), {
+    method: "POST", headers, body: JSON.stringify({ requestId: "missing-credentials" }),
+  });
+  expect(response.status).toBe(409);
+  expect(await response.text()).toContain("Settings");
+  expect(app.store.runs(snapshot.agents[0]!.id)).toEqual([]);
 });

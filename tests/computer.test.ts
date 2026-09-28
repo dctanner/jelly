@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, symlinkSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { startApp } from "../src/server/app";
+import { startApp } from "./fixtures/app";
 import { Computer } from "../src/server/computer";
 import type { BrowserContext } from "playwright-core";
 async function until(fn: () => boolean) {
@@ -200,7 +200,7 @@ const available =
         );
       },
     });
-    let app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0, demoDelayMs: 1 });
+    let app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0, fixtureDelayMs: 1 });
     const clients: Rfb[] = [];
     const req = (
       path: string,
@@ -269,12 +269,12 @@ const available =
         headers: { ...other, Origin: app.server.url.origin },
       });
       expect(replay.status).toBe(403);
-      app.service.setMode("demo");
+      app.service.setMode("api");
       const agent = app.store.agents()[0]!.id;
       app.service.start(
         agent,
         crypto.randomUUID(),
-        "/demo login " + site.url.href,
+        "/fixture login " + site.url.href,
       );
       await until(() => app.service.computer.state().handoffId !== null);
       await until(() => viewer.closed);

@@ -108,7 +108,7 @@ export function Settings({
     {
       id: "auto" as const,
       label: "Automatic",
-      detail: "Prefer ChatGPT, then an API key; otherwise use the demo.",
+      detail: "Use your connected ChatGPT subscription, or an OpenAI API key.",
     },
     {
       id: "chatgpt" as const,
@@ -123,11 +123,6 @@ export function Settings({
       detail: data.config.apiReady
         ? "API key configured · billed separately"
         : "Add an API key in Settings.",
-    },
-    {
-      id: "demo" as const,
-      label: "Local demo",
-      detail: "Scripted responses, no account required.",
     },
   ];
   async function save() {
