@@ -1,0 +1,760 @@
+/* Native-feeling navigation and sheets, without changing the chat/composer chrome. */
+.native-sheet {
+  padding: 0;
+  overflow: hidden;
+  background: var(--page);
+}
+.native-sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+.native-sheet:not([open]) {
+  display: none;
+}
+.native-sheet::before {
+  display: none;
+}
+.native-sheet::backdrop {
+  background: rgb(0 0 0 / 32%);
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+.native-sheet.is-open::backdrop {
+  opacity: 1;
+}
+.native-sheet .modal-heading {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(60px, 1fr) minmax(0, 3fr) minmax(60px, 1fr);
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  min-height: 60px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--page);
+  touch-action: none;
+}
+.native-sheet .modal-heading h2 {
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.native-sheet .modal-heading h2:focus {
+  outline: none;
+}
+.native-sheet .modal-heading > :last-child {
+  justify-self: end;
+}
+.native-sheet .modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  flex: 1 1 auto;
+}
+.native-sheet .modal-body > :first-child {
+  margin-top: 0;
+}
+.sheet-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--accent);
+  min-height: 44px;
+  padding: 4px 0;
+  font-size: 16px;
+}
+.sheet-nav.strong {
+  font-weight: 600;
+}
+.sheet-handle {
+  display: none;
+}
+.sheet-discard {
+  padding: 24px;
+  background: var(--page);
+  border-top: 1px solid var(--border);
+  z-index: 2;
+}
+.sheet-discard button {
+  min-height: 44px;
+  margin: 4px 8px 0 0;
+  padding: 8px 14px;
+  border-radius: 12px;
+}
+.native-sheet .danger {
+  background: var(--error-bg);
+  color: var(--error);
+}
+.native-sheet .modal-body:has(+ .sheet-discard) {
+  opacity: 0.35;
+}
+.native-sheet.folder-picker .modal-body {
+  display: flex;
+  flex-direction: column;
+}
+.native-sheet.project-switcher .modal-heading {
+  margin: 0;
+}
+.native-sheet .sheet-page {
+  animation: sheet-page-in 220ms ease-out;
+}
+@keyframes sheet-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.settings-sheet .modal-body,
+.agent-sheet .modal-body {
+  background: var(--surface);
+}
+.settings-section {
+  margin: 0 0 24px;
+}
+.settings-section h3,
+.settings-group > legend {
+  margin: 0 16px 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+.settings-group {
+  border: 0;
+  border-radius: 14px;
+  background: var(--page);
+  overflow: hidden;
+  margin: 0 0 18px;
+  padding: 0;
+  min-width: 0;
+}
+.settings-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  padding: 12px 16px;
+  background: transparent;
+  text-align: left;
+  color: var(--text);
+  font-size: 16px;
+  border-radius: 0 !important;
+  position: relative;
+}
+.settings-row + .settings-row::before,
+.settings-choice + .settings-choice::before {
+  content: "";
+  position: absolute;
+  inset: 0 16px auto;
+  height: 1px;
+  background: var(--border);
+}
+.settings-row > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.settings-row > svg:last-child:not(:first-child) {
+  margin-left: auto;
+}
+.settings-row > .row-value + svg {
+  margin-left: 0;
+}
+.settings-row .row-value {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52%;
+}
+.settings-row:active:not(:disabled) {
+  background: var(--hover);
+}
+.settings-group.choice-list {
+  overflow: visible;
+}
+.settings-group.choice-list > legend {
+  padding-top: 16px;
+}
+.native-sheet label.settings-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  min-height: 52px;
+  margin: 0;
+  padding: 14px 16px;
+  cursor: pointer;
+  font-size: 16px;
+}
+.settings-choice input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.settings-choice:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  border-radius: 12px;
+}
+.settings-choice > svg {
+  margin-left: auto;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.settings-choice small {
+  white-space: normal;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+.settings-footnote {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 12px 16px;
+}
+.settings-description {
+  padding: 18px;
+  line-height: 1.5;
+}
+.settings-sheet .account-block {
+  background: var(--page);
+  border: none;
+  border-radius: 14px;
+  padding: 16px;
+}
+.agent-contact {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+  padding: 0 12px 22px;
+}
+.agent-contact .avatar {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 6px;
+}
+.agent-contact strong {
+  font-size: 22px;
+}
+.agent-contact > span,
+.agent-contact > small {
+  color: var(--muted);
+  font-size: 14px;
+}
+.archive-group {
+  margin-top: 24px;
+}
+
+/* Only message presentation changes requested: no names/times, plain replies,
+   neutral user bubbles. Header, fade, composer and tool UI stay unchanged. */
+.app .from-agent .bubble {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  border-radius: 0;
+  max-width: 100%;
+  color: var(--text);
+}
+.app .from-user .bubble {
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 22px;
+  padding: 12px 16px;
+}
+/* Copy floats just below the reply, clear of its text. Visibility, focus and
+   feedback text must never change the message's height or following spacing. */
+.app .timeline .copy-message {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  bottom: auto;
+  z-index: 1;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  background: var(--page);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+}
+/* Bridge the gap so moving the pointer from the reply to Copy keeps it visible. */
+.app .timeline .copy-message::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0 0;
+}
+/* Keep the icon visually small with a forgiving 44px touch target. */
+@media (pointer: coarse) {
+  .app .timeline .copy-message::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+}
+.agent-row-copy {
+  flex: 1;
+  min-width: 0;
+}
+.agent-row-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.agent-row-heading strong {
+  min-width: 0;
+  flex: 1;
+}
+.agent-row-heading time,
+.agent-row-status {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.agent-row .agent-preview {
+  white-space: nowrap;
+  max-width: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.agent-row .agent-project {
+  font-size: 11px;
+  opacity: 0.8;
+  max-width: none;
+}
+.agent-row .agent-indicator {
+  margin-left: 0;
+}
+
+@media (max-width: 767px) {
+  .app.t-page-slide > .t-page {
+    opacity: 1;
+    filter: none;
+    transition:
+      transform 340ms cubic-bezier(0.22, 0.7, 0.2, 1),
+      visibility 0s 340ms;
+    will-change: transform;
+  }
+  .app.t-page-slide > .sidebar,
+  .app.t-page-slide > .sidebar[inert] {
+    transform: translateX(-28%);
+    visibility: hidden;
+    z-index: 0;
+  }
+  .app.t-page-slide > main,
+  .app.t-page-slide > main[inert] {
+    transform: translateX(100%);
+    visibility: hidden;
+    z-index: 1;
+  }
+  .app.t-page-slide[data-page="1"] > .sidebar,
+  .app.t-page-slide[data-page="2"] > main {
+    transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+  .app.t-page-slide[data-swiping="true"] > .sidebar {
+    visibility: visible;
+    transform: translateX(calc(-28% + 28% * var(--back-progress, 0)));
+    transition: none;
+  }
+  .app.t-page-slide[data-swiping="true"] > main {
+    transform: translateX(calc(100% * var(--back-progress, 0)));
+    transition: none;
+  }
+  /* Let list-row feedback reach the screen edges while keeping its content aligned. */
+  .sidebar > nav {
+    margin-inline: -16px;
+  }
+  .app .agent-row,
+  .app .agent-row.selected {
+    border-radius: 0;
+    background: transparent;
+    margin: 0;
+    padding: 14px 20px;
+    position: relative;
+  }
+  .app .agent-row + .agent-row::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 86px;
+    right: 20px;
+    height: 1px;
+    background: var(--border);
+  }
+  .app .agent-row:active,
+  .app[data-page="2"] .sidebar .agent-row.selected {
+    background: var(--hover);
+  }
+  /* Touch and automatic focus transfers don't need desktop-style outlines.
+     Tab/arrow navigation restores them, including with an external keyboard. */
+  .app[data-input-modality="pointer"]
+    :is(
+      button,
+      a,
+      summary,
+      select,
+      nav,
+      input[type="radio"],
+      input[type="checkbox"]
+    ):focus {
+    outline: none;
+  }
+  .app[data-input-modality="pointer"] .settings-choice:focus-within {
+    outline: none;
+  }
+  .app :is(button, a, summary) {
+    -webkit-tap-highlight-color: transparent;
+  }
+  .agent-row strong {
+    max-width: none;
+  }
+  .agent-row .agent-preview {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
+  .sidebar-bottom {
+    min-height: 56px;
+    padding-top: 8px;
+  }
+  .sidebar-bottom > span {
+    font-size: 12px;
+  }
+  .sidebar-bottom > span small {
+    display: none;
+  }
+  dialog.native-sheet {
+    top: auto;
+    bottom: var(--sheet-keyboard-inset, 0px);
+    border-radius: 30px 30px 0 0;
+    padding: 0;
+    max-height: calc(
+      var(--sheet-viewport-height, 100dvh) - max(16px, env(safe-area-inset-top))
+    );
+    transform: translateY(100%);
+    opacity: 1;
+    filter: none;
+    transition: transform 320ms cubic-bezier(0.22, 0.7, 0.2, 1);
+  }
+  dialog.native-sheet.is-open {
+    transform: translateY(var(--sheet-drag, 0px));
+  }
+  dialog.native-sheet.is-closing {
+    transform: translateY(100%);
+    transition-duration: 240ms;
+  }
+  dialog.native-sheet[data-dragging="true"] {
+    transition: none;
+  }
+  dialog.native-sheet[data-detent="medium"] {
+    height: min(620px, calc(var(--sheet-viewport-height, 100dvh) * 0.68));
+  }
+  dialog.native-sheet[data-detent="large"],
+  dialog.native-sheet[data-expanded="true"] {
+    height: calc(
+      var(--sheet-viewport-height, 100dvh) - max(16px, env(safe-area-inset-top))
+    );
+  }
+  .sheet-handle {
+    display: flex;
+    justify-content: center;
+    flex-shrink: 0;
+    touch-action: none;
+    height: 44px;
+  }
+  .sheet-grabber {
+    background: transparent;
+    width: 100%;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  .sheet-grabber span {
+    display: block;
+    width: 36px;
+    height: 5px;
+    background: var(--muted);
+    opacity: 0.35;
+    border-radius: 5px;
+  }
+  .native-sheet .modal-heading {
+    min-height: 52px;
+    padding-top: 0;
+  }
+  .native-sheet .modal-body {
+    padding: 20px 16px max(24px, env(safe-area-inset-bottom));
+  }
+  .native-sheet .modal-body > * {
+    max-width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app.t-page-slide > .t-page,
+  dialog.native-sheet,
+  .native-sheet::backdrop {
+    transition: none !important;
+  }
+  .native-sheet .sheet-page {
+    animation: none;
+  }
+}
+
+/* A single, quiet work disclosure replaces the separate spinner/tool groups. */
+.work-activity {
+  margin: 6px 0 0;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+/* The work row already supplies its own spacing; do not add the normal
+   assistant-message inset below it as well. */
+.timeline
+  > :is(.work-activity, div:has(> .work-activity))
+  + div:has(.message.from-agent) {
+  padding-top: 0;
+}
+.work-activity > summary,
+.work-step > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
+  list-style: none;
+}
+.work-activity summary::-webkit-details-marker {
+  display: none;
+}
+.work-activity summary:hover {
+  color: var(--text);
+}
+.work-activity summary > svg {
+  flex-shrink: 0;
+}
+.work-chevron {
+  transition: transform 140ms ease;
+}
+.work-activity[open] > summary > .work-chevron,
+.work-step[open] > summary > .work-chevron {
+  transform: rotate(90deg);
+}
+.work-activity-items {
+  padding: 0;
+}
+.work-step > summary {
+  min-height: 36px;
+}
+.work-thinking {
+  margin-bottom: 4px;
+}
+.work-thinking-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.work-thinking .message-text {
+  padding: 2px 0 4px 24px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.work-thinking > .subtle,
+.work-demo {
+  margin: 2px 0 6px 24px;
+  font-size: 13px;
+}
+.work-step-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-step-details {
+  margin: 4px 0 8px 24px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+.work-step-details h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.work-step-details pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .work-chevron {
+    transition: none;
+  }
+}
+
+/* Shared by the inbox and conversation: stronger light/dark bands around a
+   bright highlight, without changing the normal, static text fallback. */
+.work-status-sheen {
+  --work-sheen-shadow: #70707d;
+  --work-sheen-highlight: #fff;
+}
+:root[data-theme="light"] .work-status-sheen {
+  --work-sheen-shadow: #08080b;
+  --work-sheen-highlight: #bcbcc6;
+}
+/* Text-only sheen: no layout changes, and plain text remains the fallback for
+   reduced motion, forced colors, or browsers without text clipping support. */
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  @supports (background-clip: text) or (-webkit-background-clip: text) {
+    .work-status-sheen {
+      background-image: linear-gradient(
+        100deg,
+        var(--muted) 36%,
+        var(--work-sheen-shadow) 44%,
+        var(--work-sheen-highlight) 50%,
+        var(--work-sheen-shadow) 56%,
+        var(--muted) 64%
+      );
+      background-size: 240% 100%;
+      background-repeat: no-repeat;
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      animation: work-text-sheen 2.8s linear infinite;
+    }
+  }
+}
+@keyframes work-text-sheen {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+/* Pending messages live outside the timeline, so supply the gaps that normal
+   transcript rows get from the timeline rather than letting their edges touch. */
+.app .conversation > .pending-message {
+  margin: 16px 0 0;
+  gap: 4px;
+}
+/* Keep a compact gap between the trailing work row and a queued message. */
+.app .timeline:has(.is-working) + .pending-message {
+  margin-top: 8px;
+}
+.app .pending-message .message-delivery {
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  line-height: 20px;
+}
+.app .pending-message .message-delivery > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* An action button semantically, but visually a compact blue text link. */
+.app .pending-message .message-delivery > button {
+  position: relative;
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font: inherit;
+}
+.app
+  .pending-message
+  .message-delivery
+  > button:not(:disabled):is(:hover, :focus-visible) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* A little extra hit area without inflating the visible link or its row. */
+.app .pending-message .message-delivery > button::after {
+  content: "";
+  position: absolute;
+  inset: -2px 0;
+}
+
+/* An activity arc around the avatar, distinct from unread/attention dots. */
+.agent-avatar {
+  display: inline-flex;
+  position: relative;
+  flex-shrink: 0;
+  line-height: 0;
+}
+.agent-avatar:is(.is-working, .is-waiting)::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.agent-avatar.is-waiting::after {
+  border-top-color: #c58a28;
+  border-right-color: #c58a28;
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .agent-avatar.is-working::after {
+    animation: agent-working-arc 2.8s linear infinite;
+  }
+}
+.sidebar[inert] .agent-avatar::after,
+.sidebar[inert] .work-status-sheen {
+  animation-play-state: paused;
+}
+@keyframes agent-working-arc {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (forced-colors: active) {
+  .agent-avatar:is(.is-working, .is-waiting)::after {
+    forced-color-adjust: none;
+    border-top-color: Highlight;
+    border-right-color: Highlight;
+  }
+}

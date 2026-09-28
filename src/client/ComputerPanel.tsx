@@ -1,0 +1,171 @@
+import { Modal } from "./Modal";
+import { useEffect, useRef, useState } from "react";
+import { X, Monitor, RotateCw } from "lucide-react";
+import type { ComputerState } from "../shared/types";
+import { api, control } from "./api";
+export function ComputerPanel({
+  onClose,
+  onChange,
+}: {
+  onClose: () => void;
+  onChange: () => void;
+}) {
+  const screen = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<ComputerState | null>(null),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [revision, setRevision] = useState(0),
+    [connected, setConnected] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    void control<ComputerState>("/computer/start")
+      .then((s) => {
+        if (!dead) setState(s);
+      })
+      .catch((e) => {
+        if (!dead) setError(e.message);
+      });
+    const timer = setInterval(() => {
+      void api<ComputerState>("/computer")
+        .then((s) => {
+          if (!dead) setState(s);
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => {
+      dead = true;
+      clearInterval(timer);
+    };
+  }, []);
+  const ready = state?.status === "ready",
+    owned = state?.owned ?? false,
+    privateScreen = state?.control === "human" && !owned;
+  useEffect(() => {
+    if (!ready || privateScreen || !screen.current) return;
+    let dead = false,
+      rfb: import("@novnc/novnc/lib/rfb").default | undefined;
+    setConnected(false);
+    setError("");
+    void (async () => {
+      try {
+        const [{ default: RFB }, { ticket }] = await Promise.all([
+          import("@novnc/novnc"),
+          control<{ ticket: string }>("/computer/ticket", {
+            mode: owned ? "control" : "view",
+          }),
+        ]);
+        if (dead) return;
+        const url = new URL("/api/computer/socket", location.href);
+        url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("ticket", ticket);
+        rfb = new RFB(screen.current!, url.href);
+        rfb.viewOnly = !owned;
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.addEventListener("connect", () => {
+          if (!dead) setConnected(true);
+        });
+        rfb.addEventListener("disconnect", () => {
+          if (!dead) setConnected(false);
+        });
+        rfb.addEventListener("securityfailure", () => {
+          if (!dead)
+            setError("Desktop connection was refused. Reconnect to try again.");
+        });
+      } catch (e) {
+        if (!dead) setError((e as Error).message);
+      }
+    })();
+    return () => {
+      dead = true;
+      rfb?.disconnect();
+      screen.current?.replaceChildren();
+    };
+  }, [ready, owned, privateScreen, revision]);
+  async function action(name: "take" | "release") {
+    setBusy(true);
+    setError("");
+    try {
+      setState(await control<ComputerState>(`/computer/${name}`));
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function reconnect() {
+    setError("");
+    try {
+      setState(await control<ComputerState>("/computer/start"));
+      setRevision((v) => v + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  return (
+    <Modal title="Agent computer" onClose={onClose} kind="panel" className="computer-panel">
+      <div className="computer-toolbar">
+        <span>
+          {owned
+            ? "You have control · Agent browser tools paused"
+            : privateScreen
+              ? "Private session · Take control to sign in"
+              : connected
+                ? "Viewing · Agent has control"
+                : "Connecting to desktop…"}
+        </span>
+        <div>
+          {owned ? (
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => void action("release")}
+            >
+              Return to agent
+            </button>
+          ) : (
+            <button
+              className="primary"
+              disabled={busy || !ready}
+              onClick={() => void action("take")}
+            >
+              Take control
+            </button>
+          )}
+          <button
+            aria-label="Reconnect desktop"
+            className="icon"
+            onClick={() => void reconnect()}
+          >
+            <RotateCw size={16} />
+          </button>
+        </div>
+      </div>
+      {(error || state?.error) && (
+        <p role="alert" className="error-text">
+          {error || state?.error}
+        </p>
+      )}
+      <div
+        className="computer-screen"
+        ref={screen}
+        style={{ display: privateScreen ? "none" : undefined }}
+      />
+      {privateScreen && (
+        <div className="computer-private">
+          <Monitor size={32} />
+          <p>
+            The agent cannot see or interact with this browser during a private
+            handoff.
+          </p>
+        </div>
+      )}
+      <p className="subtle">
+        {owned
+          ? "Sign in directly in the browser. Closing this panel keeps you in control until you explicitly return it."
+          : "Take control to use the browser. Website sessions stay on this Jelly computer."}
+      </p>
+    </Modal>
+  );
+}

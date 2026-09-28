@@ -1,0 +1,76 @@
+<div id="jelly-motion-preview" aria-label="Jelly working animation preview">
+  <style>
+    #jelly-motion-preview { --jelly-blue:#1672f8; --jelly-ink:#14243a; --jelly-muted:#65758b; --jelly-surface:#fff; --jelly-line:#e6edf5; --jelly-speed:2.8s; color-scheme:light; font-family:ui-rounded,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--jelly-ink); }
+    #jelly-motion-preview * { box-sizing:border-box; }
+    #jelly-motion-preview .jm-window { max-width:660px; margin:auto; background:var(--jelly-surface); border:1px solid var(--jelly-line); border-radius:24px; overflow:hidden; }
+    #jelly-motion-preview .jm-header { display:flex; gap:12px; align-items:center; padding:18px 22px; border-bottom:1px solid var(--jelly-line); }
+    #jelly-motion-preview .jm-name { font-size:16px; font-weight:600; }
+    #jelly-motion-preview .jm-sub { font-size:13px; color:var(--jelly-muted); margin-top:3px; }
+    #jelly-motion-preview .jm-avatar { display:grid;place-items:center;width:42px;height:42px;border-radius:50%;background:#e5f4ff; }
+    #jelly-motion-preview .jm-avatar-face { position:relative;width:25px;height:23px;border-radius:55% 55% 35% 35%;background:#8dceff; }
+    #jelly-motion-preview .jm-avatar-face:before { content:"";position:absolute;left:6px;top:12px;width:3px;height:3px;border-radius:50%;background:#163f6f;box-shadow:10px 0 #163f6f; }
+    #jelly-motion-preview .jm-chat { padding:24px; }
+    #jelly-motion-preview .jm-user { margin-left:auto;max-width:85%;width:fit-content;background:var(--jelly-blue);color:white;border-radius:19px 19px 5px 19px;padding:12px 16px;font-size:15px;line-height:1.5; }
+    #jelly-motion-preview .jm-reply { display:flex;gap:14px;align-items:center;min-height:108px;padding:26px 0 12px; }
+    #jelly-motion-preview .jm-status {font-size:15px;font-weight:500; }
+    #jelly-motion-preview .jm-detail {font-size:13px;color:var(--jelly-muted);margin-top:5px; }
+    #jelly-motion-preview .jm-swim {width:38px;height:46px;position:relative;flex:none;}
+    #jelly-motion-preview .jm-creature {position:absolute;inset:0;animation:jm-float var(--jelly-speed) ease-in-out infinite;}
+    #jelly-motion-preview .jm-bell {position:absolute;left:3px;top:5px;width:32px;height:27px;background:linear-gradient(145deg,#c3edff,#77bfff);border-radius:55% 55% 30% 30%;box-shadow:inset 0 2px 2px #e7f8ff;z-index:2;transform-origin:center bottom;animation:jm-pulse var(--jelly-speed) ease-in-out infinite;}
+    #jelly-motion-preview .jm-bell:before {content:"";position:absolute;left:8px;top:15px;width:3px;height:4px;border-radius:50%;background:#164979;box-shadow:13px 0 #164979;}
+    #jelly-motion-preview .jm-smile {position:absolute;left:14px;top:19px;width:6px;height:4px;border-bottom:1.5px solid #164979;border-radius:50%;}
+    #jelly-motion-preview .jm-tentacle {position:absolute;top:26px;left:7px;width:6px;height:14px;background:#8bceff;border-radius:0 0 70% 70%;transform-origin:top center;animation:jm-sway var(--jelly-speed) ease-in-out infinite;}
+    #jelly-motion-preview .jm-tentacle:nth-child(2) {left:14px;height:18px;animation-delay:-.3s;}
+    #jelly-motion-preview .jm-tentacle:nth-child(3) {left:21px;height:16px;animation-delay:-.6s;}
+    #jelly-motion-preview .jm-tentacle:nth-child(4) {left:28px;height:12px;animation-delay:-.9s;}
+    #jelly-motion-preview .jm-bubble {position:absolute;right:-4px;top:17px;width:5px;height:5px;border:1px solid #93caff;border-radius:50%;opacity:0;animation:jm-bubble 4.5s ease-out infinite;}
+    #jelly-motion-preview .jm-composer {display:flex;align-items:center;gap:12px;margin-top:10px;border:1px solid var(--jelly-line);border-radius:26px;padding:7px;background:#f9fbfe;}
+    #jelly-motion-preview .jm-plus {font-size:24px;width:30px;text-align:center;color:var(--jelly-muted);}
+    #jelly-motion-preview .jm-placeholder {font-size:15px;flex:1;color:var(--jelly-muted);}
+    #jelly-motion-preview .jm-action {border:0;flex:none;width:40px;height:40px;border-radius:50%;background:var(--jelly-blue);color:white;cursor:pointer;display:grid;place-items:center;font-size:22px;}
+    #jelly-motion-preview .jm-stop {display:block;width:12px;height:12px;border-radius:3px;background:white;}
+    #jelly-motion-preview .jm-controls {display:flex;align-items:center;gap:18px;max-width:660px;margin:12px auto 0;font-size:13px;color:var(--jelly-muted);flex-wrap:wrap;}
+    #jelly-motion-preview .jm-controls button {font:inherit;color:var(--jelly-blue);background:transparent;border:0;padding:10px 0;cursor:pointer;min-height:44px;}
+    #jelly-motion-preview .jm-controls label {display:flex;gap:8px;align-items:center;min-height:44px;}
+    #jelly-motion-preview[data-working="false"] .jm-creature, #jelly-motion-preview[data-working="false"] .jm-bell, #jelly-motion-preview[data-working="false"] .jm-tentacle, #jelly-motion-preview[data-working="false"] .jm-bubble,
+    #jelly-motion-preview[data-reduced="true"] .jm-creature, #jelly-motion-preview[data-reduced="true"] .jm-bell, #jelly-motion-preview[data-reduced="true"] .jm-tentacle, #jelly-motion-preview[data-reduced="true"] .jm-bubble {animation:none;}
+    @media(prefers-reduced-motion:reduce) { #jelly-motion-preview .jm-creature, #jelly-motion-preview .jm-bell, #jelly-motion-preview .jm-tentacle, #jelly-motion-preview .jm-bubble {animation:none;} }
+    @media(max-width:400px) {#jelly-motion-preview .jm-chat {padding:18px;} #jelly-motion-preview .jm-header {padding:16px 18px;} }
+    @keyframes jm-float {0%,100%{transform:translateY(2px)}45%{transform:translateY(-3px)}}
+    @keyframes jm-pulse {0%,100%{transform:scale(1,1)}35%{transform:scale(.94,1.06)}65%{transform:scale(1.04,.96)}}
+    @keyframes jm-sway {0%,100%{transform:rotate(-9deg)}50%{transform:rotate(10deg)}}
+    @keyframes jm-bubble {0%,55%{opacity:0;transform:translateY(4px) scale(.7)}65%{opacity:.65}95%,100%{opacity:0;transform:translateY(-16px) scale(1)}}
+  </style>
+  <div class="jm-window">
+    <div class="jm-header"><div class="jm-avatar" aria-hidden="true"><div class="jm-avatar-face"></div></div><div><div class="jm-name">Jelly</div><div class="jm-sub">General assistant</div></div></div>
+    <div class="jm-chat">
+      <div class="jm-user">Find a little inspiration for my week.</div>
+      <div class="jm-reply">
+        <div class="jm-swim" aria-hidden="true"><div class="jm-creature"><span class="jm-tentacle"></span><span class="jm-tentacle"></span><span class="jm-tentacle"></span><span class="jm-tentacle"></span><div class="jm-bell"><span class="jm-smile"></span></div></div><span class="jm-bubble"></span></div>
+        <div role="status" aria-live="polite"><div class="jm-status">Jelly is working</div><div class="jm-detail">Gathering a few ideas</div></div>
+      </div>
+      <div class="jm-composer"><span class="jm-plus" aria-hidden="true">+</span><span class="jm-placeholder">Message Jelly</span><button class="jm-action" type="button" aria-label="Stop preview"><span class="jm-stop"></span></button></div>
+    </div>
+  </div>
+  <div class="jm-controls"><button type="button" class="jm-replay">Replay working state</button><label><input class="jm-reduced" type="checkbox"> Reduced motion</label></div>
+  <script>
+    (()=>{
+      const root=document.getElementById('jelly-motion-preview');
+      const state={working:true,reduced:false,seconds:2.8};
+      const action=root.querySelector('.jm-action');
+      function render(){
+        root.dataset.working=String(state.working);root.dataset.reduced=String(state.reduced);root.style.setProperty('--jelly-speed',state.seconds+'s');
+        root.querySelector('.jm-status').textContent=state.working?'Jelly is working':'Jelly is ready';
+        root.querySelector('.jm-detail').textContent=state.working?'Gathering a few ideas':'Motion settles when work stops';
+        root.querySelector('.jm-reduced').checked=state.reduced;
+        action.setAttribute('aria-label',state.working?'Stop preview':'Replay working state');
+        action.innerHTML=state.working?'<span class="jm-stop"></span>':'↻';
+      }
+      action.addEventListener('click',()=>{state.working=!state.working;render();});
+      root.querySelector('.jm-replay').addEventListener('click',()=>{state.working=true;render();});
+      root.querySelector('.jm-reduced').addEventListener('change',e=>{state.reduced=e.target.checked;render();});
+      render();
+      if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:render});tweak.addSlider(state,'seconds',{label:'Pulse duration',min:1.8,max:4,step:.1,unit:'s'});tweak.addToggle(state,'working',{label:'Working'});}
+    })();
+  </script>
+</div>

@@ -1,0 +1,10 @@
+# Keep all standard detectors enabled. Only these literal test fixtures are exempt.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credentials used by authentication/redaction tests"
+condition = "AND"
+paths = ['''(^|/)tests/(connections|interventions)\.test\.ts$''']
+regexTarget = "secret"
+regexes = ['''^(sk-test-private-key-123456789|test-private-92847)$''']

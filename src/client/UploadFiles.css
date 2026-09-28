@@ -1,0 +1,11 @@
+.upload-dialog {
+  overflow-wrap: anywhere;
+}
+
+.upload-files {
+  max-height: 160px;
+  overflow-y: auto;
+  padding-left: 20px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}

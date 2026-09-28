@@ -1,0 +1,21 @@
+# Phase 1 — Local foundation delivered
+
+| Completed requirement                 | Implementation                                                                                                          | Verification                                                                                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Bun server and React client           | [Server](../src/server/app.ts), [client](../src/client/App.tsx), Vite proxy and production static serving               | TypeScript, production build, HTTP and React integration coverage                                                 |
+| Server-owned execution                | [JellyService](../src/server/service.ts) accepts prompts independently of client requests                               | Asynchronous runs, stop, failures and concurrent-run rejection                                                    |
+| Pi agent harness                      | [Harness](../src/server/harness.ts) uses real Pi sessions, including the credential-free demo                           | Demo executes the real tool loop; local Responses fixture covers provider transport                               |
+| OpenAI-first access                   | ChatGPT, API and demo provider selection; server-side credentials                                                       | Preference, missing-credential and adapter tests; expanded connection delivery in [Phase 2](02-core-workspace.md) |
+| Local SQLite state                    | [Store](../src/server/store.ts) owns stable instance identity, agents, configuration, runs, messages and durable events | Agent isolation, idempotency, forced-process restart and continuation tests                                       |
+| Parent history ownership              | In-memory Pi sessions reconstruct successful parent runs from SQLite                                                    | Context and restart tests; child plugin artifacts have separate ownership                                         |
+| Activity at turn/tool boundaries      | Durable SSE for tool start/end, completed messages, turn completion and status; no text deltas                          | Live/replayed event order and Pi turn-boundary coverage                                                           |
+| Client-independent work and reconnect | Server continues when browser closes; snapshots and event cursors restore the client                                    | API/SSE recovery and client integration coverage                                                                  |
+| Restart handling                      | Unfinished runs become interrupted; completed history survives                                                          | Fresh-process restart coverage; no automatic tool replay                                                          |
+| Grok Bot-inspired workspace           | Agent sidebar, conversation, compact header and rounded composer                                                        | [Design references](../docs/DESIGN.md), React integration and compiled production bundle                          |
+| System, light and dark appearance     | Shared theme tokens, saved selection and OS preference handling                                                         | Explicit modes, system selection and remount persistence tests                                                    |
+
+## Verification boundary
+
+`bun run check` covers local fixture-driven server and React integration tests, type checking and the production build. React tests use Happy DOM; optional WebMCP contracts use a fixture. Those checks do not establish real-browser visual or native WebMCP compatibility. Remaining validation is tracked in [Phase 2](../plans/02-validation.md).
+
+The stable instance identity, browser-independent execution and local reconnect/replay requirements from the original remote phase are complete here. Authenticated remote connections remain a separate delivery.

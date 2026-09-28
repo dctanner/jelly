@@ -1,0 +1,322 @@
+[
+  {
+    "id": "desktop-chat",
+    "title": "Conversation · desktop",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "mobile-inbox",
+    "title": "Agents · mobile",
+    "state": "inbox",
+    "device": "mobile",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "mobile-chat",
+    "title": "Conversation · mobile",
+    "state": "ready",
+    "device": "mobile",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "tablet-chat",
+    "title": "Conversation · tablet",
+    "state": "ready",
+    "device": "tablet",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "dark-chat",
+    "title": "Conversation · dark",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "dark",
+    "dialog": null
+  },
+  {
+    "id": "project-switcher",
+    "title": "Switch project",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "switcher"
+  },
+  {
+    "id": "project-empty",
+    "title": "Empty project",
+    "state": "project-empty",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "create-project",
+    "title": "Create project",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "create-project"
+  },
+  {
+    "id": "folder-browser",
+    "title": "Choose project folder",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "folder-browser"
+  },
+  {
+    "id": "folder-error",
+    "title": "Folder unavailable",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "folder-error"
+  },
+  {
+    "id": "project-settings",
+    "title": "Project settings",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "project-settings"
+  },
+  {
+    "id": "delete-project",
+    "title": "Delete project",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "delete-project"
+  },
+  {
+    "id": "move-agent",
+    "title": "Move agent",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "move-agent"
+  },
+  {
+    "id": "create-agent",
+    "title": "Create agent · inherited folder",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "create-agent"
+  },
+  {
+    "id": "avatar-picker",
+    "title": "Choose sea avatar",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "avatar-picker"
+  },
+  {
+    "id": "edit-agent",
+    "title": "Agent profile",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "edit-agent"
+  },
+  {
+    "id": "archived-agent",
+    "title": "Archived agents",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "archived"
+  },
+  {
+    "id": "archive-empty",
+    "title": "Empty archive",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "archive-empty"
+  },
+  {
+    "id": "agent-empty",
+    "title": "New conversation",
+    "state": "agent-empty",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "chat-loading",
+    "title": "Loading conversation",
+    "state": "loading",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "working",
+    "title": "Agent working",
+    "state": "working",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "streaming",
+    "title": "Streaming response",
+    "state": "streaming",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "tool-expanded",
+    "title": "Tool activity",
+    "state": "tool",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "long-message",
+    "title": "Long response & code",
+    "state": "long",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "waiting-sudo",
+    "title": "Approval needed",
+    "state": "sudo",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "waiting-browser",
+    "title": "Browser handoff",
+    "state": "handoff",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "run-error",
+    "title": "Run failed",
+    "state": "error",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "interrupted",
+    "title": "Interrupted after restart",
+    "state": "interrupted",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "cancelling",
+    "title": "Stopping work",
+    "state": "cancelling",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "cancelled",
+    "title": "Stopped by you",
+    "state": "cancelled",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "offline",
+    "title": "Offline · retained draft",
+    "state": "offline",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "reconnecting",
+    "title": "Reconnecting",
+    "state": "reconnecting",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "history-loading",
+    "title": "Earlier messages",
+    "state": "history",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "settings",
+    "title": "Settings",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "settings"
+  },
+  {
+    "id": "connection-required",
+    "title": "Connect an account",
+    "state": "connection",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": null
+  },
+  {
+    "id": "login-waiting",
+    "title": "Complete sign-in",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "login"
+  },
+  {
+    "id": "api-error",
+    "title": "Connection error",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "api-error"
+  },
+  {
+    "id": "computer-ready",
+    "title": "Computer ready",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "computer"
+  },
+  {
+    "id": "computer-human",
+    "title": "Computer · your turn",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "computer-human"
+  },
+  {
+    "id": "computer-error",
+    "title": "Computer unavailable",
+    "state": "ready",
+    "device": "desktop",
+    "theme": "light",
+    "dialog": "computer-error"
+  }
+]

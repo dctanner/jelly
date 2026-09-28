@@ -1,0 +1,54 @@
+{
+  "name": "jelly",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "build": "vite build",
+    "start": "bun src/server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun run test:server && bun run test:client && bun run test:capabilities",
+    "check": "bun run typecheck && bun run test && bun run build",
+    "login": "bun scripts/login.ts",
+    "test:server": "bun test tests/fresh-session.test.ts tests/computer-pages.test.ts tests/server.test.ts tests/openai.test.ts tests/restart.test.ts tests/interventions.test.ts tests/connections.test.ts tests/projects.test.ts tests/mcps.test.ts tests/web-tools.test.ts tests/uploads.test.ts tests/image-generation.test.ts tests/tool-images.test.ts tests/rendered-files.test.ts",
+    "test:history-scroll": "bun run build && bun tests/history-scroll.browser.ts",
+    "test:client": "bun test tests/client.test.tsx",
+    "format": "prettier --write src scripts tests *.json *.ts *.html *.md docs/*.md plans/*.md plans_done/*.md",
+    "setup:desktop": "bun scripts/setup-desktop.ts",
+    "test:desktop": "bun test tests/computer.test.ts",
+    "test:capabilities": "bun test tests/capabilities.test.ts",
+    "dev:tailscale": "JELLY_TAILSCALE=1 bun scripts/dev.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@novnc/novnc": "^1.7.0",
+    "lucide-react": "^0.468.0",
+    "mcporter": "0.14.0",
+    "pi-subagents": "0.71.0",
+    "playwright-core": "^1.63.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/bun": "^1.3.9",
+    "@types/novnc__novnc": "^1.6.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.1.2",
+    "eventsource": "^5.1.2",
+    "happy-dom": "^20.14.5",
+    "prettier": "^3.9.8",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "ws": "^8.21.3"
+  },
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.3.9"
+  }
+}

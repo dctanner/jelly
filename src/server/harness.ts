@@ -1,0 +1,315 @@
+import { Mcps } from "./mcps";
+import { ChatGPTTransport } from "./chatgpt-transport";
+import { GeneratedImages, imageGenerationTool } from "./image-generation";
+import { RenderedFiles, renderFileTool } from "./rendered-files";
+import { webTools, WEB_RESEARCH_INSTRUCTIONS } from "./web-tools";
+import { SessionWork } from "./session-work";
+import { ALL_PI_TOOLS, preparePi } from "./pi-setup";
+import { JellyAuth } from "./auth";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_EFFORT,
+  type ModelId,
+  type Effort,
+} from "../shared/models";
+import { effectiveCwd } from "./directories";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { Type } from "typebox";
+import {
+  ModelRuntime,
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRegistry,
+  estimateTokens,
+  SessionManager,
+  SettingsManager,
+  initTheme,
+  type AgentSession,
+  type FileEntry,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
+import type { AgentRecord, ConnectionConfig, Mode } from "../shared/types";
+import { demoModel, demoStream } from "./demo";
+
+export class Harness {
+  private sessions = new WeakMap<AgentSession, SessionWork>();
+  readonly chatgptTransport = new ChatGPTTransport();
+  readonly images: GeneratedImages;
+  readonly files: RenderedFiles;
+  readonly auth: JellyAuth;
+  readonly registry: ModelRegistry;
+  readonly mcps: Mcps;
+  private constructor(
+    readonly dataDir: string,
+    readonly runtime: ModelRuntime,
+    authPath: string,
+    readonly demoDelayMs = 220,
+    readonly demoFail = false,
+    configDir?: string,
+  ) {
+    this.images = new GeneratedImages(dataDir);
+    this.files = new RenderedFiles(dataDir);
+    this.mcps = new Mcps(configDir);
+    this.auth = new JellyAuth(runtime, authPath);
+    this.registry = new ModelRegistry(runtime);
+    runtime.registerProvider("jelly-demo", {
+      api: "openai-responses",
+      baseUrl: demoModel.baseUrl,
+      apiKey: "local-demo",
+      models: [demoModel],
+      streamSimple: demoStream(demoDelayMs, demoFail),
+    });
+  }
+  static async create(
+    dataDir: string,
+    authPath = join(dataDir, "auth.json"),
+    demoDelayMs = 220,
+    demoFail = false,
+    configDir?: string,
+  ) {
+    preparePi(dataDir);
+    const runtime = await ModelRuntime.create({
+      authPath,
+      modelsPath: null,
+      allowModelNetwork: false,
+    });
+    return new Harness(dataDir, runtime, authPath, demoDelayMs, demoFail, configDir);
+  }
+  config(
+    mode: Mode,
+    settings: { model: ModelId; effort: Effort } = {
+      model: DEFAULT_MODEL,
+      effort: DEFAULT_EFFORT,
+    },
+  ): ConnectionConfig {
+    this.auth.reload();
+    const chatgptReady = this.auth.hasAuth("openai-codex");
+    const apiReady = this.auth.hasAuth("openai");
+    const activeMode =
+      mode === "auto"
+        ? chatgptReady
+          ? "chatgpt"
+          : apiReady
+            ? "api"
+            : "demo"
+        : mode;
+    const provider =
+      activeMode === "demo"
+        ? "jelly-demo"
+        : activeMode === "chatgpt"
+          ? "openai-codex"
+          : "openai";
+    const model = activeMode === "demo" ? "local-demo" : settings.model;
+    return {
+      mode,
+      selectedModel: settings.model,
+      effort: settings.effort,
+      activeMode,
+      provider,
+      model,
+      chatgptReady,
+      apiReady,
+      notice:
+        activeMode === "demo"
+          ? "Local demo · No account needed"
+          : activeMode === "chatgpt"
+            ? "ChatGPT subscription"
+            : "OpenAI API · Usage billed separately",
+    };
+  }
+  async create(
+    agent: AgentRecord,
+    history: Message[],
+    config: ConnectionConfig,
+    instance: { id: string; name: string },
+    extraTools: ToolDefinition[] = [],
+    report: (type: string, data: Record<string, unknown>) => void = () => {},
+    context: FileEntry[] | null = null,
+  ): Promise<AgentSession> {
+    if (config.activeMode === "chatgpt" && !config.chatgptReady)
+      throw new Error(
+        "ChatGPT is not connected. Open Connection settings to connect ChatGPT, or choose Local demo.",
+      );
+    if (config.activeMode === "api" && !config.apiReady)
+      throw new Error(
+        "No OpenAI API key is configured. Open Connection settings to enter a key, or choose Local demo.",
+      );
+    let model =
+      config.activeMode === "demo"
+        ? demoModel
+        : this.registry.find(config.provider, config.model);
+    if (!model)
+      throw new Error(
+        `Model ${config.provider}/${config.model} is not in the installed Pi catalog. Choose a supported model in Connection settings.`,
+      );
+    const cwd = effectiveCwd(agent);
+    const settingsManager = SettingsManager.create(cwd, this.dataDir, {
+      projectTrusted: true,
+    });
+    const applySettings = () => settingsManager.applyOverrides({
+      defaultTools: ALL_PI_TOOLS,
+      transport: config.activeMode === "chatgpt" ? "websocket-cached" : "sse",
+      defaultThinkingLevel:
+        config.activeMode === "demo" ? "off" : config.effort,
+      defaultProjectTrust: "always",
+      compaction: { enabled: config.activeMode !== "demo" },
+      retry: { enabled: false },
+    });
+    applySettings();
+    const work = new SessionWork(report);
+    const loader = new DefaultResourceLoader({
+      eventBus: work.bus,
+      cwd,
+      agentDir: this.dataDir,
+      settingsManager,
+      additionalExtensionPaths: [
+        fileURLToPath(import.meta.resolve("pi-subagents")),
+      ],
+      systemPrompt: `You are ${agent.name}, a persistent agent in Jelly.\n${agent.instructions}\nYou can inspect this Jelly instance with instance_info. All tools and subagent delegation are pre-authorized by the operator. Execute tasks directly without approval prompts. You can browse directories, read/write/edit files, run shell commands, and delegate to subagents. Use the same provider/model and effort as this parent for delegated work unless asked otherwise. Prefer foreground subagent workflows (async:false). Use the installed subagent tool schema; do not ask for delegation approval. Use render_file to show existing images or text files in chat without reading their contents into model context; no prior read call is needed. You may use all Pi tools; the workspace directory is a default working directory, not a sandbox. Use request_sudo for privileged commands; it executes automatically when the OS allows, and requests a password only if authentication is needed. Never ask for passwords in chat. Use request_browser_login when a website requires sign-in; a person will take over the browser privately and explicitly return control. Browser tools are unavailable during human control. Do not put credentials in tool arguments. Be clear about your capabilities.\n${WEB_RESEARCH_INSTRUCTIONS}\n${this.mcps.instructions()}`,
+    });
+    initTheme("dark");
+    await loader.reload();
+    // Resource loading reloads settings from disk; restore Jelly's run policy.
+    applySettings();
+    const errors = loader.getExtensions().errors;
+    if (errors.length)
+      throw new Error(
+        `Pi extension failed to load: ${errors.map((e) => e.error).join("; ")}`,
+      );
+    const sessionManager = SessionManager.inMemory(
+      cwd,
+      undefined,
+      context ?? undefined,
+    );
+    if (!context)
+      for (const message of history) sessionManager.appendMessage(message);
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir: this.dataDir,
+      model,
+      modelRuntime: this.runtime,
+      sessionManager,
+      settingsManager,
+      resourceLoader: loader,
+      thinkingLevel: config.activeMode === "demo" ? "off" : config.effort,
+      customTools: [
+        ...(config.activeMode === "chatgpt" ? [imageGenerationTool(this.runtime, model, this.images, report)] : []),
+        renderFileTool(this.files, cwd, report),
+        ...webTools(),
+        ...extraTools,
+        {
+          name: "instance_info",
+          label: "Workspace info",
+          description: "Read the current Jelly instance and agent identity.",
+          parameters: Type.Object({}),
+          execute: async () => ({
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  instance,
+                  agent: { id: agent.id, name: agent.name },
+                  runtime: "Pi",
+                  storage: "SQLite",
+                }),
+              },
+            ],
+            details: {},
+          }),
+        },
+      ],
+    });
+    await session.bindExtensions({ mode: "print" });
+    session.setActiveToolsByName(session.getAllTools().map((t) => t.name));
+    // Per-session defaults travel with the tool call, never through shared .pi files.
+    const delegate = session.agent.state.tools.find(
+      (tool) => tool.name === "subagent",
+    );
+    if (delegate) {
+      const execute = delegate.execute.bind(delegate);
+      delegate.execute = (id, value, signal, onUpdate) => {
+        const input = value as Record<string, unknown>;
+        return execute(
+          id,
+          {
+            ...input,
+            model:
+              input.model ??
+              `${config.provider}/${config.model}:${config.activeMode === "demo" ? "off" : config.effort}`,
+            sessionDir:
+              input.sessionDir ??
+              join(this.dataDir, "subagent-sessions", agent.id),
+            artifacts: input.artifacts ?? false,
+          },
+          signal,
+          onUpdate,
+        );
+      };
+    }
+    if (config.activeMode === "chatgpt") this.chatgptTransport.bind(session, agent.id);
+    else this.chatgptTransport.reset(agent.id);
+    this.sessions.set(session, work);
+    return session;
+  }
+  checkpoint(session: AgentSession): FileEntry[] {
+    const manager = session.sessionManager;
+    const active = new Set(
+      manager.buildContextEntries().map((entry) => entry.id),
+    );
+    // Drop summarized model messages from the working checkpoint, while keeping
+    // extension state and other non-message metadata. Raw history stays in SQLite.
+    const branch = manager.getBranch();
+    const retained = branch.filter(
+      (entry) =>
+        active.has(entry.id) ||
+        ![
+          "message",
+          "compaction",
+          "branch_summary",
+          "custom_message",
+          "context_edit",
+        ].includes(entry.type),
+    );
+    const entries = retained.map((entry, index) => ({
+      ...entry,
+      parentId: index ? retained[index - 1]!.id : null,
+    }));
+    return [manager.getHeader()!, ...entries];
+  }
+  async freshCheckpoint(session: AgentSession) {
+    // The same public entry point as Pi /compact; it shares the native summary
+    // generator and extension hooks with automatic context-full compaction.
+    const messages = session.sessionManager.buildSessionContext().messages;
+    const settings = session.settingsManager.getCompactionSettings(session.model);
+    if (messages.reduce((sum, message) => sum + estimateTokens(message), 0) <= settings.keepRecentTokens)
+      session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 0 } });
+    let compacted = false;
+    if (messages.length > 1 && session.sessionManager.getBranch().at(-1)?.type !== "compaction") {
+      await session.compact();
+      compacted = true;
+    }
+    // Empty/already-compacted contexts need no fabricated summary. Preserve the
+    // native projection but give it a new logical Pi session identity.
+    const entries = this.checkpoint(session);
+    entries[0] = SessionManager.inMemory(session.sessionManager.getCwd()).getHeader()!;
+    return { entries, compacted };
+  }
+  async settle(session: AgentSession) {
+    await this.sessions.get(session)?.settle(session);
+  }
+  async stop(session: AgentSession) {
+    await Promise.all([session.abort(), this.sessions.get(session)?.stop()]);
+  }
+  async dispose(session: AgentSession, keepTransport = false) {
+    const work = this.sessions.get(session);
+    try {
+      if (work) await work.dispose(session);
+      else session.dispose();
+    } finally {
+      this.chatgptTransport.release(session, keepTransport);
+      this.sessions.delete(session);
+    }
+  }
+}

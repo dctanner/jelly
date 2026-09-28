@@ -1,0 +1,98 @@
+[
+  {
+    "name": "DESCRIPTION.en_us.html",
+    "path": "ofl/nunito/DESCRIPTION.en_us.html",
+    "sha": "5bf60c6cd8582d7a38d18ceba05faa094f08a045",
+    "size": 518,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/DESCRIPTION.en_us.html?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/DESCRIPTION.en_us.html",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/5bf60c6cd8582d7a38d18ceba05faa094f08a045",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/DESCRIPTION.en_us.html",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/DESCRIPTION.en_us.html?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/5bf60c6cd8582d7a38d18ceba05faa094f08a045",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/DESCRIPTION.en_us.html"
+    }
+  },
+  {
+    "name": "METADATA.pb",
+    "path": "ofl/nunito/METADATA.pb",
+    "sha": "636d4b31326fda0b146362b2d18e126d52768262",
+    "size": 1306,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/METADATA.pb?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/METADATA.pb",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/636d4b31326fda0b146362b2d18e126d52768262",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/METADATA.pb",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/METADATA.pb?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/636d4b31326fda0b146362b2d18e126d52768262",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/METADATA.pb"
+    }
+  },
+  {
+    "name": "Nunito-Italic[wght].ttf",
+    "path": "ofl/nunito/Nunito-Italic[wght].ttf",
+    "sha": "e63b7a6b390495bfe2ec827b723b51679022b61e",
+    "size": 281832,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/Nunito-Italic[wght].ttf?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/Nunito-Italic[wght].ttf",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/e63b7a6b390495bfe2ec827b723b51679022b61e",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/Nunito-Italic%5Bwght%5D.ttf",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/Nunito-Italic[wght].ttf?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/e63b7a6b390495bfe2ec827b723b51679022b61e",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/Nunito-Italic[wght].ttf"
+    }
+  },
+  {
+    "name": "Nunito[wght].ttf",
+    "path": "ofl/nunito/Nunito[wght].ttf",
+    "sha": "2ec1f4b0676c83ef33049db87b311171699e9192",
+    "size": 276932,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/Nunito[wght].ttf?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/Nunito[wght].ttf",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/2ec1f4b0676c83ef33049db87b311171699e9192",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/Nunito%5Bwght%5D.ttf",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/Nunito[wght].ttf?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/2ec1f4b0676c83ef33049db87b311171699e9192",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/Nunito[wght].ttf"
+    }
+  },
+  {
+    "name": "OFL.txt",
+    "path": "ofl/nunito/OFL.txt",
+    "sha": "c8210f08ca3cece05b4f7baa428afe8e1abe3293",
+    "size": 4385,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/OFL.txt?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/OFL.txt",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/c8210f08ca3cece05b4f7baa428afe8e1abe3293",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/OFL.txt",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/OFL.txt?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/c8210f08ca3cece05b4f7baa428afe8e1abe3293",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/OFL.txt"
+    }
+  },
+  {
+    "name": "upstream_info.md",
+    "path": "ofl/nunito/upstream_info.md",
+    "sha": "a938ea5d92d578932e837c24d17978d07466b2ab",
+    "size": 2393,
+    "url": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/upstream_info.md?ref=main",
+    "html_url": "https://github.com/google/fonts/blob/main/ofl/nunito/upstream_info.md",
+    "git_url": "https://api.github.com/repos/google/fonts/git/blobs/a938ea5d92d578932e837c24d17978d07466b2ab",
+    "download_url": "https://raw.githubusercontent.com/google/fonts/main/ofl/nunito/upstream_info.md",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/google/fonts/contents/ofl/nunito/upstream_info.md?ref=main",
+      "git": "https://api.github.com/repos/google/fonts/git/blobs/a938ea5d92d578932e837c24d17978d07466b2ab",
+      "html": "https://github.com/google/fonts/blob/main/ofl/nunito/upstream_info.md"
+    }
+  }
+]

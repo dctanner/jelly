@@ -1,0 +1,40 @@
+node_modules/
+dist/
+.jelly/
+.env
+.env.*
+!.env.example
+*.sqlite*
+
+# Personal exports stored beside the app, not application fixtures.
+/Monzo Data Export - CSV (*.csv
+/activity.csv
+/activity [0-9]*.csv
+
+# Local instructions, service migration, and development artifacts.
+/AGENTS.md
+/AGENTS.override.md
+/scripts/restart-when-idle.sh
+/output/
+/public/generated/
+/IMG_*
+/design/archive/design-directions/current-*.png
+/design/archive/design-directions/reference-*.png
+
+# Credentials and private key material (including custom local configurations).
+mcporter.json
+mcp-auth/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local OS/editor artifacts, logs, and test/build caches.
+.DS_Store
+*.swp
+*.log
+coverage/
+playwright-report/
+test-results/
+__pycache__/
+*.pyc

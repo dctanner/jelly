@@ -1,0 +1,78 @@
+{
+  "generator": "Built-in image_gen",
+  "created": "2026-09-23",
+  "assets": [
+    {
+      "id": "jellyfish",
+      "path": "public/brand/avatars/01-jellyfish.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing jellyfish character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/01-jellyfish-working.png"
+    },
+    {
+      "id": "octopus",
+      "path": "public/brand/avatars/02-octopus.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing octopus character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/02-octopus-working.png"
+    },
+    {
+      "id": "whale",
+      "path": "public/brand/avatars/03-whale.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing whale character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/03-whale-working.png"
+    },
+    {
+      "id": "sea-turtle",
+      "path": "public/brand/avatars/04-sea-turtle.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing sea-turtle character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/04-sea-turtle-working.png"
+    },
+    {
+      "id": "crab",
+      "path": "public/brand/avatars/05-crab.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing crab character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/05-crab-working.png"
+    },
+    {
+      "id": "pufferfish",
+      "path": "public/brand/avatars/06-pufferfish.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing pufferfish character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/06-pufferfish-working.png"
+    },
+    {
+      "id": "seahorse",
+      "path": "public/brand/avatars/07-seahorse.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing seahorse character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/07-seahorse-working.png"
+    },
+    {
+      "id": "manta-ray",
+      "path": "public/brand/avatars/08-manta-ray.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing manta-ray character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/08-manta-ray-working.png"
+    },
+    {
+      "id": "starfish",
+      "path": "public/brand/avatars/09-starfish.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing starfish character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/09-starfish-working.png"
+    },
+    {
+      "id": "seal",
+      "path": "public/brand/avatars/10-seal.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing seal character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/10-seal-working.png"
+    },
+    {
+      "id": "clownfish",
+      "path": "public/brand/avatars/11-clownfish.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing clownfish character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/11-clownfish-working.png"
+    },
+    {
+      "id": "nudibranch",
+      "path": "public/brand/avatars/12-nudibranch.png",
+      "prompt": "Use case: precise-object-edit. Asset type: square working-state avatar for Jelly agent chat app. Input image 1 is the edit target: the existing nudibranch character. Create one matching working variant showing this SAME sea creature happily using an open laptop. Preserve its recognizable face, species anatomy, colors, soft rounded 3D emoji material, pastel background color and studio lighting. Repose only as needed so its own fins/flippers/claws/tentacles/body can operate the laptop; do not add human hands or arms. Place a simple unbranded slate-blue laptop centered in the lower foreground, screen facing the creature and lid back visible to viewer, occupying approximately 40% of image width. Face remains fully visible above laptop and character remains recognizable at 40px. Close, centered square composition suitable for circular avatar crop, safe margin around silhouette. One character, one laptop. No text, logos, watermark, desk, props, border, or extra characters. Return only the finished individual avatar.",
+      "destination": "public/brand/avatars/12-nudibranch-working.png"
+    }
+  ]
+}
