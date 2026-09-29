@@ -267,6 +267,16 @@ export async function startApp(options: AppOptions) {
               }
               if (action === "take")
                 return json(await service.computer.take(session.id));
+              if (action === "recover") {
+                const input = await body(req);
+                if (input.confirm !== "discard-private-desktop")
+                  throw new HttpError(400, "Confirm that the private tabs and clipboard will be discarded.");
+                const handoff = service.computer.state().handoffId;
+                // recover() synchronously revokes old ownership before cancelling the handoff.
+                const recovery = service.computer.recover(session.id);
+                if (handoff) service.interventions.cancel(handoff);
+                return json(await recovery);
+              }
               if (action === "release") {
                 const id = await service.computer.release(session.id);
                 if (id && store.intervention(id)?.status === "pending")

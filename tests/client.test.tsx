@@ -2629,3 +2629,31 @@ test("closing the private clipboard discards late results without pasting into t
     else delete (navigator as any).clipboard;
   }
 });
+
+test("lost browser control recovery requires explicit confirmation and keeps agents paused", async () => {
+  const app = await setup();
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  let state: import("../src/shared/types").ComputerState = {
+    status: "error", control: "human", owned: false, handoffId: null, error: "Session was lost",
+  };
+  let recoveries = 0;
+  app.service.computer.state = () => state;
+  app.service.computer.ensure = async () => {};
+  app.service.computer.recover = async () => {
+    recoveries++;
+    state = { ...state, status: "stopped", owned: true, error: null };
+    return state;
+  };
+  render(<ComputerPanel onClose={() => {}} onChange={() => {}} />);
+  const recover = await screen.findByRole("button", { name: "Recover lost control…" });
+  fireEvent.click(recover);
+  expect(recoveries).toBe(0);
+  expect(screen.getByText(/closes all private tabs/)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(recoveries).toBe(0);
+  fireEvent.click(screen.getByRole("button", { name: "Recover lost control…" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard private tabs and take control" }));
+  await waitFor(() => expect(recoveries).toBe(1));
+  expect(await screen.findByRole("button", { name: "Return to agent" })).toBeDefined();
+  expect(state.control).toBe("human");
+});

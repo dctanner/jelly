@@ -45,6 +45,8 @@ bun start
 
 Open **http://127.0.0.1:3100**. Stop development first; both modes use API port 3100 by default. Production has no hot reload—restart after code changes when agents are idle. Development backend reloads interrupt active runs; set `JELLY_WATCH_API=0` to disable them.
 
+Development serves only frontend source and assets; instance data, server source, and other repository files are not downloadable through Vite. Keep credentials and private files out of `public/`, `src/client/`, `src/shared/`, and `node_modules/`.
+
 ### Optional browser desktop
 
 On Debian/Ubuntu x86-64, with Google Chrome or Chromium already installed:
@@ -54,6 +56,8 @@ bun run setup:desktop
 ```
 
 Set `JELLY_BROWSER_PATH` if the browser is outside its usual system location.
+
+If browser control is stuck after a session expires or cookies are lost, open **Agent computer → Recover lost control…**. Confirming recovery disconnects the old controller, discards private tabs and the remote clipboard, and gives you a blank desktop. Website sign-ins remain stored. Agents stay paused until you explicitly return control.
 
 ### Administrator commands
 

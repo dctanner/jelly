@@ -28,6 +28,8 @@ export class Computer {
   private clipboardEnv?: NodeJS.ProcessEnv;
   private starting?: Promise<void>;
   private closing = false;
+  private recovering = false;
+  private recoveryRequired = false;
   private generation = 0;
   private tickets = new Map<
     string,
@@ -83,6 +85,8 @@ export class Computer {
     throw new Error(`Missing ${name}. Run bun run setup:desktop.`);
   }
   async ensure() {
+    if (this.recovering) throw new HttpError(409, "Desktop recovery is in progress.");
+    if (this.recoveryRequired) throw new HttpError(409, "Use Recover lost control to reset the private desktop.");
     if (this.closing) throw new HttpError(503, "Desktop is closing.");
     if (this.status === "ready") return;
     if (this.starting) return this.starting;
@@ -446,13 +450,19 @@ export class Computer {
         });
       });
     } catch (e) {
-      if (!this.owner) this.human = false;
-      this.handoff = null;
-      this.invalidate();
+      if (this.handoff === id) {
+        if (!this.owner) this.human = false;
+        this.handoff = null;
+        this.invalidate();
+      }
       throw e;
     }
   }
   async take(session: string) {
+    if (this.recoveryRequired)
+      throw new HttpError(409, "Private desktop recovery must finish before taking control.");
+    if (this.closing || this.recovering)
+      throw new HttpError(409, "Desktop is closing or recovery is in progress.");
     if (this.owner && this.owner !== session)
       throw new HttpError(409, "Another Jelly window has control.");
     this.human = true;
@@ -461,6 +471,52 @@ export class Computer {
     await this.tail;
     await this.ensure();
     return this.state(session);
+  }
+  /** Explicit destructive recovery: never hand an orphaned private screen to a new owner. */
+  async recover(session: string) {
+    if (this.closing || this.recovering)
+      throw new HttpError(409, "Desktop is closing or recovery is in progress.");
+    if (!this.human)
+      throw new HttpError(409, "The desktop is not in private control.");
+    this.recovering = true;
+    this.recoveryRequired = true;
+    this.human = true;
+    this.owner = null;
+    this.handoff = null;
+    this.invalidate();
+    return this.serial(async () => {
+      try {
+        await this.starting?.catch(() => {});
+        // A fresh X display destroys both clipboard selections and old VNC sockets.
+        await this.cleanup();
+        if (this.closing) throw new Error("Desktop is closing.");
+        this.status = "starting";
+        this.error = null;
+        this.changed();
+        await this.launch();
+        // Chrome may restore tabs. Do not expose them to the replacement owner.
+        const blank = await this.context!.newPage();
+        await blank.goto("about:blank");
+        for (const page of this.context!.pages())
+          if (page !== blank) await page.close();
+        this.page = blank;
+        if (this.closing) throw new Error("Desktop is closing.");
+        this.status = "ready";
+        this.recoveryRequired = false;
+        this.owner = session;
+        this.invalidate();
+        return this.state(session);
+      } catch {
+        await this.cleanup();
+        this.status = "error";
+        this.error = "Could not reset the private desktop. Try recovery again.";
+        // No owner and human=true deliberately keeps agent tools and viewers blocked.
+        this.invalidate();
+        throw new HttpError(503, this.error);
+      } finally {
+        this.recovering = false;
+      }
+    });
   }
   private requireClipboardOwner(session: string, generation = this.generation) {
     if (this.closing || !this.human || this.owner !== session || generation !== this.generation)

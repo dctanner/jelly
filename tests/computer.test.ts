@@ -408,3 +408,48 @@ const available =
     }
   }, 30000,
 );
+
+(available ? test : test.skip)(
+  "lost-control recovery discards private tabs and clipboard but retains website sign-in",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jelly-recovery-desktop-"));
+    symlinkSync(runtime, join(dir, "runtime"), "dir");
+    const computer = new Computer(dir);
+    const site = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
+      '<textarea autofocus style="width:500px;height:200px"></textarea>',
+      { headers: { "Content-Type": "text/html", "Set-Cookie": "fixture_session=retained; Path=/; Max-Age=3600" } },
+    ) });
+    try {
+      await computer.action("open", { url: site.url.href });
+      await computer.take("lost-session");
+      const oldContext = (computer as unknown as { context: BrowserContext }).context;
+      const page = oldContext.pages()[0]!;
+      await page.locator("textarea").fill("SYNTHETIC-PRIVATE-RECOVERY-TEXT");
+      await page.locator("textarea").press("Control+a");
+      await page.locator("textarea").press("Control+c");
+      const { ticket } = await computer.ticket("lost-session", "control");
+      let revoked = false;
+      computer.attach(() => { revoked = true; });
+      expect(await computer.recover("new-session")).toMatchObject({ owned: true, control: "human", status: "ready" });
+      expect(revoked).toBe(true);
+      expect(() => computer.consume(ticket, "lost-session")).toThrow("Expired");
+      await expect(computer.action("screenshot")).rejects.toThrow("person");
+      const context = (computer as unknown as { context: BrowserContext }).context;
+      expect(context).not.toBe(oldContext);
+      expect(context.pages().map(p => p.url())).toEqual(["about:blank"]);
+      expect((await context.cookies()).some(c => c.name === "fixture_session" && c.value === "retained")).toBe(true);
+      const blank = context.pages()[0]!;
+      await blank.goto(site.url.href);
+      await blank.locator("textarea").click({ button: "middle" });
+      expect(await blank.locator("textarea").inputValue()).toBe("");
+      await blank.locator("textarea").press("Control+v");
+      expect(await blank.locator("textarea").inputValue()).toBe("");
+      await computer.release("new-session");
+      expect(computer.state().control).toBe("agent");
+    } finally {
+      await computer.close();
+      site.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000,
+);
