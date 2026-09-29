@@ -1,5 +1,18 @@
 # Jelly
 
+**Jelly is a local multi-bot agent system**
+
+The target user is someone building an running there whole business from a single VM (inspired by https://x.com/levelsio).
+
+- Run it on your on hardware: a Mac, Linux box or VM.
+- Create as many agents as you want. Group into project directories.
+- Access the web UI locally, or setup Tailscale and use from your laptop or phone (add it to your iPhone home screen and it feels like a native app).
+- Use your existing ChatGPT subscription or API key.
+- Agents can use your local Chrome browser. If the agent needs to login somewhere, you can take control of the browser anytime (using VNC in the web UI).
+- If an agent needs sudo access, it can securely request it from you.
+- Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
+- Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
+
 <p align="center">
   <a href="https://dctanner.github.io/jelly/">
     <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
@@ -7,19 +20,6 @@
   <br>
   <a href="https://dctanner.github.io/jelly/">Watch the 65-second mobile walkthrough</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
 </p>
-
-Recorded UI animations with disposable test data; sudo execution and website sign-in are simulated.
-
-A local-first workspace for persistent AI agents. Give each agent a name, instructions, and a project folder, then chat through a simple web interface.
-
-Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
-
-- Persistent conversations, project workspaces, and background agent runs
-- File editing, shell tools, subagents, and MCP connections
-- Browser control with private sign-in handoffs; Linux desktop support
-- Administrator commands via `request_sudo`, with private password handoffs
-- File uploads, inline images, and downloadable artifacts
-- ChatGPT subscription or OpenAI API access (required)
 
 ## Quick start
 
