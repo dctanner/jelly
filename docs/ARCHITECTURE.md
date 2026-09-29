@@ -234,3 +234,30 @@ Chromium layouts with delayed authentication, legacy/new landscape/portrait imag
 failed downloads/retries, and asynchronous content growth above the viewport. It
 uses temporary data and no model requests. Chrome defaults to `/usr/bin/google-chrome`
 (or `CHROME_PATH`). Unit and component coverage also runs in `bun run check`.
+
+## Private remote clipboard
+
+The connected desktop owner gets explicit paste/copy controls. There is no
+background clipboard synchronization. `POST /api/computer/clipboard` accepts
+`operation: read|write`, requires the control cookie and CSRF token, and checks
+human ownership and generation both before and after serialized clipboard I/O.
+Responses are no-store; text never becomes timeline activity or model input.
+The managed-browser origin block still applies. VNC view/control servers retain
+`-nosel`: clipboard transfer uses this narrower human-only API, not VNC broadcasts.
+
+`xclip` accesses only the managed X display using its private Xauthority and UTF-8
+selection. Text uses stdin/stdout, not shell arguments, temporary files, or logs.
+Transfers have a 12,000-character bound and five-second deadline. The UI sends VNC
+Ctrl+V after the clipboard write succeeds, preserving the actual focused desktop
+field and paste behavior. Remote copy reads the clipboard the person has explicitly
+populated. On returning control, input sockets close first, the remote selection
+is cleared, and only then are agent browser tools re-enabled. Failed clearing
+leaves human ownership intact.
+
+Fallback forms use ChatFormCard/ChatFormActions and uncontrolled textareas; clipboard
+payloads are not React state. Fields clear before submission, on dismissal, or on
+loss of the connected owner panel. Late responses cannot paste after unmount.
+`bun run test:desktop` includes an actual X11/Chrome/VNC Unicode clipboard test;
+its older general handoff/shutdown test currently times out with Bun's server-closed
+WebSocket shutdown behavior, including with the prior release implementation. The
+clipboard test explicitly closes its VNC client before teardown.

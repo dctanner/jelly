@@ -849,7 +849,7 @@ export function App() {
         );
         target?.focus({ preventScroll: true });
       },
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 350,
+      350,
     );
     return () => window.clearTimeout(timer);
   }, [mobile, listOpen]);
@@ -1595,11 +1595,16 @@ export function App() {
               aria-haspopup="dialog"
               onClick={() => setModal("options")}
             >
-              <Avatar
-                agent={agent}
-                size="small"
-                working={agent.status === "running"}
-              />
+              <span
+                className={`agent-avatar${agent.status === "running" ? " is-working" : ""}`}
+                aria-hidden="true"
+              >
+                <Avatar
+                  agent={agent}
+                  size="small"
+                  working={agent.status === "running"}
+                />
+              </span>
               <span className="agent-identity-copy">
                 <strong>{agent.name}</strong>
                 <span className="header-status">

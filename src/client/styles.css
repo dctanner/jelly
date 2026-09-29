@@ -729,14 +729,6 @@ dialog .choice {
     opacity: 0.35;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    animation: none !important;
-  }
-}
 .status-dot.waiting {
   background: #d69b3b;
 }
@@ -1861,19 +1853,6 @@ dialog .hidden-folders {
     flex-wrap: wrap;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *:before,
-  *:after {
-    transition: none !important;
-    animation: none !important;
-    scroll-behavior: auto !important;
-  }
-  .jelly-working:after {
-    display: none;
-  }
-}
-
 .message-text {
   white-space: normal;
 }
@@ -2731,3 +2710,10 @@ main > .connection-error + .conversation {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+.remote-clipboard { margin-bottom: 14px; min-width: 0; }
+.remote-clipboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.remote-clipboard-actions button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.remote-clipboard > p { margin: 8px 0; }
+.remote-clipboard .chat-form-card { max-width: none; }
+.remote-clipboard textarea { display: block; width: 100%; margin: 8px 0 12px; resize: vertical; max-height: 200px; }

@@ -80,3 +80,17 @@ Tests use temporary data and deterministic fixtures; no paid model calls are req
 ## License
 
 [MIT](LICENSE). Bundled fonts and dependencies retain their own licenses, including noVNC (MPL-2.0).
+
+### Clipboard during browser control
+
+In **Agent computer**, choose **Take control**. Once connected, **Paste to remote**
+reads this device's text clipboard and pastes into the focused remote field.
+**Copy from remote** copies the remote clipboard back to this device; first select
+and copy text inside the remote browser. If browser permissions or HTTP prevent
+clipboard access, Jelly provides a private manual paste/select-and-copy form.
+
+Clipboard transfers are text-only, limited to 12,000 characters, and available
+only to the controlling window. They are not sent to agents, chat history, or logs.
+Returning control clears the remote clipboard; it does not clear this device's
+clipboard. The desktop runtime now requires `xclip`; run `bun run setup:desktop`
+to update an older installation if it is not already installed on the host.

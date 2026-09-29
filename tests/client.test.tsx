@@ -2386,6 +2386,26 @@ test("a connection is required to send, Settings has no demo option, and connect
   expect((input as HTMLTextAreaElement).value).toBe("Keep this draft until I connect");
 });
 
+test("modal closing keeps its animation timing when system Reduce Motion is enabled", async () => {
+  const { Modal } = await import("../src/client/Modal");
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion: reduce"), media: query,
+    addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    dispatchEvent() { return true; }, onchange: null,
+  })) as typeof window.matchMedia;
+  try {
+    let closed = 0;
+    render(<Modal title="Animated close" onClose={() => { closed++; }}>Keep the closing transition.</Modal>);
+    fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+    expect(closed).toBe(0);
+    await waitFor(() => expect(closed).toBe(1));
+  } finally {
+    window.matchMedia = original;
+  }
+});
+
 for (const chatgptReady of [true, false]) {
   test(`legacy backend connection status keeps chat ${chatgptReady ? "enabled" : "disabled"}`, async () => {
     const app = await setup();
@@ -2409,3 +2429,203 @@ for (const chatgptReady of [true, false]) {
     expect(!!screen.queryByRole("button", { name: "Connect an account" })).toBe(!chatgptReady);
   });
 }
+
+test("chat profile avatar shows a working ring only for the selected running agent", async () => {
+  const app = await setup();
+  const id = app.store.agents()[0]!.id;
+  app.store.setStatus(id, "running");
+  const other = app.service.createAgent({ name: "Pearl", instructions: "", color: "#a4c8e8" });
+  render(<App />);
+  const pill = await screen.findByRole("button", { name: "Jelly details" });
+  const ring = () => pill.querySelector(".agent-avatar.is-working");
+  expect(ring()).not.toBeNull();
+  expect(ring()!.getAttribute("aria-hidden")).toBe("true");
+  expect(ring()!.querySelector("img")!.getAttribute("src")).toContain("-working.png");
+  for (const status of ["waiting", "idle", "error", "running"] as const) {
+    app.store.setStatus(id, status);
+    app.service.emit(id, null, "agent_updated", { agent: app.store.agent(id) });
+    await screen.findByTitle(`Jelly · ${status}`);
+    expect(!!ring()).toBe(status === "running");
+  }
+  fireEvent.click(screen.getByTitle("Pearl · idle"));
+  const idlePill = await screen.findByRole("button", { name: "Pearl details" });
+  expect(idlePill.querySelector(".agent-avatar.is-working")).toBeNull();
+  expect(app.store.agent(other.id)!.status).toBe("idle");
+  fireEvent.click(screen.getByTitle("Jelly · running"));
+  const workingPill = await screen.findByRole("button", { name: "Jelly details" });
+  expect(workingPill.querySelector(".agent-avatar.is-working")).not.toBeNull();
+  fireEvent.click(workingPill);
+  expect(screen.getByRole("dialog", { name: "Jelly" })).toBeDefined();
+});
+
+test("in-chat forms use the shared iOS card with reviewable commands and accessible private fields", async () => {
+  const { InterventionCard } = await import("../src/client/InterventionCard");
+  const composer = document.createElement("input");
+  document.body.append(composer); composer.focus();
+  const command = "printf '%s\\n' 'fixture only'\n".repeat(30);
+  try {
+    render(<InterventionCard item={{
+      id: "card-layout", agentId: "agent", runId: "run", kind: "sudo", status: "pending",
+      payload: { executable: "/usr/bin/bash", args: ["-c", command], cwd: "/tmp/fixture", reason: "Review a fixture command before approving." },
+      result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
+    }} onComputer={() => {}} onChange={() => {}} />);
+    const card = screen.getByRole("region", { name: "Sudo authentication" });
+    expect(card.classList.contains("chat-form-card")).toBe(true);
+    expect(within(card).getByRole("heading", { name: "Administrator password required" })).toBeDefined();
+    expect(within(card).getByText("Needs your approval")).toBeDefined();
+    expect(document.activeElement === composer).toBe(true);
+    expect(!!screen.queryByRole("dialog")).toBe(false);
+    const details = card.querySelector<HTMLDetailsElement>(".chat-form-details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toContain("/usr/bin/bash");
+    fireEvent.click(within(card).getByText("Review command"));
+    expect(details.open).toBe(true);
+    expect(details.querySelector("pre")!.textContent).toBe(["/usr/bin/bash", "-c", command].map(value => JSON.stringify(value)).join(" "));
+    expect(within(details).getByText("/tmp/fixture")).toBeDefined();
+    const input = within(card).getByLabelText("Sudo password") as HTMLInputElement;
+    expect(input.type).toBe("password");
+    expect(input.autocomplete).toBe("off");
+    expect(document.getElementById(input.getAttribute("aria-describedby")!)!.textContent).toContain("Never sent to the agent or saved by Jelly.");
+    expect([...card.querySelectorAll(".chat-form-actions button")].map(button => button.textContent)).toEqual(["Deny", "Authenticate and run"]);
+  } finally { composer.remove(); }
+});
+
+test("browser sign-in and future inline forms share the standard card shell", async () => {
+  const { InterventionCard } = await import("../src/client/InterventionCard");
+  const { ChatFormCard, ChatFormActions } = await import("../src/client/ChatFormCard");
+  render(<>
+    <InterventionCard item={{
+      id: "browser-card", agentId: "agent", runId: "run", kind: "browser_login", status: "pending",
+      payload: { url: "https://example.com/sign-in", reason: "Sign in to continue." },
+      result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
+    }} onComputer={() => {}} onChange={() => {}} />
+    <ChatFormCard title="Another inline form" icon={<span />} description="A shared form pattern." error="Try again.">
+      <ChatFormActions><button type="button">Continue</button></ChatFormActions>
+    </ChatFormCard>
+  </>);
+  const browser = screen.getByRole("region", { name: "Browser login" });
+  expect(browser.classList.contains("chat-form-card")).toBe(true);
+  expect(within(browser).getByText("Private sign-in")).toBeDefined();
+  expect(within(browser).getByText("https://example.com/sign-in")).toBeDefined();
+  expect(within(browser).getByRole("button", { name: "Open browser" })).toBeDefined();
+  const generic = screen.getByRole("region", { name: "Another inline form" });
+  expect(generic.classList.contains("chat-form-card")).toBe(true);
+  expect(within(generic).getByRole("alert").textContent).toBe("Try again.");
+  expect(within(generic).getByText("Needs your input")).toBeDefined();
+});
+
+test("profile activity ring does not opt out for reduced-motion preferences", () => {
+  const css = readFileSync(new URL("../src/client/ios.css", import.meta.url), "utf8");
+  expect(css).toContain("animation: agent-working-arc 2.8s linear infinite");
+  expect(css).not.toContain("prefers-reduced-motion");
+});
+
+test("Review command shows the supplied human summary while preserving exact command details", async () => {
+  const { InterventionCard } = await import("../src/client/InterventionCard");
+  const summary = "List database names and sizes without changing data. <script> stays plain text.";
+  render(<InterventionCard item={{
+    id: "command-summary", agentId: "agent", runId: "run", kind: "sudo", status: "pending",
+    payload: {
+      executable: "/usr/bin/printf", args: ["fixture"], cwd: "/tmp/fixture",
+      summary, reason: "Check capacity before planning a backup.",
+    },
+    result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
+  }} onComputer={() => {}} onChange={() => {}} />);
+  const card = screen.getByRole("region", { name: "Sudo authentication" });
+  const details = card.querySelector<HTMLDetailsElement>(".chat-form-details")!;
+  expect(details.open).toBe(false);
+  expect(details.querySelector("summary")!.textContent).not.toContain(summary);
+  expect(within(details.querySelector(".chat-form-detail-content") as HTMLElement).getByText(summary)).toBeDefined();
+  expect(details.querySelector(".chat-form-detail-content")!.firstElementChild?.textContent).toBe(summary);
+  expect(!!card.querySelector("script")).toBe(false);
+  expect(within(card).getByText("Check capacity before planning a backup.")).toBeDefined();
+  fireEvent.click(within(card).getByText("Review command"));
+  expect(details.open).toBe(true);
+  expect(details.querySelector("pre")!.textContent).toBe('"/usr/bin/printf" "fixture"');
+  expect(within(details).getByText("/tmp/fixture")).toBeDefined();
+});
+
+test("remote clipboard transfers are explicit, private, and have HTTP paste/copy fallbacks", async () => {
+  const { RemoteClipboard } = await import("../src/client/RemoteClipboard");
+  await setup();
+  const priorClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const priorExec = document.execCommand;
+  const fetchBefore = globalThis.fetch;
+  const requests: { operation: string; text?: string }[] = [];
+  let copied = "", pasteCount = 0;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (input === "/api/computer/clipboard") {
+      const value = JSON.parse(init.body); requests.push(value);
+      return Response.json(value.operation === "read" ? { text: "remote fixture 🦀" } : { success: true });
+    }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  try {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      readText: async () => "local fixture 🐙", writeText: async (text: string) => { copied = text; },
+    } });
+    const ui = render(<RemoteClipboard paste={() => { pasteCount++; }} />);
+    expect(requests).toHaveLength(0); // never automatically synchronize private data
+    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
+    await waitFor(() => expect(pasteCount).toBe(1));
+    expect(requests[0]).toEqual({ operation: "write", text: "local fixture 🐙" });
+    expect(document.body.textContent).not.toContain("local fixture 🐙");
+    fireEvent.click(screen.getByRole("button", { name: "Copy from remote" }));
+    await waitFor(() => expect(copied).toBe("remote fixture 🦀"));
+    expect(requests[1]).toEqual({ operation: "read" });
+    expect(document.body.textContent).not.toContain("remote fixture 🦀");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    document.execCommand = () => false;
+    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
+    const input = await screen.findByRole("textbox", { name: "Text to paste" });
+    fireEvent.change(input, { target: { value: "manual private fixture" } });
+    expect(requests).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Paste text" }));
+    await waitFor(() => expect(pasteCount).toBe(2));
+    expect(requests[2]).toEqual({ operation: "write", text: "manual private fixture" });
+    expect(screen.queryByRole("textbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy from remote" }));
+    const remote = await screen.findByRole("textbox", { name: "Remote clipboard text" }) as HTMLTextAreaElement;
+    expect(remote.readOnly).toBe(true);
+    expect(remote.value).toBe("remote fixture 🦀");
+    fireEvent.click(screen.getByRole("button", { name: "Select text" }));
+    expect(remote.selectionEnd).toBe(remote.value.length);
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    ui.rerender(<RemoteClipboard disabled paste={() => { pasteCount++; }} />);
+    expect(screen.getByRole("button", { name: "Paste to remote" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
+  } finally {
+    document.execCommand = priorExec;
+    if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
+    else delete (navigator as any).clipboard;
+  }
+});
+
+test("closing the private clipboard discards late results without pasting into the remote browser", async () => {
+  const { RemoteClipboard } = await import("../src/client/RemoteClipboard");
+  await setup();
+  const priorClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const fetchBefore = globalThis.fetch;
+  let release = () => {}, submitted = false, pasteCount = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (input === "/api/computer/clipboard") { submitted = true; await gate; return Response.json({ success: true }); }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  try {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "private fixture" } });
+    const ui = render(<RemoteClipboard paste={() => { pasteCount++; }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
+    await waitFor(() => expect(submitted).toBe(true));
+    expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
+    ui.unmount(); release();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(pasteCount).toBe(0);
+    expect(document.body.textContent).not.toContain("private fixture");
+  } finally {
+    release();
+    if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
+    else delete (navigator as any).clipboard;
+  }
+});

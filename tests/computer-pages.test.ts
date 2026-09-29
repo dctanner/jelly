@@ -139,7 +139,7 @@ test("page recovery never bypasses human control", async () => {
     "person",
   );
   expect(f.created()).toBe(0);
-  f.computer.release("human-session");
+  await f.computer.release("human-session");
   await f.computer.action("open", { url: target });
   expect(f.created()).toBe(1);
 });
@@ -167,5 +167,17 @@ test("human takeover while a replacement page is opening prevents navigation", a
   expect((error as Error).message).toContain("person");
   await takeover;
   expect(page.visited).toEqual([]);
-  f.computer.release("human-session");
+  await f.computer.release("human-session");
+});
+
+test("clipboard requests queued behind return-to-agent cannot use expired human ownership", async () => {
+  const f = fixture();
+  f.add();
+  await f.computer.take("owner");
+  await expect(f.computer.clipboard("other", "read")).rejects.toThrow("controlling window");
+  const returning = f.computer.release("owner");
+  const stale = f.computer.clipboard("owner", "read");
+  await returning;
+  await expect(stale).rejects.toThrow("controlling window");
+  expect(f.computer.state().control).toBe("agent");
 });

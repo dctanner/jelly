@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createSudoExecutor } from "../src/server/sudo";
+import { createSudoExecutor, validateCommand } from "../src/server/sudo";
 import { startApp } from "./fixtures/app";
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -29,6 +29,7 @@ const command = {
   executable: "/usr/bin/id",
   args: ["-u"],
   cwd: "/tmp",
+  summary: "Show the effective user ID without changing files.",
   reason: "Test exact command",
 };
 test("sudo askpass has a separate secret channel; stdout/stderr are redacted and stdin is EOF", async () => {
@@ -179,6 +180,8 @@ test("real Pi pauses, session+CSRF approval is single-use, resumes and never per
     item = await requestSudo(f),
     headers = await session(f.req);
   expect(f.app.store.agent(f.id)?.status).toBe("waiting");
+  expect(item.payload.summary).toBe("Show the effective user ID without changing files.");
+  expect(f.app.service.snapshot(f.id).interventions.find(i => i.id === item.id)?.payload.summary).toBe(item.payload.summary);
   const path = `/interventions/${item.id}/approve`,
     body = { password: "test-only-password" };
   expect((await f.req(path, body)).status).toBe(401);
@@ -317,4 +320,28 @@ test("sudo executes without approval when the OS permits, and ordinary failures 
       await app.close();
     }
   }
+});
+
+test("request_sudo requires a bounded human-readable summary and preserves it during validation", async () => {
+  const { interventionTools } = await import("../src/server/agent-tools");
+  const f = await fixture();
+  const tool = interventionTools(f.app.service.computer, f.app.service.interventions, f.id, "schema-test", "/tmp")
+    .find(tool => tool.name === "request_sudo")!;
+  const schema = tool.parameters as unknown as {
+    required: string[];
+    properties: { summary: { type: string; minLength: number; maxLength: number; pattern: string } };
+  };
+  expect(schema.required).toContain("summary");
+  expect(schema.properties.summary.type).toBe("string");
+  expect(schema.properties.summary.minLength).toBe(1);
+  expect(schema.properties.summary.maxLength).toBe(500);
+  expect(new RegExp(schema.properties.summary.pattern).test("   ")).toBe(false);
+  expect(new RegExp(schema.properties.summary.pattern).test("List database sizes.")).toBe(true);
+  expect(validateCommand({ ...command, summary: "  Show the effective user ID.  " }).summary).toBe("Show the effective user ID.");
+  for (const summary of [undefined, null, 123, "", "   ", "s".repeat(501)]) {
+    expect(() => validateCommand({ ...command, summary: summary as unknown as string })).toThrow("human-readable command summary");
+  }
+  const validated = validateCommand(command);
+  expect(validated.args).toEqual(command.args);
+  expect(validated.reason).toBe(command.reason);
 });

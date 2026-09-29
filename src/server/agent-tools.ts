@@ -20,11 +20,20 @@ export function interventionTools(
       name: "request_sudo",
       label: "Run sudo",
       description:
-        "Run one command with root privileges immediately. Request private password entry only if sudo requires authentication. Never request or supply a password in chat or tool arguments.",
+        "Run one command with root privileges immediately. Include a concise, human-readable summary of exactly what the command will do, including meaningful side effects; use reason to explain why it is needed. Request private password entry only if sudo requires authentication. Never request or supply a password in chat or tool arguments.",
       parameters: Type.Object({
         executable: Type.String({ description: "Absolute executable path" }),
         args: Type.Array(Type.String()),
-        reason: Type.String(),
+        summary: Type.String({
+          description:
+            "Plain-language summary of the command's actions and side effects (for example, mounting a disk read-only and listing database sizes). Shown in Review command. Do not include secrets.",
+          minLength: 1,
+          maxLength: 500,
+          pattern: "\\S",
+        }),
+        reason: Type.String({
+          description: "Why this privileged command is needed.",
+        }),
       }),
       execute: async (_id, args, signal) =>
         result(await requests.sudo(agentId, runId, { ...args, cwd }, signal)),

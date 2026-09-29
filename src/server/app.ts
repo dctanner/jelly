@@ -268,10 +268,16 @@ export async function startApp(options: AppOptions) {
               if (action === "take")
                 return json(await service.computer.take(session.id));
               if (action === "release") {
-                const id = service.computer.release(session.id);
+                const id = await service.computer.release(session.id);
                 if (id && store.intervention(id)?.status === "pending")
                   service.interventions.completeLogin(id);
                 return json(service.computer.state(session.id));
+              }
+              if (action === "clipboard") {
+                const input = await body(req);
+                if (input.operation !== "read" && input.operation !== "write")
+                  throw new HttpError(400, "Clipboard operation must be read or write.");
+                return json(await service.computer.clipboard(session.id, input.operation, input.text));
               }
               if (action === "ticket") {
                 const input = await body(req);

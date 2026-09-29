@@ -93,6 +93,7 @@ export function fixtureStream(delayMs = 220, fail = false) {
                 ? {
                     executable: "/usr/bin/id",
                     args: ["-u"],
+                    summary: "Show the effective user ID without changing files.",
                     reason:
                       "Demonstrate an administrator command by reading the effective user ID.",
                   }

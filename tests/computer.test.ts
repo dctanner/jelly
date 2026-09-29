@@ -332,3 +332,79 @@ const available =
   },
   45000,
 );
+
+(available && (existsSync("/usr/bin/xclip") || existsSync(join(runtime, "usr/bin/xclip"))) ? test : test.skip)(
+  "private remote clipboard transfers Unicode over HTTP, pastes through VNC, and clears on return",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "jelly-clipboard-test-"));
+    symlinkSync(runtime, join(dir, "runtime"), "dir");
+    const app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
+    const site = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
+      '<textarea autofocus style="width:500px;height:250px"></textarea>',
+      { headers: { "Content-Type": "text/html" } },
+    ) });
+    let controller: Rfb | undefined;
+    const post = (action: string, data: unknown, headers: Record<string, string> = {}) => fetch(new URL(`/api/computer/${action}`, app.server.url), {
+      method: "POST", headers: { "Content-Type": "application/json", Connection: "close", ...headers }, body: JSON.stringify(data),
+    });
+    const session = async () => {
+      const response = await fetch(new URL("/api/control-session", app.server.url), { headers: { Connection: "close" } });
+      return { cookie: response.headers.get("set-cookie")!.split(";")[0]!, "x-jelly-csrf": (await response.json()).csrf as string };
+    };
+    try {
+      const owner = await session(), other = await session();
+      expect((await post("clipboard", { operation: "read" })).status).toBe(401);
+      expect((await post("clipboard", { operation: "read" }, { cookie: owner.cookie })).status).toBe(403);
+      expect((await post("clipboard", { operation: "read" }, owner)).status).toBe(403);
+      await app.service.computer.action("open", { url: site.url.href });
+      expect((await post("take", {}, owner)).status).toBe(200);
+      expect((await post("clipboard", { operation: "read" }, other)).status).toBe(403);
+      expect((await post("clipboard", { operation: "write", text: "x".repeat(12001) }, owner)).status).toBe(400);
+      expect((await post("clipboard", { operation: "write", text: "bad\0text" }, owner)).status).toBe(400);
+      expect((await post("clipboard", { operation: "delete" }, owner)).status).toBe(400);
+      const { ticket } = await (await post("ticket", { mode: "control" }, owner)).json();
+      const socketUrl = new URL(`/api/computer/socket?ticket=${ticket}`, app.server.url); socketUrl.protocol = "ws:";
+      controller = new Rfb(new WebSocket(socketUrl, { headers: { ...owner, Origin: app.server.url.origin } }));
+      await controller.handshake();
+      // Playwright here simulates the person, not an agent browser action.
+      const context = (app.service.computer as unknown as { context: BrowserContext }).context;
+      const page = context.pages()[0]!;
+      await page.locator("textarea").click();
+      const text = "Private clipboard fixture 🦀\n日本語 and café";
+      const written = await post("clipboard", { operation: "write", text }, owner);
+      expect(written.status).toBe(200);
+      expect(written.headers.get("cache-control")).toBe("no-store");
+      controller.key(0xffe3, true); controller.key(0x76, true); controller.key(0x76, false); controller.key(0xffe3, false);
+      await page.waitForFunction(expected => (document.querySelector("textarea") as HTMLTextAreaElement).value === expected, text);
+      expect(await page.locator("textarea").inputValue()).toBe(text);
+      const copied = "Copied from the remote browser: 🐙\nsecond line";
+      await page.locator("textarea").fill(copied);
+      await page.locator("textarea").press("Control+a");
+      await page.locator("textarea").press("Control+c");
+      expect(await (await post("clipboard", { operation: "read" }, owner)).json()).toEqual({ text: copied });
+      await expect(app.service.computer.action("screenshot")).rejects.toThrow("person");
+      expect(JSON.stringify(app.service.snapshot())).not.toContain("Private clipboard fixture");
+      expect(JSON.stringify(app.store.events())).not.toContain(copied);
+      await page.locator("textarea").fill("x".repeat(12001));
+      await page.locator("textarea").press("Control+a");
+      await page.locator("textarea").press("Control+c");
+      expect((await post("clipboard", { operation: "read" }, owner)).status).toBe(413);
+      // Close the fixture's VNC client explicitly: Bun can retain a server-closed
+      // WebSocket in stop(true), independently of clipboard ownership checks.
+      controller.close();
+      await until(() => controller!.closed);
+      expect((await post("release", {}, owner)).status).toBe(200);
+      await until(() => controller!.closed);
+      expect((await post("clipboard", { operation: "read" }, owner)).status).toBe(403);
+      // Taking control again must not expose the prior clipboard.
+      expect((await post("take", {}, owner)).status).toBe(200);
+      expect(await (await post("clipboard", { operation: "read" }, owner)).json()).toEqual({ text: "" });
+      expect((await post("release", {}, owner)).status).toBe(200);
+    } finally {
+      controller?.close();
+      await app.close();
+      site.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000,
+);

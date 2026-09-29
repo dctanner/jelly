@@ -13,6 +13,7 @@ export interface SudoCommand {
   executable: string;
   args: string[];
   cwd: string;
+  summary: string;
   reason: string;
 }
 export interface SudoResult {
@@ -47,6 +48,14 @@ export function validateCommand(command: SudoCommand): SudoCommand {
     command.reason.length > 2000
   )
     throw new Error("A short reason is required.");
+  if (
+    typeof command.summary !== "string" ||
+    !command.summary.trim() ||
+    command.summary.length > 500
+  )
+    throw new Error(
+      "A human-readable command summary of up to 500 characters is required.",
+    );
   const cwd = realpathSync(command.cwd);
   if (!statSync(cwd).isDirectory())
     throw new Error("Invalid working directory.");
@@ -54,6 +63,7 @@ export function validateCommand(command: SudoCommand): SudoCommand {
     executable,
     args: [...command.args],
     cwd,
+    summary: command.summary.trim(),
     reason: command.reason.trim(),
   };
 }

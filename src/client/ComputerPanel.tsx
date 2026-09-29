@@ -1,4 +1,5 @@
 import { Modal } from "./Modal";
+import { RemoteClipboard } from "./RemoteClipboard";
 import { useEffect, useRef, useState } from "react";
 import { X, Monitor, RotateCw } from "lucide-react";
 import type { ComputerState } from "../shared/types";
@@ -11,6 +12,7 @@ export function ComputerPanel({
   onChange: () => void;
 }) {
   const screen = useRef<HTMLDivElement>(null);
+  const connection = useRef<import("@novnc/novnc/lib/rfb").default | null>(null);
   const [state, setState] = useState<ComputerState | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -59,6 +61,7 @@ export function ComputerPanel({
         url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
         url.searchParams.set("ticket", ticket);
         rfb = new RFB(screen.current!, url.href);
+        connection.current = rfb;
         rfb.viewOnly = !owned;
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
@@ -78,6 +81,7 @@ export function ComputerPanel({
     })();
     return () => {
       dead = true;
+      if (connection.current === rfb) connection.current = null;
       rfb?.disconnect();
       screen.current?.replaceChildren();
     };
@@ -142,6 +146,16 @@ export function ComputerPanel({
           </button>
         </div>
       </div>
+      {owned && connected && (
+        <RemoteClipboard disabled={busy} paste={() => {
+          const rfb = connection.current;
+          if (!rfb || rfb.viewOnly) throw new Error("Remote desktop disconnected. Reconnect before pasting.");
+          rfb.focus({ preventScroll: true });
+          rfb.sendKey(0xffe3, "ControlLeft", true);
+          try { rfb.sendKey(0x76, "KeyV"); }
+          finally { rfb.sendKey(0xffe3, "ControlLeft", false); }
+        }} />
+      )}
       {(error || state?.error) && (
         <p role="alert" className="error-text">
           {error || state?.error}

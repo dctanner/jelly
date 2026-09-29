@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import {
   ShieldCheck,
   Monitor,
@@ -6,9 +6,11 @@ import {
   AlertCircle,
   LoaderCircle,
   ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import type { Intervention } from "../shared/types";
 import { control } from "./api";
+import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 export function InterventionCard({
   item,
   onComputer,
@@ -20,6 +22,7 @@ export function InterventionCard({
   onChange: () => void;
   hasInlineTool?: boolean;
 }) {
+  const passwordHint = useId();
   const password = useRef<HTMLInputElement>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -93,102 +96,118 @@ export function InterventionCard({
     );
   }
   return (
-    <section
-      className="intervention-card"
-      aria-label={
-        item.kind === "sudo" ? "Sudo authentication" : "Browser login"
+    <ChatFormCard
+      label={item.kind === "sudo" ? "Sudo authentication" : "Browser login"}
+      title={
+        item.kind === "sudo"
+          ? "Administrator password required"
+          : "Sign in through the browser"
       }
+      icon={
+        item.kind === "sudo" ? <ShieldCheck size={22} /> : <Monitor size={22} />
+      }
+      status={item.kind === "sudo" ? "Needs your approval" : "Private sign-in"}
+      description={String(item.payload.reason ?? "")}
+      error={error}
     >
-      <div className="intervention-title">
-        {item.kind === "sudo" ? (
-          <ShieldCheck size={18} />
-        ) : (
-          <Monitor size={18} />
-        )}
-        <strong>
-          {item.kind === "sudo"
-            ? "Administrator password required"
-            : "Sign in through the browser"}
-        </strong>
-        <span>{item.status}</span>
-      </div>
-      <p>{String(item.payload.reason)}</p>
       {item.kind === "sudo" ? (
         <>
-          <pre>
-            {[
-              item.payload.executable,
-              ...((item.payload.args as string[]) ?? []),
-            ]
-              .map((v) => JSON.stringify(v))
-              .join(" ")}
-          </pre>
-          <small>Working directory: {String(item.payload.cwd)}</small>
-          {pending && (
-            <form onSubmit={(e) => void act(true, e)}>
-              <label>
-                Sudo password
-                <input
-                  ref={password}
-                  type="password"
-                  autoComplete="off"
-                  maxLength={1024}
-                  disabled={busy}
-                  aria-label="Sudo password"
-                />
-              </label>
-              <p className="subtle">
-                Used for this command only. Never sent to the agent or saved by
-                Jelly. The operating system requires authentication for this
-                command.
-              </p>
-              <div className="intervention-actions">
-                <button className="primary" disabled={busy}>
-                  {busy ? "Running…" : "Authenticate and run"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void act(false)}
-                >
-                  Deny
-                </button>
-              </div>
-            </form>
-          )}
+          <details className="chat-form-group chat-form-details">
+            <summary>
+              <span className="chat-form-detail-label">
+                <span>Review command</span>
+                <code>{String(item.payload.executable)}</code>
+              </span>
+              <ChevronRight size={16} aria-hidden="true" />
+            </summary>
+            <div className="chat-form-detail-content">
+              {typeof item.payload.summary === "string" &&
+                item.payload.summary.trim() && (
+                  <p className="chat-form-command-summary">
+                    {item.payload.summary}
+                  </p>
+                )}
+              <pre aria-label="Command" tabIndex={0}>
+                {[
+                  item.payload.executable,
+                  ...((item.payload.args as string[]) ?? []),
+                ]
+                  .map((value) => JSON.stringify(value))
+                  .join(" ")}
+              </pre>
+              <dl className="chat-form-metadata">
+                <dt>Working directory</dt>
+                <dd>{String(item.payload.cwd)}</dd>
+              </dl>
+            </div>
+          </details>
+          <form className="chat-form-form" onSubmit={(e) => void act(true, e)}>
+            <label className="chat-form-field">
+              <span>Sudo password</span>
+              <input
+                ref={password}
+                type="password"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                placeholder="Enter password"
+                maxLength={1024}
+                disabled={busy}
+                aria-label="Sudo password"
+                aria-describedby={passwordHint}
+              />
+            </label>
+            <p className="chat-form-hint" id={passwordHint}>
+              Used for this command only. Never sent to the agent or saved by
+              Jelly.
+            </p>
+            <ChatFormActions>
+              <button
+                type="button"
+                className="chat-form-secondary"
+                disabled={busy}
+                onClick={() => void act(false)}
+              >
+                Deny
+              </button>
+              <button type="submit" className="primary" disabled={busy}>
+                {busy ? "Running…" : "Authenticate and run"}
+              </button>
+            </ChatFormActions>
+          </form>
         </>
       ) : (
         <>
-          <p className="subtle">{String(item.payload.url)}</p>
-          {pending && (
-            <div className="intervention-actions">
-              <button
-                className="primary"
-                onClick={() => {
-                  onComputer();
-                  setBrowserOpened(true);
-                }}
-              >
-                Open browser
-              </button>
-              <button disabled={busy} onClick={() => void act(false)}>
-                Deny
-              </button>
-            </div>
-          )}
+          <dl className="chat-form-group chat-form-metadata chat-form-website">
+            <dt>Website</dt>
+            <dd>{String(item.payload.url)}</dd>
+          </dl>
+          <p className="chat-form-hint">
+            Sign in privately in the shared browser, then return control to the
+            agent.
+          </p>
+          <ChatFormActions>
+            <button
+              type="button"
+              className="chat-form-secondary"
+              disabled={busy}
+              onClick={() => void act(false)}
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                onComputer();
+                setBrowserOpened(true);
+              }}
+            >
+              Open browser
+            </button>
+          </ChatFormActions>
         </>
       )}
-      {item.status === "failed" && (
-        <p className="error-text" role="alert">
-          {String(item.result?.stderr || "The command failed.")} Ask the agent
-          to try again.
-        </p>
-      )}
-      {error && (
-        <p className="error-text" role="alert">
-          {error}
-        </p>
-      )}
-    </section>
+    </ChatFormCard>
   );
 }

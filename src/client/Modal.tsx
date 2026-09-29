@@ -93,12 +93,7 @@ export function Modal({
             `--${kind === "panel" ? "panel" : kind}-close-dur`,
           ),
         ) || 150;
-    timer.current = setTimeout(
-      onClose,
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? 0
-        : duration,
-    );
+    timer.current = setTimeout(onClose, duration);
   }
   function request(action = finishClose, checkDirty = true) {
     if (!dismissible) return;

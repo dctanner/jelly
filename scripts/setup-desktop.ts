@@ -5,6 +5,9 @@ if (process.platform !== "linux")
 const root = resolve(process.env.JELLY_DATA_DIR ?? ".jelly", "runtime"),
   downloads = join(root, "downloads");
 mkdirSync(downloads, { recursive: true, mode: 0o700 });
+const xtLibrary = Bun.spawnSync(["apt-cache", "show", "libxt6t64"], {
+  stdout: "ignore", stderr: "ignore",
+}).exitCode === 0 ? "libxt6t64" : "libxt6";
 const result = Bun.spawnSync(
   [
     "apt-get",
@@ -15,6 +18,11 @@ const result = Bun.spawnSync(
     "libvncclient1",
     "libvncserver1",
     "xauth",
+    "xclip",
+    "libxmu6",
+    xtLibrary,
+    "libice6",
+    "libsm6",
     "x11-xkb-utils",
   ],
   { cwd: downloads, stdout: "inherit", stderr: "inherit" },

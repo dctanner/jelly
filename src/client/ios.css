@@ -516,17 +516,6 @@
     max-width: 100%;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .app.t-page-slide > .t-page,
-  dialog.native-sheet,
-  .native-sheet::backdrop {
-    transition: none !important;
-  }
-  .native-sheet .sheet-page {
-    animation: none;
-  }
-}
-
 /* A single, quiet work disclosure replaces the separate spinner/tool groups. */
 .work-activity {
   margin: 6px 0 0;
@@ -621,12 +610,6 @@
   overflow-wrap: anywhere;
   font-size: 12px;
 }
-@media (prefers-reduced-motion: reduce) {
-  .work-chevron {
-    transition: none;
-  }
-}
-
 /* Shared by the inbox and conversation: stronger light/dark bands around a
    bright highlight, without changing the normal, static text fallback. */
 .work-status-sheen {
@@ -638,8 +621,8 @@
   --work-sheen-highlight: #bcbcc6;
 }
 /* Text-only sheen: no layout changes, and plain text remains the fallback for
-   reduced motion, forced colors, or browsers without text clipping support. */
-@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+   forced colors or browsers without text clipping support. */
+@media (forced-colors: none) {
   @supports (background-clip: text) or (-webkit-background-clip: text) {
     .work-status-sheen {
       background-image: linear-gradient(
@@ -737,7 +720,7 @@
   border-top-color: #c58a28;
   border-right-color: #c58a28;
 }
-@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+@media (forced-colors: none) {
   .agent-avatar.is-working::after {
     animation: agent-working-arc 2.8s linear infinite;
   }
@@ -781,4 +764,10 @@
   background: var(--accent);
   color: white;
   font-weight: 600;
+}
+
+/* The profile pill shares the inbox's blue activity arc, regardless of the
+   reduced-motion preference. Only hidden mobile chat pages pause animation. */
+main[inert] .conversation-header .agent-avatar::after {
+  animation-play-state: paused;
 }

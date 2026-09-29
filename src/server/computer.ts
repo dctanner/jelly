@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { HttpError } from "./errors";
+import { desktopClipboard, MAX_CLIPBOARD_CHARS } from "./desktop-clipboard";
 import type { ComputerState } from "../shared/types";
 export class Computer {
   private status: ComputerState["status"] = "stopped";
@@ -24,6 +25,7 @@ export class Computer {
   private openers = new WeakMap<Page, Page>();
   private processes: ChildProcess[] = [];
   private runtime?: string;
+  private clipboardEnv?: NodeJS.ProcessEnv;
   private starting?: Promise<void>;
   private closing = false;
   private generation = 0;
@@ -202,6 +204,7 @@ export class Computer {
         }
       });
     });
+    this.clipboardEnv = { ...env, DISPLAY: display };
     for (const mode of ["view", "control"]) {
       const socket = join(this.runtime, mode + ".sock");
       const vnc = launch(this.binary("x11vnc"), [
@@ -344,6 +347,7 @@ export class Computer {
     this.processes = [];
     if (this.runtime) rmSync(this.runtime, { recursive: true, force: true });
     this.runtime = undefined;
+    this.clipboardEnv = undefined;
   }
   private url(value: string) {
     const url = new URL(value);
@@ -458,18 +462,43 @@ export class Computer {
     await this.ensure();
     return this.state(session);
   }
-  release(session: string) {
-    if (this.owner !== session)
-      throw new HttpError(
-        403,
-        "Only the controlling window can return control.",
-      );
-    const id = this.handoff;
-    this.human = false;
-    this.owner = null;
-    this.handoff = null;
-    this.invalidate();
-    return id;
+  private requireClipboardOwner(session: string, generation = this.generation) {
+    if (this.closing || !this.human || this.owner !== session || generation !== this.generation)
+      throw new HttpError(403, "Only the controlling window can access the remote clipboard.");
+  }
+  async clipboard(session: string, operation: "read" | "write", text?: unknown) {
+    this.requireClipboardOwner(session);
+    if (operation === "write" && (typeof text !== "string" || text.length > MAX_CLIPBOARD_CHARS || text.includes("\0")))
+      throw new HttpError(400, `Clipboard text must be at most ${MAX_CLIPBOARD_CHARS.toLocaleString()} characters and contain no null characters.`);
+    const generation = this.generation;
+    return this.serial(async () => {
+      this.requireClipboardOwner(session, generation);
+      if (this.status !== "ready" || !this.clipboardEnv)
+        throw new HttpError(503, "The remote desktop is not ready.");
+      const result = await desktopClipboard(this.binary("xclip"), this.clipboardEnv, operation === "write" ? text as string : undefined);
+      this.requireClipboardOwner(session, generation);
+      return operation === "read" ? { text: result } : { success: true };
+    });
+  }
+  async release(session: string) {
+    this.requireClipboardOwner(session);
+    const generation = this.generation;
+    return this.serial(async () => {
+      this.requireClipboardOwner(session, generation);
+      // Close input sockets before clearing the selection so late VNC input
+      // cannot repopulate it as the agent resumes.
+      this.invalidate();
+      const current = this.generation;
+      if (this.clipboardEnv)
+        await desktopClipboard(this.binary("xclip"), this.clipboardEnv, "");
+      this.requireClipboardOwner(session, current);
+      const id = this.handoff;
+      this.human = false;
+      this.owner = null;
+      this.handoff = null;
+      this.invalidate();
+      return id;
+    });
   }
   cancelLogin(id: string) {
     if (this.handoff !== id) return;
