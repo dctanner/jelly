@@ -4,6 +4,14 @@
 
 The target user is someone building an running there whole business from a single VM (inspired by https://x.com/levelsio).
 
+<p align="center">
+  <a href="https://dctanner.github.io/jelly/">
+    <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
+  </a>
+  <br>
+  <a href="https://dctanner.github.io/jelly/">Watch the 65-second mobile walkthrough</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
+</p>
+
 - Run it on your on hardware: a Mac, Linux box or VM.
 - Create as many agents as you want. Group into project directories.
 - Access the web UI locally, or setup Tailscale and use from your laptop or phone (add it to your iPhone home screen and it feels like a native app).
@@ -12,14 +20,6 @@ The target user is someone building an running there whole business from a singl
 - If an agent needs sudo access, it can securely request it from you.
 - Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
 - Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
-
-<p align="center">
-  <a href="https://dctanner.github.io/jelly/">
-    <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
-  </a>
-  <br>
-  <a href="https://dctanner.github.io/jelly/">Watch the 65-second mobile walkthrough</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
-</p>
 
 ## Quick start
 
