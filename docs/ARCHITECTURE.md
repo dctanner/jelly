@@ -285,3 +285,46 @@ Stop/shutdown cancel the call. Output must be a short plain display name; errors
 leave the placeholder and allow the task to continue. A guarded database update
 prevents a late result overwriting a manually saved name, then emits `agent_updated`
 and builds the actual task session with the current name.
+
+## Structured browser tools
+
+`interventionTools` binds these tools to the running agent's `Computer`; callers cannot select another agent. The same registration is used for OpenAI API and ChatGPT. Existing screenshot, coordinate click, typing and key tools remain available.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `browser_snapshot` | `{}` | `{pageId, observationId, text, truncated, viewport, elements:[{ref,tag,type,label}]}` |
+| `browser_click` | `{ref}` OR `{x,y}` | `{ok:true}` |
+| `browser_fill` | `{ref,text}` | `{ok:true}` |
+| `browser_tabs` | `{operation:"list"\|"new"\|"select"\|"close",pageId?,url?}` | `{tabs:[{pageId,active}],truncated}` |
+| `browser_scroll` | `{x?:number,y:number}` | `{ok:true}` |
+| `browser_wait_for` | `{condition:"text"\|"text_absent"\|"ready",text?,timeoutMs?}` | `{matched:boolean}` |
+| `browser_diagnostics` | `{}` | `{entries:[{pageId,kind,detail}],limit:50,redacted:true}` |
+
+Snapshots expose viewport-visible top-level DOM text (12,000 characters, at most 10,000 scanned nodes), not an accessibility tree, shadow-root traversal or cross-origin frame contents. They exclude form values and retain at most 100 opaque element-handle references from 500 candidates. `viewport` contains width, height, deviceScaleFactor, scrollX and scrollY. New observations (including wait polling), navigation, tab changes, handoff, recovery and abort revoke references; detached/replaced nodes fail rather than retargeting. Reference click/fill use synthetic DOM events, not trusted pointer/keyboard input; some applications require the existing coordinate/type tools.
+
+Fill accepts at most 24,000 characters in editable text inputs/textarea; sensitive field identities (password, token, OTP, payment-like names) are rejected with private-login guidance. This is a conservative heuristic, not universal secret detection. Site-rendered visible text may itself contain sensitive data. Never supply credentials as tool arguments; use `request_browser_login`.
+
+Tabs have session-local IDs and omit titles/URLs. New URLs use existing HTTP(S), credential and protected-origin checks. Tool-created tabs and host observers are bounded at 20; excess site popups evict old host tracking without closing human-owned pages, and lists report truncation. Scroll deltas are bounded to ±10,000 pixels. Wait text is 1–200 characters; timeout defaults to 5 seconds, maximum 10 seconds, with 100ms polling. Text absence cannot succeed on truncated extraction; ready means the document is no longer loading. Timeout bounds polling, not a renderer call already in flight.
+
+Diagnostics retain at most 50 console-error, pageerror and requestfailed events with fixed redacted details and allowlisted resource types. They never read arbitrary error messages, console arguments, URLs, headers, cookies, storage or payloads. Ownership/navigation changes clear diagnostics, and human control disables collection. All actions retain serialized ownership/generation and cancellation gates. Already-submitted renderer effects cannot be undone; changed-owner or aborted results are discarded and subsequent stages stop.
+
+## Codex-style apply_patch
+
+Harness registers a separate `apply_patch` tool alongside unchanged Pi native `edit` and `write`. Pi 0.87.1 advertises a FREEFORM Lark grammar on both `openai` and `openai-codex`; its internal schema has one required `patch` string. No shell or git-apply wrapper is involved. The vendored OpenAI Agents JS parser and Codex grammar retain pinned source revisions and MIT/Apache license notices under `src/server/vendor`.
+
+```text
+*** Begin Patch
+*** Add File: notes.txt
++hello
+*** Update File: source.ts
+@@
+-old
++new
+*** End Patch
+```
+
+Add, update, delete and move use exact, unique, forward-only context matching without whitespace fuzz or EOF fallback. Whole-patch preflight rejects malformed/unconsumed syntax, duplicate/ancestor paths, overlapping hunks, ambiguous/stale inputs and unsupported text before mutation. Add and move destinations cannot overwrite existing entries. Existing BOM, LF/CRLF, missing final newline and POSIX modes are preserved; adds use LF and a final newline. Mixed endings, lone CR, NUL and invalid UTF-8 updates are rejected. Limits: 1 MiB patch, 1 MiB input/result file, 64 operations, 16 MiB combined before/after working set.
+
+Paths retain full-host cwd semantics (absolute paths and `..` allowed); this is not a sandbox. Symlink path components and hardlinked sources are refused. In-process tool calls serialize and recheck identity/content, but native tools and external processes are not locked. External filesystem races, including ancestor replacement and final check-to-write/unlink intervals, remain possible.
+
+Writes are **not transactional** and promise neither rollback nor durability. Pre-application cancellation writes nothing; cancellation or IO failure after mutation returns `partial`, completed operations and a mutation ledger (including directories, potentially truncated files and incomplete move destinations). Results contain a plain summary plus `details.status`, `changedFiles` (`path`, `kind`, optional `destination`, headerless Codex `diff`), `mutations` and optional `error`. Move-only/delete diffs are empty; metadata carries the operation. Only completed operations appear in `changedFiles`; consult the ledger for incomplete effects. The activity UI displays these details without implying atomicity. Synchronous syscalls cannot be interrupted; moves preserve modes, not ownership, ACLs, xattrs or timestamps. Standalone Pi subagent tool configuration is unchanged.

@@ -4,6 +4,7 @@ import { ChatGPTTransport } from "./chatgpt-transport";
 import { ultrafastOptions } from "./ultrafast";
 import { GeneratedImages, imageGenerationTool } from "./image-generation";
 import { RenderedFiles, renderFileTool } from "./rendered-files";
+import { applyPatchTool } from "./apply-patch";
 import { webTools, WEB_RESEARCH_INSTRUCTIONS } from "./web-tools";
 import { SessionWork } from "./session-work";
 import { ALL_PI_TOOLS, preparePi } from "./pi-setup";
@@ -201,6 +202,7 @@ export class Harness {
       customTools: [
         ...(config.activeMode === "chatgpt" ? [imageGenerationTool(this.runtime, model, this.images, report)] : []),
         renderFileTool(this.files, cwd, report),
+        applyPatchTool(cwd),
         ...webTools(),
         ...extraTools,
         {

@@ -23,6 +23,14 @@ Real mobile UI with demonstration data and an original soundtrack; sudo executio
 - Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
 - Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
 
+## Browser and patch tools
+
+Agents can inspect bounded visible browser text and element references, click/fill non-secret fields, manage session-local tabs, scroll, wait for text/readiness, and read redacted error diagnostics. These share the existing per-agent isolation and private-control gate. References expire on new observations/navigation/handoff; snapshots cover the top-level DOM only. Reference actions use synthetic events, and secret-field detection is heuristic—always use private browser sign-in for credentials.
+
+`apply_patch` adds Codex-style multi-file add/update/delete/move patches on both OpenAI API and ChatGPT, alongside unchanged Pi `edit`/`write`. It requires exact unique context and rejects symlinks, hardlinked sources and unsupported text. Paths are not sandboxed. Preflight checks the whole patch, but filesystem writes are **not transactional**: failures can leave partial changes, reported in a mutation ledger. Limits are 1 MiB per patch/file, 64 operations and 16 MiB combined working set.
+
+See [tool APIs and limitations](docs/ARCHITECTURE.md#structured-browser-tools). `bun run check` includes structured-browser Chromium tests, patch filesystem tests and local provider-transport tests; `bun run test:desktop` additionally requires the Linux desktop runtime.
+
 ## Quick start
 
 Requires [Bun](https://bun.sh) **1.3.9+** and **Node.js 24+** (for subagent runners and CLI dependencies). Linux is required for the managed browser desktop and sudo handoffs.

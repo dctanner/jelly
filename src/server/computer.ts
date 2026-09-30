@@ -14,7 +14,9 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { HttpError } from "./errors";
 import { desktopClipboard, MAX_CLIPBOARD_CHARS } from "./desktop-clipboard";
 import type { ComputerState } from "../shared/types";
+import { BrowserTools, type StructuredAction } from "./browser-tools";
 export class Computer {
+  private browserTools = new BrowserTools(() => !this.human && !this.closing && this.status === "ready");
   private status: ComputerState["status"] = "stopped";
   private error: string | null = null;
   private owner: string | null = null;
@@ -69,6 +71,7 @@ export class Computer {
   }
   private invalidate() {
     this.generation++;
+    this.browserTools.invalidate();
     this.tickets.clear();
     for (const close of [...this.connections]) close();
     this.connections.clear();
@@ -309,6 +312,8 @@ export class Computer {
     await this.activePage();
   }
   private trackPage(page: Page) {
+    this.browserTools.invalidate();
+    this.browserTools.track(page);
     this.page = page;
     page.on("popup", (popup) => this.openers.set(popup, page));
     page.on("close", () => {
@@ -325,10 +330,12 @@ export class Computer {
   private async activePage(): Promise<Page> {
     // Also recover stale references before use, not only on close events.
     const page = this.livePage() ?? (await this.context!.newPage());
+    if (this.page !== page) this.browserTools.invalidate();
     this.page = page;
     return page;
   }
   private async cleanup() {
+    this.browserTools.dispose();
     await this.context?.close().catch(() => {});
     this.context = undefined;
     this.page = undefined;
@@ -378,7 +385,7 @@ export class Computer {
     return job;
   }
   async action(
-    action: "open" | "screenshot" | "click" | "type" | "key",
+    action: "open" | "screenshot" | "click" | "type" | "key" | StructuredAction,
     args: Record<string, unknown> = {},
     signal?: AbortSignal,
   ) {
@@ -391,6 +398,7 @@ export class Computer {
     const generation = this.generation;
     return this.serial(async () => {
       signal?.throwIfAborted();
+      if (generation !== this.generation) throw new HttpError(409, "Browser control changed.");
       if (this.human)
         throw new HttpError(409, "A person controls the browser.");
       await this.ensure();
@@ -401,7 +409,63 @@ export class Computer {
         throw new HttpError(409, "Control changed to a person.");
       signal?.throwIfAborted();
       if (this.closing) throw new HttpError(503, "Desktop is closing.");
+      this.browserTools.track(page);
+      const guard = () => {
+        signal?.throwIfAborted();
+        if (this.human || this.closing || generation !== this.generation)
+          throw new HttpError(409, "Browser control changed. Result discarded.");
+      };
+      const abort = () => this.browserTools.invalidate();
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
       let result: unknown;
+      if (action === "snapshot") result = await this.browserTools.snapshot(page, guard);
+      if (action === "diagnostics") result = this.browserTools.diagnostics();
+      if (action === "fill") {
+        if (typeof args.text !== "string" || args.text.length > 24000) throw new Error("Text must be at most 24000 characters.");
+        result = await this.browserTools.target(args.ref, args.text, true, guard);
+      }
+      if (action === "tabs") {
+        const operation = args.operation ?? "list";
+        if (operation === "new") {
+          if (this.context!.pages().length >= 20) throw new Error("Tab limit reached (20).");
+          this.browserTools.invalidate();
+          const created = await this.context!.newPage(); guard();
+          this.page = created;
+          if (args.url) { await created.goto(this.url(String(args.url)), { waitUntil: "domcontentloaded", timeout: 10000 }); guard(); }
+        } else if (operation === "select" || operation === "close") {
+          const target = this.browserTools.page(args.pageId);
+          if (!target || target.isClosed()) throw new Error("Unknown session page ID.");
+          this.browserTools.invalidate();
+          if (operation === "select") { this.page = target; await target.bringToFront(); }
+          else await target.close();
+          guard();
+        } else if (operation !== "list") throw new Error("Invalid tab operation.");
+        result = { tabs: this.context!.pages().filter(p => this.browserTools.id(p)).slice(0, 20).map(p => ({ pageId: this.browserTools.id(p), active: p === this.page })), truncated: this.context!.pages().length > 20 };
+      }
+      if (action === "scroll") {
+        const x = Number(args.x ?? 0), y = Number(args.y);
+        if (![x, y].every(n => Number.isFinite(n) && Math.abs(n) <= 10000)) throw new Error("Scroll deltas must be within 10000 pixels.");
+        await page.evaluate(({ x, y }) => window.scrollBy(x, y), { x, y });
+        result = { ok: true };
+      }
+      if (action === "wait_for") {
+        const timeout = Number(args.timeoutMs ?? 5000);
+        if (!Number.isFinite(timeout) || timeout < 0 || timeout > 10000) throw new Error("Timeout must be 0–10000ms.");
+        if (!["text", "text_absent", "ready"].includes(String(args.condition))) throw new Error("Invalid wait condition.");
+        if (args.condition !== "ready" && (typeof args.text !== "string" || !args.text.length || args.text.length > 200)) throw new Error("Wait text must be 1–200 characters.");
+        const deadline = Date.now() + timeout;
+        while (true) {
+          guard();
+          const observed = await this.browserTools.snapshot(page, guard, false);
+          guard();
+          const met = args.condition === "ready" ? await page.evaluate(() => document.readyState !== "loading") : args.condition === "text" ? observed.text.includes(String(args.text)) : !observed.text.includes(String(args.text)) && !observed.truncated;
+          guard();
+          if (met) { result = { matched: true }; break; }
+          if (Date.now() >= deadline) { result = { matched: false }; break; }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
       if (action === "open") {
         const response = await page.goto(this.url(String(args.url)), {
           waitUntil: "domcontentloaded",
@@ -425,7 +489,11 @@ export class Computer {
         }
         result = { image: image.toString("base64") };
       }
-      if (action === "click") {
+      if (action === "click" && args.ref !== undefined) {
+        if (args.x !== undefined || args.y !== undefined) throw new Error("Use a reference OR coordinates.");
+        result = await this.browserTools.target(args.ref, undefined, false, guard);
+      }
+      if (action === "click" && args.ref === undefined) {
         const x = Number(args.x),
           y = Number(args.y);
         if (
@@ -456,6 +524,7 @@ export class Computer {
       signal?.throwIfAborted();
       if (this.closing) throw new HttpError(503, "Desktop is closing.");
       return result;
+      } finally { signal?.removeEventListener("abort", abort); }
     });
   }
   async reserveLogin(id: string, url: string, signal?: AbortSignal) {

@@ -58,7 +58,9 @@ export function interventionTools(
           args,
           signal,
         );
-        void pending.promise.catch(() => browser.cancelLogin(pending.request.id));
+        void pending.promise.catch(() =>
+          browser.cancelLogin(pending.request.id),
+        );
         try {
           await browser.reserveLogin(pending.request.id, args.url, signal);
           return result(await pending.promise);
@@ -73,9 +75,11 @@ export function interventionTools(
     define({
       name: "browser_open",
       label: "Open website",
-      description: "Navigate this agent’s browser session. Blocked during human control.",
+      description:
+        "Navigate this agent’s browser session. Blocked during human control.",
       parameters: Type.Object({ url: Type.String() }),
-      execute: async (_id, args, signal) => result(await computer().action("open", args, signal)),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("open", args, signal)),
     }),
     define({
       name: "browser_screenshot",
@@ -98,10 +102,93 @@ export function interventionTools(
     define({
       name: "browser_click",
       label: "Click browser",
-      description: "Click viewport coordinates in this agent’s browser session.",
-      parameters: Type.Object({ x: Type.Number(), y: Type.Number() }),
+      description:
+        "Click a browser_snapshot reference OR viewport coordinates in this agent’s browser session.",
+      // Responses function tools require an object root, not a top-level union.
+      // Computer.action enforces reference XOR a complete coordinate pair.
+      parameters: Type.Object({
+        x: Type.Optional(Type.Number()),
+        y: Type.Optional(Type.Number()),
+        ref: Type.Optional(Type.String()),
+      }),
       execute: async (_id, args, signal) =>
         result(await computer().action("click", args, signal)),
+    }),
+    define({
+      name: "browser_snapshot",
+      label: "Browser snapshot",
+      description:
+        "Observe bounded visible text and up to 100 element references; no form values. References expire on navigation, tab changes and handoff.",
+      parameters: Type.Object({}),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("snapshot", {}, signal)),
+    }),
+    define({
+      name: "browser_fill",
+      label: "Browser fill",
+      description:
+        "Fill a referenced non-secret text field. Use request_browser_login for credentials.",
+      parameters: Type.Object({
+        ref: Type.String(),
+        text: Type.String({ maxLength: 24000 }),
+      }),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("fill", args, signal)),
+    }),
+    define({
+      name: "browser_tabs",
+      label: "Browser tabs",
+      description:
+        "List (IDs only), create, select or close tabs exclusively in this agent session.",
+      parameters: Type.Object({
+        operation: Type.Union([
+          Type.Literal("list"),
+          Type.Literal("new"),
+          Type.Literal("select"),
+          Type.Literal("close"),
+        ]),
+        pageId: Type.Optional(Type.String()),
+        url: Type.Optional(Type.String()),
+      }),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("tabs", args, signal)),
+    }),
+    define({
+      name: "browser_scroll",
+      label: "Browser scroll",
+      description: "Scroll the active page by bounded pixel deltas.",
+      parameters: Type.Object({
+        x: Type.Optional(Type.Number({ minimum: -10000, maximum: 10000 })),
+        y: Type.Number({ minimum: -10000, maximum: 10000 }),
+      }),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("scroll", args, signal)),
+    }),
+    define({
+      name: "browser_wait_for",
+      label: "Browser wait_for",
+      description:
+        "Wait at most 10 seconds for visible text, absence of text, or DOM readiness. Does not return page text.",
+      parameters: Type.Object({
+        condition: Type.Union([
+          Type.Literal("text"),
+          Type.Literal("text_absent"),
+          Type.Literal("ready"),
+        ]),
+        text: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+        timeoutMs: Type.Optional(Type.Number({ minimum: 0, maximum: 10000 })),
+      }),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("wait_for", args, signal)),
+    }),
+    define({
+      name: "browser_diagnostics",
+      label: "Browser diagnostics",
+      description:
+        "Return up to 50 redacted console/page errors and request failure events. No raw messages or URLs. Blocked during human control.",
+      parameters: Type.Object({}),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("diagnostics", {}, signal)),
     }),
     define({
       name: "browser_type",
@@ -109,7 +196,8 @@ export function interventionTools(
       description:
         "Insert non-secret text in this agent’s focused browser field. For credentials request_browser_login instead.",
       parameters: Type.Object({ text: Type.String({ maxLength: 24000 }) }),
-      execute: async (_id, args, signal) => result(await computer().action("type", args, signal)),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("type", args, signal)),
     }),
     define({
       name: "browser_key",
@@ -117,7 +205,8 @@ export function interventionTools(
       description:
         "Press a key or shortcut in this agent’s browser session, for example Enter, Tab, Control+l.",
       parameters: Type.Object({ key: Type.String({ maxLength: 100 }) }),
-      execute: async (_id, args, signal) => result(await computer().action("key", args, signal)),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("key", args, signal)),
     }),
   ];
 }

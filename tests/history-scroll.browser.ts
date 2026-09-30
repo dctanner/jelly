@@ -134,6 +134,11 @@ try {
     await page
       .getByRole("button", { name: "Retry", exact: true })
       .evaluate((el) => (el as HTMLElement).click());
+    const retriedImage = page.locator(`.image-frame img[src="${images[2]!.url}"]`);
+    await retriedImage.waitFor({ state: "attached" });
+    // Retry remounts a lazy image offscreen. Force its decode without scrolling
+    // the reading anchor; production lazy loading and geometry assertions stay intact.
+    await retriedImage.evaluate((img) => { (img as HTMLImageElement).loading = "eager"; });
     await page.waitForFunction(
       () =>
         document.querySelectorAll(".image-frame img").length === 3 &&
