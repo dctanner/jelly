@@ -207,7 +207,9 @@ async function until(predicate: () => boolean) {
 for (const mode of ["api", "chatgpt"] as const)
   test(`Fresh Session uses native Pi compaction (${mode}), rotates the session, preserves history and resumes after restart`, async () => {
     const f = await fixture(mode);
+    const browser = f.app.service.computer.get(f.id);
     await f.seed();
+    expect(f.app.service.computer.get(f.id)).toBe(browser);
     const old = f.app.store.context(f.id)!;
     const history = f.app.store.history(f.id);
     const url = `${f.app.server.url.origin}/api/agents/${f.id}/fresh-session`;
@@ -241,6 +243,7 @@ for (const mode of ["api", "chatgpt"] as const)
     expect(f.app.store.run(started.run.id)!.status).toBe("completed");
     const fresh = f.app.store.context(f.id)!;
     expect(fresh[0]!.id).not.toBe(old[0]!.id);
+    expect(f.app.service.computer.get(f.id)).toBe(browser);
     expect(fresh.find((e) => e.type === "compaction")).toMatchObject({
       summary: expect.stringContaining("lantern-checkpoint"),
     });
@@ -263,6 +266,9 @@ for (const mode of ["api", "chatgpt"] as const)
     expect(events.filter((e) => e.type === "message")).toHaveLength(2);
     if (mode === "chatgpt") await until(() => f.closedSockets >= 1);
     await f.restart();
+    const restoredBrowser = f.app.service.computer.get(f.id);
+    expect(restoredBrowser).not.toBe(browser);
+    expect(restoredBrowser.dataDir).toBe(browser.dataDir);
     expect(f.app.service.freshSession(f.id, requestId).reused).toBe(true);
     f.app.service.start(
       f.id,
@@ -271,6 +277,7 @@ for (const mode of ["api", "chatgpt"] as const)
     );
     await f.app.service.settled();
     expect(f.app.store.context(f.id)![0]!.id).toBe(fresh[0]!.id);
+    expect(f.app.service.computer.get(f.id)).toBe(restoredBrowser);
     expect(JSON.stringify(f.requests.at(-1).input)).toContain(
       "lantern-checkpoint",
     );

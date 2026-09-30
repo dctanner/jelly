@@ -272,6 +272,9 @@ export class Computer {
         "--window-position=0,0",
         "--no-first-run",
         "--disable-session-crashed-bubble",
+        // Treat reopening this agent's persistent profile as a continuation,
+        // including cookies that websites deliberately mark session-only.
+        "--restore-last-session",
       ],
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",

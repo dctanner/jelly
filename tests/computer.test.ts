@@ -459,6 +459,64 @@ const available =
   }
 }, 30000);
 (available ? test : test.skip)(
+  "agent login persists across browser close and registry restart without sharing accounts",
+  async () => {
+    const { ComputerSessions } = await import("../src/server/computer-sessions");
+    const dir = mkdtempSync(join(tmpdir(), "jelly-login-persistence-"));
+    symlinkSync(runtime, join(dir, "runtime"), "dir");
+    let sessions = new ComputerSessions(dir, () => true);
+    const site = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: request => new Response(
+        new URL(request.url).pathname === "/login" ? "Signed in" : request.headers.get("cookie") ?? "Signed out",
+        { headers: {
+          "Content-Type": "text/plain",
+          ...(new URL(request.url).pathname === "/login"
+            ? { "Set-Cookie": "session_login=synthetic-login; HttpOnly; SameSite=Lax; Path=/" }
+            : {}),
+        } },
+      ),
+    });
+    const context = (computer: Computer) => (computer as unknown as { context: BrowserContext }).context;
+    const checkUrl = new URL("/check", site.url).href;
+    try {
+      const original = sessions.get("agent-a");
+      await original.action("open", { url: new URL("/login", site.url).href });
+      await original.action("open", { url: checkUrl });
+      await context(original).pages()[0]!.evaluate(() => localStorage.setItem("account", "synthetic-account"));
+      expect((await context(original).cookies()).find(c => c.name === "session_login")?.expires).toBe(-1);
+      await sessions.closeSession("agent-a");
+
+      const reopened = sessions.get("agent-a");
+      expect(reopened).not.toBe(original);
+      expect(reopened.dataDir).toBe(original.dataDir);
+      await reopened.action("open", { url: checkUrl });
+      expect(await context(reopened).pages().at(-1)!.textContent("body")).toContain("session_login=synthetic-login");
+      expect(await context(reopened).pages().at(-1)!.evaluate(() => localStorage.getItem("account"))).toBe("synthetic-account");
+      await sessions.close();
+
+      // Reconstruct the registry, as a Jelly service restart would.
+      sessions = new ComputerSessions(dir, () => true);
+      const restored = sessions.get("agent-a"), other = sessions.get("agent-b");
+      await Promise.all([restored.action("open", { url: checkUrl }), other.action("open", { url: checkUrl })]);
+      expect(await context(restored).pages().at(-1)!.textContent("body")).toContain("session_login=synthetic-login");
+      expect(await context(other).pages()[0]!.textContent("body")).toBe("Signed out");
+      expect(await context(other).pages()[0]!.evaluate(() => localStorage.getItem("account"))).toBeNull();
+
+      // Explicit logout must not be undone by later profile restoration.
+      await context(restored).clearCookies();
+      await sessions.closeSession("agent-a");
+      const loggedOut = sessions.get("agent-a");
+      await loggedOut.action("open", { url: checkUrl });
+      expect(await context(loggedOut).pages().at(-1)!.textContent("body")).toBe("Signed out");
+    } finally {
+      await sessions.close();
+      site.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000,
+);
+(available ? test : test.skip)(
   "lost-control recovery discards private tabs and clipboard but retains website sign-in",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "jelly-recovery-desktop-"));
