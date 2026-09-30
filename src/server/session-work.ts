@@ -12,7 +12,14 @@ export class SessionWork {
   ) {
     this.bus.on("subagent:async-started", (value) => {
       const data = value as Record<string, unknown>;
-      if (typeof data.id === "string") this.jobs.add(data.id);
+      // Resumed/awaited workflow children also emit async-started on this bus,
+      // but their results go to the owning workflow, not this session's async
+      // completion notifier. Only the owner is an independent lifecycle job.
+      const workflowOwned =
+        typeof data.parentWorkflowRunId === "string" &&
+        data.parentWorkflowRunId.length > 0;
+      if (typeof data.id === "string" && !workflowOwned)
+        this.jobs.add(data.id);
       this.report("subagent_started", this.summary(data));
       if (this.stopped) void this.stop().catch(() => {});
     });
@@ -34,6 +41,8 @@ export class SessionWork {
       [
         "id",
         "runId",
+        "parentWorkflowRunId",
+        "workflowKey",
         "agent",
         "status",
         "state",
