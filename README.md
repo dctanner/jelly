@@ -6,11 +6,13 @@ The target user is someone building an running there whole business from a singl
 
 <p align="center">
   <a href="https://dctanner.github.io/jelly/">
-    <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly on mobile: chat, request sudo, browse websites, and hand browser control to the user and back to the agent.">
+    <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly’s launch reel: open-source agents on your hardware, with real mobile UI, private browser handoffs, and sudo.">
   </a>
   <br>
-  <a href="https://dctanner.github.io/jelly/">Watch the 65-second mobile walkthrough</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
+  <a href="https://dctanner.github.io/jelly/">Watch the 29.5-second launch reel</a> · <a href="https://dctanner.github.io/jelly/media/jelly-mobile.mp4">MP4</a>
 </p>
+
+Real mobile UI with demonstration data and an original soundtrack; sudo execution and website sign-in are simulated.
 
 - Run it on your on hardware: a Mac, Linux box or VM.
 - Create as many agents as you want. Group into project directories.
