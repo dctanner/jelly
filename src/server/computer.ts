@@ -54,6 +54,7 @@ export class Computer {
   constructor(
     readonly dataDir: string,
     private changed: () => void = () => {},
+    private runtimeDataDir = dataDir,
   ) {}
   state(session?: string): ComputerState {
     return {
@@ -76,7 +77,7 @@ export class Computer {
     return () => this.connections.delete(close);
   }
   private binary(name: string) {
-    const local = join(this.dataDir, "runtime/usr/bin", name);
+    const local = join(this.runtimeDataDir, "runtime/usr/bin", name);
     if (existsSync(local)) return local;
     for (const p of ["/usr/bin", "/usr/local/bin"])
       if (existsSync(join(p, name))) return join(p, name);
@@ -135,7 +136,7 @@ export class Computer {
       HOME: process.env.HOME,
       LANG: "C.UTF-8",
       XDG_SESSION_TYPE: "x11",
-      LD_LIBRARY_PATH: join(this.dataDir, "runtime/usr/lib/x86_64-linux-gnu"),
+      LD_LIBRARY_PATH: join(this.runtimeDataDir, "runtime/usr/lib/x86_64-linux-gnu"),
       XAUTHORITY: auth,
     };
     const launch = (exe: string, args: string[], displayPipe = false) => {
@@ -364,14 +365,20 @@ export class Computer {
     return url.href;
   }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
-    const job = this.tail.then(fn);
+    if (this.closing) return Promise.reject(new HttpError(503, "Desktop is closing."));
+    const job = this.tail.then(() => {
+      if (this.closing) throw new HttpError(503, "Desktop is closing.");
+      return fn();
+    });
     this.tail = job.catch(() => {});
     return job;
   }
   async action(
     action: "open" | "screenshot" | "click" | "type" | "key",
     args: Record<string, unknown> = {},
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     if (this.human)
       throw new HttpError(
         409,
@@ -379,12 +386,17 @@ export class Computer {
       );
     const generation = this.generation;
     return this.serial(async () => {
+      signal?.throwIfAborted();
       if (this.human)
         throw new HttpError(409, "A person controls the browser.");
       await this.ensure();
+      signal?.throwIfAborted();
+      if (this.closing) throw new HttpError(503, "Desktop is closing.");
       const page = await this.activePage();
       if (this.human || generation !== this.generation)
         throw new HttpError(409, "Control changed to a person.");
+      signal?.throwIfAborted();
+      if (this.closing) throw new HttpError(503, "Desktop is closing.");
       let result: unknown;
       if (action === "open") {
         const response = await page.goto(this.url(String(args.url)), {
@@ -393,10 +405,22 @@ export class Computer {
         });
         result = { url: page.url(), status: response?.status() };
       }
-      if (action === "screenshot")
-        result = {
-          image: (await page.screenshot({ type: "png" })).toString("base64"),
-        };
+      if (action === "screenshot") {
+        // Chromium can reject capture before the first compositor frame of a
+        // newly launched window. Retry only that transient failure, bounded.
+        let image: Buffer | undefined;
+        for (let attempt = 0; !image; attempt++) {
+          signal?.throwIfAborted();
+          if (this.closing || this.human || generation !== this.generation)
+            throw new HttpError(409, "Browser control changed.");
+          try { image = await page.screenshot({ type: "png" }); }
+          catch (error) {
+            if (attempt >= 4 || !(error instanceof Error) || !error.message.includes("Unable to capture screenshot")) throw error;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
+        result = { image: image.toString("base64") };
+      }
       if (action === "click") {
         const x = Number(args.x),
           y = Number(args.y);
@@ -425,10 +449,13 @@ export class Computer {
           409,
           "Control changed to a person. The result was discarded.",
         );
+      signal?.throwIfAborted();
+      if (this.closing) throw new HttpError(503, "Desktop is closing.");
       return result;
     });
   }
-  async reserveLogin(id: string, url: string) {
+  async reserveLogin(id: string, url: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (this.human || this.handoff)
       throw new HttpError(409, "The browser is already reserved for a person.");
     const href = this.url(url);
@@ -438,17 +465,25 @@ export class Computer {
     this.invalidate();
     try {
       await this.serial(async () => {
+        signal?.throwIfAborted();
+        if (this.handoff !== id) throw new Error("Login cancelled.");
         await this.ensure();
+        signal?.throwIfAborted();
+        if (this.closing || this.handoff !== id) throw new Error("Login cancelled.");
         const page = await this.activePage();
+        signal?.throwIfAborted();
+        if (this.closing || this.handoff !== id) throw new Error("Login cancelled.");
         await page.goto(href, {
           waitUntil: "domcontentloaded",
           timeout: 30000,
         });
       });
     } catch (e) {
-      if (!this.owner) this.human = false;
-      this.handoff = null;
-      this.invalidate();
+      if (this.handoff === id) {
+        if (!this.owner) this.human = false;
+        this.handoff = null;
+        this.invalidate();
+      }
       throw e;
     }
   }

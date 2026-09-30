@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ExternalLink, Check, LoaderCircle } from "lucide-react";
 import type { ConnectionStatus, Mode } from "../shared/types";
 import { control } from "./api";
+import { copyText } from "./clipboard";
 export function Connections({
   onConnected,
   only,
@@ -16,7 +17,6 @@ export function Connections({
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const key = useRef<HTMLInputElement>(null),
-    callback = useRef<HTMLInputElement>(null),
     seen = useRef("");
   const notify = useRef(onConnected);
   notify.current = onConnected;
@@ -74,19 +74,6 @@ export function Connections({
       notify.current("api");
     });
   }
-  function submitCallback(e: FormEvent) {
-    e.preventDefault();
-    const value = callback.current?.value ?? "";
-    if (callback.current) callback.current.value = "";
-    onDirty?.(false);
-    void act(async () => {
-      await control("/auth/chatgpt/callback", {
-        id: status?.flow?.id,
-        callback: value,
-      });
-      setNotice("Completing ChatGPT sign-in…");
-    });
-  }
   const flow = status?.flow,
     signingIn = flow && ["starting", "waiting"].includes(flow.status);
   return (
@@ -116,6 +103,32 @@ export function Connections({
               <p>
                 <LoaderCircle size={14} className="spin" /> Waiting for sign-in
               </p>
+              {flow.userCode && (
+                <p>
+                  One-time code:{" "}
+                  <strong>
+                    <code>{flow.userCode}</code>
+                  </strong>{" "}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(async () => {
+                        try {
+                          await copyText(flow.userCode!);
+                          setNotice("Device code copied.");
+                        } catch {
+                          throw new Error(
+                            "Could not copy the device code. Select and copy it manually.",
+                          );
+                        }
+                      })
+                    }
+                  >
+                    Copy code
+                  </button>
+                </p>
+              )}
               {flow.url && (
                 <a
                   className="auth-link"
@@ -127,29 +140,13 @@ export function Connections({
                 </a>
               )}
               <p className="subtle">
-                Sign in in the new tab, then return here. Jelly updates
-                automatically.
+                Open ChatGPT, enter the one-time code above, and approve
+                sign-in. Jelly connects automatically when you finish.
               </p>
-              <details>
-                <summary>Sign-in tab didn’t return?</summary>
-                <form onSubmit={submitCallback}>
-                  <label>
-                    Callback URL
-                    <input
-                      ref={callback}
-                      onChange={(e) => onDirty?.(!!e.target.value)}
-                      type="password"
-                      autoComplete="off"
-                      maxLength={16000}
-                      placeholder="http://localhost:1455/auth/callback?…"
-                      required
-                    />
-                  </label>
-                  <button type="submit" disabled={busy}>
-                    Complete sign-in
-                  </button>
-                </form>
-              </details>
+              <p className="subtle">
+                If prompted, enable device-code login in your ChatGPT security
+                settings, or ask your workspace admin to enable it.
+              </p>
               <button
                 type="button"
                 disabled={busy}

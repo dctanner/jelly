@@ -61,7 +61,8 @@ export class JellyAuth {
             type: "oauth",
             ...(await driver({
               signal: interaction.signal,
-              onDeviceCode: () => {},
+              onDeviceCode: (info) =>
+                interaction.notify({ type: "device_code", ...info }),
               onSelect: (p) => interaction.prompt({ type: "select", ...p }),
               onAuth: (info) =>
                 interaction.notify({ type: "auth_url", ...info }),
@@ -89,6 +90,7 @@ export class JellyAuth {
             : callbacks.onPrompt({ message: p.message }),
       notify: (e) => {
         if (e.type === "auth_url") callbacks.onAuth(e);
+        else if (e.type === "device_code") callbacks.onDeviceCode(e);
         else if (e.type === "progress") callbacks.onProgress?.(e.message);
       },
     });

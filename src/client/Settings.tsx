@@ -6,6 +6,7 @@ import { McpConnections } from "./McpConnections";
 import { api } from "./api";
 import {
   MODEL_OPTIONS,
+  ULTRAFAST_NOTICE,
   EFFORT_OPTIONS,
   type ModelId,
   type Effort,
@@ -257,12 +258,17 @@ export function Settings({
         </>
       )}
       {page === "Model" && (
-        <Choices
-          label="Model"
-          value={model}
-          options={MODEL_OPTIONS}
-          onChange={setModel}
-        />
+        <>
+          <Choices
+            label="Model"
+            value={model}
+            options={MODEL_OPTIONS}
+            onChange={setModel}
+          />
+          {model === "gpt-6-astra-ultrafast" && (
+            <p className="settings-footnote">{ULTRAFAST_NOTICE}</p>
+          )}
+        </>
       )}
       {page === "Reasoning effort" && (
         <>

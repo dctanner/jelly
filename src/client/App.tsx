@@ -1,3 +1,6 @@
+import { Avatar } from "./Avatar";
+import { InitialAgentIdentity } from "./InitialAgentIdentity";
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { Settings, SettingsRow } from "./Settings";
 import { ComposerSettings } from "./ComposerSettings";
 import { captureAnchor, restoreAnchor, mergeHistory, snapshotHistory, type ScrollAnchor } from "./history";
@@ -5,6 +8,7 @@ import { useChatNavigation } from "./useChatNavigation";
 import { useInputModality } from "./useInputModality";
 import { useKeyboardViewport } from "./useKeyboardViewport";
 import { useUnreadMessages } from "./useUnreadMessages";
+import { AgentInbox } from "./AgentInbox";
 import { MessageText } from "./MessageText";
 import { GeneratedImages } from "./GeneratedImages";
 import { toolImages, toolResultForDisplay } from "../shared/tool-images";
@@ -12,8 +16,6 @@ import { RenderedFiles } from "./RenderedFiles";
 import { Modal } from "./Modal";
 import { UploadFiles } from "./UploadFiles";
 import {
-  ProjectButton,
-  ProjectSwitcher,
   ProjectForm,
   MoveAgent,
 } from "./Projects";
@@ -31,7 +33,7 @@ import { conversationActivity } from "./conversationActivity";
 import { WorkActivity } from "./WorkActivity";
 import { copyText } from "./clipboard";
 import type { ProjectRecord } from "../shared/types";
-import { Folder, Search, ChevronLeft } from "lucide-react";
+import { Folder, ChevronLeft } from "lucide-react";
 import { requestId } from "./request-id";
 import { InterventionCard } from "./InterventionCard";
 import { ComputerPanel } from "./ComputerPanel";
@@ -52,9 +54,6 @@ import {
   ArrowDown,
   Plus,
   Monitor,
-  Settings2,
-  Sun,
-  Moon,
   X,
   Square,
   Check,
@@ -92,27 +91,6 @@ function previewText(value: string) {
     .trim();
 }
 const colors = ["#b5bafc", "#a3d0b0", "#edbc8e", "#a4c8e8", "#e4acd0"];
-function Avatar({
-  agent,
-  size = "",
-  working = false,
-}: {
-  agent: Pick<AgentRecord, "name" | "color"> & { avatarId?: string };
-  size?: string;
-  working?: boolean;
-}) {
-  const id = AVATARS.includes(agent.avatarId as never)
-    ? agent.avatarId!
-    : "jellyfish";
-  const index = AVATARS.indexOf(id as never);
-  return (
-    <img
-      className={`avatar ${size}`}
-      src={`/brand/avatars/${String(index + 1).padStart(2, "0")}-${id}${working ? "-working" : ""}.png`}
-      alt=""
-    />
-  );
-}
 function ArchivedAgents({
   scope,
   onClose,
@@ -196,6 +174,7 @@ function Profile({
   embedded = false,
   onDirty,
   onBusy,
+  disabled = false,
 }: {
   projects: ProjectRecord[];
   defaultProject?: string;
@@ -205,8 +184,10 @@ function Profile({
   embedded?: boolean;
   onDirty?: (dirty: boolean) => void;
   onBusy?: (busy: boolean) => void;
+  disabled?: boolean;
 }) {
-  const [name, setName] = useState(agent?.name ?? "");
+  const [name, setName] = useState(agent?.name ?? DEFAULT_AGENT_NAME);
+  const [nameEdited, setNameEdited] = useState(false);
   const [instructions, setInstructions] = useState(agent?.instructions ?? "");
   const [color] = useState(agent?.color ?? colors[0]!);
   const [avatarId, setAvatarId] = useState(agent?.avatarId ?? "jellyfish");
@@ -215,7 +196,7 @@ function Profile({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const dirty =
-    name !== (agent?.name ?? "") ||
+    nameEdited || name !== (agent?.name ?? DEFAULT_AGENT_NAME) ||
     instructions !== (agent?.instructions ?? "") ||
     avatarId !== (agent?.avatarId ?? "jellyfish") ||
     (!agent && projectId !== (defaultProject ?? ""));
@@ -227,6 +208,7 @@ function Profile({
   }, [busy, onBusy]);
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (disabled || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -236,6 +218,7 @@ function Profile({
           method: agent ? "PATCH" : "POST",
           body: JSON.stringify({
             name,
+            nameEdited,
             instructions,
             color,
             avatarId,
@@ -252,6 +235,8 @@ function Profile({
   }
   const form = (
     <form onSubmit={submit}>
+      {disabled && <p role="status">Wait until the agent is idle and connected to edit its profile.</p>}
+      <fieldset className="profile-fields" disabled={disabled || busy}>
       <div className="profile-preview">
         <Avatar agent={{ name: name || "J", color, avatarId }} size="large" />
         <button
@@ -319,7 +304,7 @@ function Profile({
           required
           maxLength={60}
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
           placeholder="e.g. Scout"
         />
       </label>
@@ -341,6 +326,7 @@ function Profile({
       <button className="primary wide" disabled={busy || !name.trim()}>
         {busy ? "Saving…" : agent ? "Save profile" : "Create agent"}
       </button>
+      </fieldset>
     </form>
   );
   return embedded ? (
@@ -747,12 +733,11 @@ export function App() {
   const appRoot = useRef<HTMLDivElement>(null);
   useInputModality(appRoot);
   const { theme, setTheme, resolved } = useTheme();
-  const [computerOpen, setComputerOpen] = useState(false);
+  const [computerOpen, setComputerOpen] = useState<string | null>(null);
   const [moveTarget, setMoveTarget] = useState<AgentRecord | null>(null);
   const [data, setData] = useState<Snapshot | null>(null);
   const [selected, setSelected] = useState("");
   const [scope, setScope] = useState<Scope>({ kind: "all" });
-  const [recent, setRecent] = useState<string[]>([]);
   const [listOpen, setListOpen] = useState(true);
   const [mobile, setMobile] = useState(
     () => window.matchMedia("(max-width:767px)").matches,
@@ -763,11 +748,9 @@ export function App() {
     m.addEventListener("change", update);
     return () => m.removeEventListener("change", update);
   }, []);
-  const [agentSearch, setAgentSearch] = useState("");
   const [projectModal, setProjectModal] = useState<
-    "switch" | "create" | "edit" | "move" | "add" | null
+    "create" | "edit" | "move" | "add" | null
   >(null);
-  const [switchKeyboard, setSwitchKeyboard] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const nav = useRef<{
     scope: Scope;
@@ -792,7 +775,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [modal, setModal] = useState<
-    "create" | "settings" | "archived" | "options" | null
+    "settings" | "archived" | "options" | "profile" | null
   >(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [uploadTarget, setUploadTarget] = useState<AgentRecord | null>(null);
@@ -802,6 +785,9 @@ export function App() {
   const [savingModel, setSavingModel] = useState(false);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const [archiving, setArchiving] = useState(false);
+  const [creatingAgent, setCreatingAgent] = useState(false);
+  const [creationError, setCreationError] = useState("");
+  const creationPending = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [stopping, setStopping] = useState<string | null>(null);
   const [history, setHistory] = useState<{
@@ -824,12 +810,14 @@ export function App() {
   const conversation = useRef<HTMLDivElement>(null);
   useKeyboardViewport(appRoot, conversation);
   const [actionError, setActionError] = useState("");
+  const [editingIdentity, setEditingIdentity] = useState(false);
   const refresh = useRef<() => Promise<void>>(async () => {});
   const scrollMemory = useRef(
     new Map<string, { top: number; bottom: boolean }>(),
   );
   const scrollAgent = useRef("");
   const readingAnchor = useRef<ScrollAnchor | null>(null);
+  const applyHistoryScope = useRef<(id?: string) => void>(() => {});
   const backToAgents = useCallback(() => {
     setListOpen(true);
     composerInput.current?.blur();
@@ -854,8 +842,10 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [mobile, listOpen]);
   useEffect(() => {
-    if (!mobile) return;
-    const pop = () => setListOpen(!window.history.state?.jellyChat);
+    const pop = () => {
+      setListOpen(!window.history.state?.jellyChat);
+      applyHistoryScope.current(window.history.state?.jellyProject);
+    };
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, [mobile]);
@@ -932,7 +922,8 @@ export function App() {
             instance: next.instance.id,
           };
           setScope(nav.current.scope);
-          setRecent(nav.current.recent);
+          if (nav.current.scope.kind === "project" && !window.history.state?.jellyProject)
+            window.history.replaceState({ ...window.history.state, jellyProject: nav.current.scope.projectId, jellyProjectEntry: false }, "");
         }
         const currentScope = validScope(nav.current.scope, next.projects);
         nav.current.scope = currentScope;
@@ -1176,10 +1167,11 @@ export function App() {
     stopping !== agent.id &&
     !sending &&
     !savingModel &&
+    !editingIdentity &&
     !!draft.trim();
   const select = (id: string) => {
     rememberScroll();
-    if (mobile && listOpen && !window.history.state?.jellyChat)
+    if (mobile && !window.history.state?.jellyChat)
       window.history.pushState(
         { ...window.history.state, jellyChat: true },
         "",
@@ -1218,9 +1210,7 @@ export function App() {
         ...previous.recent.filter((p) => p !== next.projectId),
       ].slice(0, 8);
     setScope(next);
-    setRecent([...previous.recent]);
     setSelected(id);
-    setAgentSearch("");
     setProjectModal(null);
     setActionError("");
     historyGeneration.current++;
@@ -1244,24 +1234,63 @@ export function App() {
     setAnnouncement(`${scopeName(next, projects)} selected`);
     void refresh.current();
   };
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (
-        (e.metaKey || e.ctrlKey) &&
-        e.key.toLowerCase() === "k" &&
-        !e.isComposing
-      ) {
-        e.preventDefault();
-        setSwitchKeyboard(true);
-        setProjectModal("switch");
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
-  function openSwitcher() {
-    setSwitchKeyboard(false);
-    setProjectModal("switch");
+  applyHistoryScope.current = (id) => {
+    const next: Scope = id && projects.some(p => p.id === id) ? { kind: "project", projectId: id } : { kind: "all" };
+    if (scopeKey(next) !== scopeKey(nav.current.scope)) switchScope(next);
+  };
+  function openProject(id: string) {
+    if (nav.current.scope.kind !== "project" || nav.current.scope.projectId !== id) {
+      const state = window.history.state;
+      if (state?.jellyChat && nav.current.scope.kind !== "project")
+        window.history.replaceState({ ...state, jellyChat: false }, "");
+      const next = { ...window.history.state, jellyProject: id, jellyProjectEntry: true, jellyChat: false };
+      if (state?.jellyProjectEntry && !state?.jellyChat) window.history.replaceState(next, "");
+      else window.history.pushState(next, "");
+    }
+    switchScope({ kind: "project", projectId: id });
+    setListOpen(true);
+  }
+  function backToProjects() {
+    if (window.history.state?.jellyProjectEntry && window.history.length > 1) {
+      window.history.go(window.history.state?.jellyChat ? -2 : -1);
+    } else {
+      window.history.replaceState({ ...window.history.state, jellyProject: null, jellyProjectEntry: false, jellyChat: false }, "");
+      switchScope({ kind: "all" });
+      setListOpen(true);
+    }
+  }
+  function openInboxAgent(id: string) {
+    const target = data?.agents.find(a => a.id === id);
+    if (target?.projectId && (scope.kind !== "project" || scope.projectId !== target.projectId)) openProject(target.projectId);
+    select(id);
+  }
+  async function createAgent() {
+    if (!connected || creationPending.current) return;
+    creationPending.current = true;
+    setCreatingAgent(true);
+    setCreationError("");
+    const targetScope = nav.current.scope;
+    try {
+      const created = await post<AgentRecord>("/agents", {
+        name: DEFAULT_AGENT_NAME,
+        instructions: "",
+        color: colors[0],
+        avatarId: "jellyfish",
+        nameEdited: false,
+        projectId: targetScope.kind === "project" ? targetScope.projectId : null,
+      });
+      if (mobile && listOpen && !window.history.state?.jellyChat)
+        window.history.pushState({ ...window.history.state, jellyChat: true }, "");
+      switchScope(targetScope, created.id);
+      setListOpen(false);
+      setModal(null);
+      setAnnouncement("New Agent created");
+    } catch (error) {
+      setCreationError((error as Error).message);
+    } finally {
+      creationPending.current = false;
+      setCreatingAgent(false);
+    }
   }
   async function send(e?: FormEvent) {
     e?.preventDefault();
@@ -1404,8 +1433,8 @@ export function App() {
   const meaningful =
     visibleEvents.some((e) => e.type === "message") ||
     running ||
-    !!page ||
-    before != null;
+    before != null ||
+    !!(agent && data?.agentPreviews?.[agent.id]);
   return (
     <div
       ref={appRoot}
@@ -1421,162 +1450,38 @@ export function App() {
         inert={mobile && !listOpen}
         aria-label="Agents"
       >
-        <div className="brand">
-          <button
-            className="brand-mark"
-            aria-label="Jelly says hello"
-            onClick={(e) => {
-              e.currentTarget.classList.remove("sea-hello");
-              void e.currentTarget.offsetWidth;
-              e.currentTarget.classList.add("sea-hello");
-            }}
-          >
-            <img src="/brand/jelly-mark.png" alt="" />
-          </button>
-          <span className="brand-wordmark">jelly</span>
-          <h1 className="mobile-inbox-title">Agents</h1>
-          <button
-            className="icon"
-            aria-label="Create agent"
-            title="Create agent"
-            onClick={() => setModal("create")}
-            disabled={!connected}
-          >
-            <Plus size={20} />
-          </button>
-        </div>
-        <ProjectButton
-          scope={scope}
-          projects={projects}
-          onClick={openSwitcher}
+        <AgentInbox
+          data={data}
+          projectId={scope.kind === "project" ? scope.projectId : undefined}
+          selectedId={agent?.id}
+          unread={unreadAgents}
+          connected={connected}
+          visible={!mobile || listOpen}
+          dark={resolved === "dark"}
+          onProject={openProject}
+          onBack={backToProjects}
+          onAgent={openInboxAgent}
+          onArchived={() => setModal("archived")}
+          onSettings={() => setModal("settings")}
+          onToggleTheme={() => setTheme(resolved === "dark" ? "light" : "dark")}
+          onNewProject={() => setProjectModal("create")}
+          onManageProject={() => setProjectModal("edit")}
+          onAddAgent={() => setProjectModal("add")}
+          previewTime={previewTime}
+          previewText={previewText}
         />
-        <div className="agent-search">
-          <Search size={17} />
-          <input
-            aria-label="Find an agent"
-            placeholder="Find an agent"
-            value={agentSearch}
-            onChange={(e) => setAgentSearch(e.target.value)}
-          />
-        </div>
-        <div className="section-label">YOUR AGENTS</div>
-        <nav>
-          {data?.agents
-            .filter(
-              (a) =>
-                !a.archivedAt &&
-                belongs(a, scope) &&
-                a.name.toLowerCase().includes(agentSearch.toLowerCase()),
-            )
-            .map((a) => (
-              <button
-                key={a.id}
-                className={`agent-row ${a.id === agent?.id ? "selected" : ""}`}
-                onClick={() => select(a.id)}
-                aria-current={a.id === agent?.id ? "page" : undefined}
-                title={`${a.name} · ${a.status}`}
-              >
-                <span
-                  className={`agent-avatar${a.status === "running" ? " is-working" : a.status === "waiting" ? " is-waiting" : ""}`}
-                  aria-hidden="true"
-                >
-                  <Avatar agent={a} working={a.status === "running"} />
-                </span>
-                <span className="agent-row-copy">
-                  <span className="agent-row-heading">
-                    <strong>{a.name}</strong>
-                    {a.status === "running" ? (
-                      <span className="agent-row-status work-status-sheen">Working</span>
-                    ) : a.status === "waiting" ? (
-                      <span className="agent-row-status">Needs you</span>
-                    ) : data.agentPreviews?.[a.id] ? (
-                      <time dateTime={data.agentPreviews[a.id]!.createdAt}>
-                        {previewTime(data.agentPreviews[a.id]!.createdAt)}
-                      </time>
-                    ) : null}
-                  </span>
-                  <small className="agent-preview">
-                    {a.status === "running"
-                      ? data.agentActivity?.[a.id] ?? "Thinking…"
-                      : a.status === "waiting"
-                        ? "Waiting for your help…"
-                        : data.agentPreviews?.[a.id]
-                          ? previewText(data.agentPreviews[a.id]!.text)
-                          : "Start a conversation"}
-                  </small>
-                  {scope.kind === "all" && (
-                    <small className="agent-project">
-                      {data.projects.find((p) => p.id === a.projectId)?.name ??
-                        "Ungrouped"}
-                    </small>
-                  )}
-                </span>
-                {["waiting", "error", "interrupted"].includes(a.status) ? (
-                  <i
-                    className="status-dot agent-indicator attention"
-                    role="img"
-                    aria-label="Needs attention"
-                    title="Needs attention"
-                  />
-                ) : unreadAgents.has(a.id) ? (
-                  <i
-                    className="status-dot agent-indicator unread"
-                    role="img"
-                    aria-label="Unread messages"
-                    title="Unread messages"
-                  />
-                ) : null}
-              </button>
-            ))}
-        </nav>
-        {data &&
-          !data.agents.some((a) => !a.archivedAt && belongs(a, scope)) && (
-            <div className="subtle empty-agents">
-              <p>No agents here yet. Create one to get started.</p>
-              {currentProject && (
-                <button
-                  className="secondary wide"
-                  onClick={() => setProjectModal("add")}
-                >
-                  Add existing agent
-                </button>
-              )}
-            </div>
-          )}
+        {creationError && (!mobile || listOpen) && <p className="error-text" role="alert">{creationError}</p>}
         <button
-          className="archive-browser"
-          onClick={() => setModal("archived")}
-          disabled={!connected}
-          title="Archived agents"
-          aria-label="Archived agents"
+          type="button"
+          className="agent-create-fab"
+          aria-label="Create agent"
+          title="Create agent"
+          onClick={() => void createAgent()}
+          disabled={!connected || creatingAgent}
+          aria-busy={creatingAgent}
         >
-          <Archive size={17} />
-          <span>Archived agents</span>
+          {creatingAgent ? <LoaderCircle size={28} className="spin" aria-hidden="true" /> : <Plus size={30} strokeWidth={1.8} aria-hidden="true" />}
         </button>
-        <div className="sidebar-bottom">
-          <Monitor size={17} />
-          <span>
-            {data?.instance.name ?? "This computer"}
-            <small>{connected ? "Connected locally" : "Reconnecting…"}</small>
-          </span>
-          <button
-            className="icon"
-            aria-label={`Switch to ${resolved === "dark" ? "light" : "dark"} mode`}
-            title={`Switch to ${resolved === "dark" ? "light" : "dark"} mode`}
-            onClick={() => setTheme(resolved === "dark" ? "light" : "dark")}
-          >
-            {resolved === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-          </button>
-          <button
-            className="icon"
-            aria-label="Connection and appearance"
-            title="Connection and appearance"
-            onClick={() => setModal("settings")}
-            disabled={!data}
-          >
-            <Settings2 size={17} />
-          </button>
-        </div>
       </aside>
       <main className="t-page" data-page-id="2" inert={mobile && listOpen}>
         <header className="conversation-header">
@@ -1588,12 +1493,12 @@ export function App() {
           >
             <ChevronLeft size={22} />
           </button>
-          {agent ? (
+          {agent && meaningful ? (
             <button
               className="agent-identity"
-              aria-label={`${agent.name} details`}
+              aria-label={`Edit ${agent.name} profile`}
               aria-haspopup="dialog"
-              onClick={() => setModal("options")}
+              onClick={() => setModal("profile")}
             >
               <span
                 className={`agent-avatar${agent.status === "running" ? " is-working" : ""}`}
@@ -1621,15 +1526,15 @@ export function App() {
                 </span>
               </span>
             </button>
-          ) : (
+          ) : !agent ? (
             <span className="empty-header-title">Your agents</span>
-          )}
+          ) : null}
           <div className="conversation-actions">
             <button
               className="icon computer-button"
               aria-label="Computer"
               title="Computer"
-              onClick={() => setComputerOpen(true)}
+              onClick={() => setComputerOpen(agent?.id ?? null)}
               disabled={!connected}
             >
               <Monitor size={20} />
@@ -1647,6 +1552,7 @@ export function App() {
             )}
           </div>
         </header>
+        {creationError && mobile && !listOpen && <p className="error-text" role="alert">{creationError}</p>}
         {loadError && (
           <div className="connection-error" role="alert">
             {loadError}{" "}
@@ -1680,21 +1586,19 @@ export function App() {
             </div>
           ) : agent && !meaningful ? (
             <div className="welcome">
-              <Avatar agent={agent} size="large" />
-              <h1>Meet {agent.name}.</h1>
-              <p>Give your agent something to work on.</p>
-              <button
-                disabled={!!agent.archivedAt}
-                className="suggestion"
-                onClick={() =>
-                  setDrafts((d) => ({
-                    ...d,
-                    [agent.id]: "Tell me about this Jelly workspace.",
-                  }))
-                }
-              >
-                Tell me about this workspace <ArrowUp size={15} />
-              </button>
+              <InitialAgentIdentity
+                key={agent.id}
+                agent={agent}
+                disabled={!connected || !!agent.archivedAt}
+                onEditing={setEditingIdentity}
+                onSaved={(updated) => {
+                  setData((current) => current ? {
+                    ...current,
+                    agents: current.agents.map((item) => item.id === updated.id ? updated : item),
+                  } : current);
+                  void refresh.current();
+                }}
+              />
             </div>
           ) : agent ? (
             <div className="timeline">
@@ -1751,8 +1655,8 @@ export function App() {
                 </code>
               )}
               <div className="empty-actions">
-                <button className="primary" onClick={() => setModal("create")}>
-                  Create agent
+                <button className="primary" disabled={!connected || creatingAgent} onClick={() => void createAgent()}>
+                  {creatingAgent ? "Creating…" : "Create agent"}
                 </button>
                 {currentProject && (
                   <button
@@ -1784,7 +1688,7 @@ export function App() {
                     (current) => current.id === item.id,
                   ) ?? item
                 }
-                onComputer={() => setComputerOpen(true)}
+                onComputer={() => setComputerOpen(item.agentId)}
                 onChange={() => void refresh.current()}
               />
             ))}
@@ -1854,11 +1758,12 @@ export function App() {
             className={`composer ${running ? "has-delivery-options" : ""}`}
             onSubmit={send}
           >
+            <div className="composer-input">
             <textarea
               ref={composerInput}
               rows={1}
               aria-label={`Message ${agent?.name ?? "agent"}`}
-              placeholder={`Message ${agent?.name ?? "your agent"}…`}
+              placeholder=" "
               maxLength={24000}
               value={draft}
               disabled={!agent || !selectionReady || !!agent.archivedAt}
@@ -1878,6 +1783,10 @@ export function App() {
                 }
               }}
             />
+            <span className="composer-placeholder" aria-hidden="true">
+              Message {agent?.name ?? "your agent"}…
+            </span>
+            </div>
             <div className="composer-footer">
               <button
                 type="button"
@@ -1954,19 +1863,6 @@ export function App() {
           </form>
         </div>
       </main>
-      {projectModal === "switch" && data && (
-        <ProjectSwitcher
-          scope={scope}
-          projects={projects}
-          agents={data.agents}
-          recent={recent}
-          keyboard={switchKeyboard}
-          onSelect={switchScope}
-          onClose={() => setProjectModal(null)}
-          onCreate={() => setProjectModal("create")}
-          onManage={() => setProjectModal("edit")}
-        />
-      )}
       {(projectModal === "create" ||
         (projectModal === "edit" && currentProject)) &&
         data && (
@@ -1984,9 +1880,9 @@ export function App() {
                     }
                   : d,
               );
-              switchScope({ kind: "project", projectId: p.id });
+              openProject(p.id);
             }}
-            onDeleted={() => switchScope({ kind: "ungrouped" })}
+            onDeleted={backToProjects}
           />
         )}
       {(projectModal === "move" || projectModal === "add") && data && (
@@ -2011,9 +1907,11 @@ export function App() {
           }}
         />
       )}
-      {computerOpen && (
+      {computerOpen && agent?.id === computerOpen && (
         <ComputerPanel
-          onClose={() => setComputerOpen(false)}
+          key={computerOpen}
+          agentId={computerOpen}
+          onClose={() => setComputerOpen(null)}
           onChange={() => void refresh.current()}
         />
       )}
@@ -2034,6 +1932,19 @@ export function App() {
           }}
         />
       )}
+      {modal === "profile" && agent && (
+        <Profile
+          key={agent.id}
+          agent={agent}
+          projects={projects}
+          disabled={!connected || !!running}
+          onClose={() => setModal(null)}
+          onSave={() => {
+            setModal(null);
+            void refresh.current();
+          }}
+        />
+      )}
       {modal === "options" && agent && (
         <AgentDetails
           agent={agent}
@@ -2051,7 +1962,7 @@ export function App() {
           }}
           onComputer={() => {
             setModal(null);
-            setComputerOpen(true);
+            setComputerOpen(agent?.id ?? null);
           }}
           onMove={() => {
             setModal(null);
@@ -2072,23 +1983,6 @@ export function App() {
           onClose={() => setModal(null)}
           onSelect={(id) => {
             select(id);
-            setModal(null);
-          }}
-        />
-      )}
-      {modal === "create" && (
-        <Profile
-          projects={projects}
-          defaultProject={currentProject?.id}
-          onClose={() => setModal(null)}
-          onSave={(a) => {
-            switchScope(
-              a.projectId
-                ? { kind: "project", projectId: a.projectId }
-                : { kind: "ungrouped" },
-              a.id,
-            );
-            setListOpen(false);
             setModal(null);
           }}
         />

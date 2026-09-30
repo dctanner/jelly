@@ -183,7 +183,7 @@ export function InterventionCard({
             <dd>{String(item.payload.url)}</dd>
           </dl>
           <p className="chat-form-hint">
-            Sign in privately in the shared browser, then return control to the
+            Sign in privately in this agent’s browser session, then return control to the
             agent.
           </p>
           <ChatFormActions>

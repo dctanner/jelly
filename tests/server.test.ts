@@ -403,19 +403,19 @@ test("model and effort defaults, validation, mode-only updates and restart persi
   ])
     expect((await f.request("/api/config", "PUT", data)).status).toBe(400);
   const response = await f.request("/api/config", "PUT", {
-    model: "gpt-6-sol",
+    model: "gpt-6-astra-ultrafast",
     effort: "max",
   });
   expect(response.status).toBe(200);
-  expect((await response.json()).selectedModel).toBe("gpt-6-sol");
+  expect((await response.json()).selectedModel).toBe("gpt-6-astra-ultrafast");
   f.app.service.setMode("auto");
   expect(f.app.service.snapshot().config.effort).toBe("max");
-  expect(f.app.service.snapshot().config.selectedModel).toBe("gpt-6-sol");
+  expect(f.app.service.snapshot().config.selectedModel).toBe("gpt-6-astra-ultrafast");
   // An independent connection sees the committed settings; no browser preference is involved.
   const { Store } = await import("../src/server/store");
   const reader = new Store(join(f.dir, "jelly.sqlite"));
   try {
-    expect(reader.instance().model).toBe("gpt-6-sol");
+    expect(reader.instance().model).toBe("gpt-6-astra-ultrafast");
     expect(reader.instance().effort).toBe("max");
   } finally {
     reader.close();
@@ -493,7 +493,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 8,
+        user_version: 9,
       });
     } finally {
       store.close();
@@ -844,7 +844,7 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
   store = new Store(path);
   try {
     expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
-    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 8 });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 9 });
     expect(store.agent(agent.id)).toEqual(agent);
     expect(store.run(run.id)?.mode).toBe("demo");
     expect(store.historyPage(agent.id).events).toContainEqual(event);
@@ -852,3 +852,112 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
     store.close();
   }
 });
+
+test("working previews stream the latest displayable thinking line across agents without leaking redaction or signatures", async () => {
+  const { app, id } = await fixture();
+  const other = app.service.createAgent({ name: "Observer", instructions: "Test", color: "#abc" });
+  let onEvent: (event: any) => void = () => {};
+  let ready!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  let notified!: () => void;
+  const notification = new Promise<void>(resolve => { notified = resolve; });
+  const unsubscribe = app.service.subscribe(event => {
+    if (event.type === "agent_activity") {
+      expect(event.agentId).toBeNull();
+      expect(event.data).toEqual({ agentId: id });
+      notified();
+    }
+  });
+  const message: any = { role: "assistant", content: [{ type: "thinking", thinking: "First line.\n**Latest visible thought.**", thinkingSignature: "opaque-secret" }], stopReason: "stop", timestamp: Date.now() };
+  const update = (index = 0) => onEvent({ type: "message_update", message, assistantMessageEvent: { type: "thinking_delta", contentIndex: index, delta: "ignored delta", partial: message } });
+  const session = {
+    subscribe: () => {},
+    agent: { subscribe: (listener: typeof onEvent) => { onEvent = listener; } },
+    prompt: async () => { update(); ready(); await gate; onEvent({ type: "message_end", message }); },
+    sessionManager: { buildSessionContext: () => ({ messages: [message] }) },
+  } as unknown as AgentSession;
+  const harness = app.service.harness;
+  const create = spyOn(harness, "create").mockResolvedValue(session);
+  const settle = spyOn(harness, "settle").mockResolvedValue(undefined);
+  const dispose = spyOn(harness, "dispose").mockResolvedValue(undefined);
+  const checkpoint = spyOn(harness, "checkpoint").mockReturnValue(null as any);
+  try {
+    const { run } = app.service.start(id, "streamed-thinking", "Inspect the layout");
+    await started;
+    expect(app.service.snapshot(other.id).agentActivity?.[id]).toBe("Latest visible thought.");
+    expect(app.store.historyPage(id).events.filter(event => event.type === "thinking")).toHaveLength(0);
+    message.content[0].thinking += "\n  **Now checking   the header.** \n\n";
+    update();
+    message.content.push({ type: "thinking", thinking: "redacted-secret", redacted: true, thinkingSignature: "opaque-redacted" });
+    update(1);
+    await notification;
+    app.service.emit(id, run!.id, "tool_started", { name: "read", toolCallId: "one", args: { path: "private-path" } });
+    expect(app.service.snapshot(other.id).agentActivity?.[id]).toBe("Now checking the header.");
+    expect(JSON.stringify(app.service.snapshot(other.id))).not.toContain("opaque-secret");
+    expect(JSON.stringify(app.service.snapshot(other.id))).not.toContain("redacted-secret");
+    app.store.setStatus(id, "waiting");
+    expect(app.service.snapshot(other.id).agentActivity?.[id]).toBeUndefined();
+    app.store.setStatus(id, "running");
+    finish(); await app.service.settled();
+    expect(app.service.snapshot(other.id).agentActivity?.[id]).toBeUndefined();
+    const next = app.store.createRun(id, "new-thinking-run", "New work", "api", "model");
+    app.store.setStatus(id, "running");
+    expect(app.store.agentActivity()[id]).toBe("Thinking…");
+    app.service.emit(id, next.id, "thinking", { text: "Old line\r\n## **Persisted latest line**\n" });
+    expect(app.store.agentActivity()[id]).toBe("Persisted latest line");
+    app.store.finishRun(next.id, "completed", null); app.store.setStatus(id, "idle");
+    const { thinkingPreview } = await import("../src/server/activity-preview");
+    expect(thinkingPreview("x".repeat(500)).length).toBe(220);
+    expect(thinkingPreview("\n\t")).toBe("");
+    expect(thinkingPreview("## **Checking the header**")).toBe("Checking the header");
+    expect(thinkingPreview("**Checking the header")).toBe("Checking the header");
+    expect(thinkingPreview("- Read [the docs](https://example.com) and *compare* ~~old~~ styles")).toBe("Read the docs and compare old styles");
+    expect(thinkingPreview("__Checking__ _styles_")).toBe("Checking styles");
+    expect(thinkingPreview("Use `__init__` and `a ** b` in src/my_file.ts")).toBe("Use __init__ and a ** b in src/my_file.ts");
+    expect(thinkingPreview("```ts\nconst value = 2 * 3;\n```")).toBe("const value = 2 * 3;");
+    expect(thinkingPreview("**" + "x".repeat(300) + "**")).toBe("x".repeat(219) + "…");
+  } finally {
+    finish(); await app.service.settled(); unsubscribe();
+    create.mockRestore(); settle.mockRestore(); dispose.mockRestore(); checkpoint.mockRestore();
+  }
+});
+
+test("computer endpoints require a validated explicit agent identity", async () => {
+  const { request, id } = await fixture();
+  const response = await request("/api/control-session");
+  const headers = { cookie: response.headers.get("set-cookie")!.split(";")[0]!, "x-jelly-csrf": (await response.json()).csrf };
+  expect((await request("/api/computer", "GET", undefined, headers)).status).toBe(404);
+  expect((await request("/api/computer/start?agentId=..%2Fcredentials", "POST", {}, headers)).status).toBe(404);
+  const state = await request(`/api/computer?agentId=${id}`, "GET", undefined, headers);
+  expect(state.status).toBe(200);
+  expect((await state.json()).status).toBe("stopped");
+  expect((await request(`/api/computer/close?agentId=${id}`, "POST", {}, headers)).status).toBe(200);
+});
+
+for (const authenticated of [false, true]) {
+  test(`computer state reads ${authenticated ? "with" : "without"} cookies do not allocate browser sessions`, async () => {
+    const { app, request } = await fixture();
+    let headers: Record<string, string> | undefined;
+    if (authenticated) {
+      const session = await request("/api/control-session");
+      headers = { cookie: session.headers.get("set-cookie")!.split(";")[0]! };
+    }
+    const createAgent = (name: string) => app.service.createAgent({ name, instructions: "Test", color: "#abc" });
+    // Use disjoint agents for reads and allocations: reusing the read agents
+    // would conceal get() allocating them as a side effect of the state route.
+    for (let i = 0; i < 8; i++) {
+      const agent = createAgent(`State reader ${i}`);
+      const response = await request(`/api/computer?agentId=${agent.id}`, "GET", undefined, headers);
+      expect(response.status).toBe(authenticated ? 200 : 401);
+      if (authenticated) expect((await response.json()).status).toBe("stopped");
+    }
+    expect((await request("/api/computer?agentId=missing", "GET", undefined, headers)).status).toBe(authenticated ? 404 : 401);
+    for (let i = 0; i < 8; i++) {
+      const agent = createAgent(`Browser owner ${i}`);
+      expect(app.service.computer.get(agent.id).state().status).toBe("stopped");
+    }
+    const overflow = createAgent("Overflow");
+    expect(() => app.service.computer.get(overflow.id)).toThrow("limit 8");
+  });
+}

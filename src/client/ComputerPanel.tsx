@@ -4,13 +4,21 @@ import { useEffect, useRef, useState } from "react";
 import { X, Monitor, RotateCw } from "lucide-react";
 import type { ComputerState } from "../shared/types";
 import { api, control } from "./api";
-export function ComputerPanel({
+export function ComputerPanel(props: { agentId: string; onClose: () => void; onChange: () => void }) {
+  return <SessionComputerPanel key={props.agentId} {...props} />;
+}
+function SessionComputerPanel({
+  agentId,
   onClose,
   onChange,
 }: {
+  agentId: string;
   onClose: () => void;
   onChange: () => void;
 }) {
+  const scoped = (path: string) => `${path}?agentId=${encodeURIComponent(agentId)}`;
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const screen = useRef<HTMLDivElement>(null);
   const connection = useRef<import("@novnc/novnc/lib/rfb").default | null>(null);
   const [state, setState] = useState<ComputerState | null>(null),
@@ -20,7 +28,7 @@ export function ComputerPanel({
     [connected, setConnected] = useState(false);
   useEffect(() => {
     let dead = false;
-    void control<ComputerState>("/computer/start")
+    void control<ComputerState>(scoped("/computer/start"))
       .then((s) => {
         if (!dead) setState(s);
       })
@@ -28,7 +36,7 @@ export function ComputerPanel({
         if (!dead) setError(e.message);
       });
     const timer = setInterval(() => {
-      void api<ComputerState>("/computer")
+      void api<ComputerState>(scoped("/computer"))
         .then((s) => {
           if (!dead) setState(s);
         })
@@ -52,13 +60,13 @@ export function ComputerPanel({
       try {
         const [{ default: RFB }, { ticket }] = await Promise.all([
           import("@novnc/novnc"),
-          control<{ ticket: string }>("/computer/ticket", {
+          control<{ ticket: string }>(scoped("/computer/ticket"), {
             mode: owned ? "control" : "view",
           }),
         ]);
         if (dead) return;
-        const url = new URL("/api/computer/socket", location.href);
-        url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const url = new URL(scoped("/api/computer/socket"), window.location.href);
+        url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         url.searchParams.set("ticket", ticket);
         rfb = new RFB(screen.current!, url.href);
         connection.current = rfb;
@@ -86,12 +94,15 @@ export function ComputerPanel({
       screen.current?.replaceChildren();
     };
   }, [ready, owned, privateScreen, revision]);
-  async function action(name: "take" | "release") {
+  async function action(name: "take" | "release" | "close") {
     setBusy(true);
     setError("");
     try {
-      setState(await control<ComputerState>(`/computer/${name}`));
+      const next = await control<ComputerState>(scoped(`/computer/${name}`));
+      if (!alive.current) return;
+      setState(next);
       onChange();
+      if (name === "close") onClose();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -101,7 +112,9 @@ export function ComputerPanel({
   async function reconnect() {
     setError("");
     try {
-      setState(await control<ComputerState>("/computer/start"));
+      const next = await control<ComputerState>(scoped("/computer/start"));
+      if (!alive.current) return;
+      setState(next);
       setRevision((v) => v + 1);
     } catch (e) {
       setError((e as Error).message);
@@ -120,6 +133,7 @@ export function ComputerPanel({
                 : "Connecting to desktop…"}
         </span>
         <div>
+          <button disabled={busy || state?.control === "human"} onClick={() => void action("close")}>Close browser session</button>
           {owned ? (
             <button
               className="primary"
@@ -147,7 +161,7 @@ export function ComputerPanel({
         </div>
       </div>
       {owned && connected && (
-        <RemoteClipboard disabled={busy} paste={() => {
+        <RemoteClipboard agentId={agentId} disabled={busy} paste={() => {
           const rfb = connection.current;
           if (!rfb || rfb.viewOnly) throw new Error("Remote desktop disconnected. Reconnect before pasting.");
           rfb.focus({ preventScroll: true });

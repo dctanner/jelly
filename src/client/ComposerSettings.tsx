@@ -3,6 +3,7 @@ import { Settings2 } from "lucide-react";
 import {
   MODEL_OPTIONS,
   EFFORT_OPTIONS,
+  ULTRAFAST_NOTICE,
   type ModelId,
   type Effort,
 } from "../shared/models";
@@ -124,6 +125,9 @@ export function ComposerSettings({
               ))}
             </select>
           </label>
+          {model === "gpt-6-astra-ultrafast" && (
+            <p className="subtle">{ULTRAFAST_NOTICE}</p>
+          )}
           <p className="subtle">Applies to new runs across all chats.</p>
           {busy && <p role="status">Saving…</p>}
           {error && (

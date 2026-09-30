@@ -1,7 +1,10 @@
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { AVATARS } from "../shared/avatars";
 import { directories, effectiveCwd } from "./directories";
 import { uploadFile } from "./uploads";
 import { readToolImage } from "./tool-images";
+import { isHtmlFile } from "../shared/rendered-files";
+import { mediaResponse } from "./media-files";
 import { acquireInstance } from "./instance-lock";
 import {
   MODEL_OPTIONS,
@@ -82,7 +85,9 @@ function text(value: unknown, name: string, max: number, empty = false) {
     );
   return value.trim();
 }
-function profile(input: Record<string, unknown>) {
+function profile(input: Record<string, unknown>, creating = false) {
+  if (input.nameEdited !== undefined && typeof input.nameEdited !== "boolean")
+    throw new HttpError(400, "Invalid name edit flag.");
   const color = input.color ?? "#b5bafc";
   if (typeof color !== "string" || !/^#[a-fA-F0-9]{6}$/.test(color))
     throw new HttpError(400, "Choose a valid avatar color.");
@@ -93,7 +98,8 @@ function profile(input: Record<string, unknown>) {
     throw new HttpError(400, "Choose a valid sea avatar.");
   return {
     avatarId: input.avatarId as string | undefined,
-    name: text(input.name, "Name", 60),
+    name: text(creating && input.name === undefined ? DEFAULT_AGENT_NAME : input.name, "Name", 60),
+    nameEdited: input.nameEdited as boolean | undefined,
     instructions: text(input.instructions ?? "", "Instructions", 12000, true),
     color,
   };
@@ -130,6 +136,7 @@ export async function startApp(options: AppOptions) {
       options.staticDir ?? join(import.meta.dir, "../../dist"),
     );
     interface VncData {
+      computer: import("./computer").Computer;
       path: string;
       generation: number;
       session: string;
@@ -140,7 +147,7 @@ export async function startApp(options: AppOptions) {
       websocket: {
         open(ws) {
           if (
-            !service.computer.validConnection(
+            !ws.data.computer.validConnection(
               ws.data.generation,
               ws.data.session,
             )
@@ -155,7 +162,7 @@ export async function startApp(options: AppOptions) {
             ws.close();
             ws.data.detach?.();
           };
-          ws.data.detach = service.computer.attach(close);
+          ws.data.detach = ws.data.computer.attach(close);
           socket.on("data", (chunk) => {
             if (ws.send(chunk, true) === -1) socket.pause();
           });
@@ -244,47 +251,58 @@ export async function startApp(options: AppOptions) {
               if (!origin || !allowed.has(origin))
                 throw new HttpError(403, "A same-origin browser is required.");
               const session = controls.require(req, false);
-              const connection = service.computer.consume(
+              const computer = service.computer.get(url.searchParams.get("agentId") ?? "");
+              const connection = computer.consume(
                 url.searchParams.get("ticket") ?? "",
                 session.id,
               );
-              if (server.upgrade(req, { data: connection })) return;
+              if (server.upgrade(req, { data: { ...connection, computer } })) return;
               throw new HttpError(400, "WebSocket upgrade required.");
             }
-            if (req.method === "GET" && url.pathname === "/api/computer")
-              return json(
-                service.computer.state(controls.require(req, false).id),
-              );
+            if (req.method === "GET" && url.pathname === "/api/computer") {
+              const session = controls.require(req, false);
+              const agentId = url.searchParams.get("agentId") ?? "";
+              if (!agentId || !store.agent(agentId))
+                throw new HttpError(404, "Agent not found.");
+              return json(service.computer.state(agentId, session.id));
+            }
             if (
               req.method === "POST" &&
               url.pathname.startsWith("/api/computer/")
             ) {
               const session = controls.require(req),
                 action = url.pathname.slice("/api/computer/".length);
+              const agentId = url.searchParams.get("agentId") ?? "";
+              const computer = service.computer.get(agentId);
+              if (action === "close") {
+                if (computer.state().control === "human") throw new HttpError(409, "Return human control before closing this session.");
+                await service.computer.closeSession(agentId);
+                return json(service.computer.state(agentId, session.id));
+              }
               if (action === "start") {
-                await service.computer.ensure();
-                return json(service.computer.state(session.id));
+                await computer.ensure();
+                return json(computer.state(session.id));
               }
               if (action === "take")
-                return json(await service.computer.take(session.id));
+                return json(await computer.take(session.id));
               if (action === "release") {
-                const id = await service.computer.release(session.id);
+                const id = await computer.release(session.id);
                 if (id && store.intervention(id)?.status === "pending")
                   service.interventions.completeLogin(id);
-                return json(service.computer.state(session.id));
+                return json(computer.state(session.id));
               }
               if (action === "clipboard") {
                 const input = await body(req);
                 if (input.operation !== "read" && input.operation !== "write")
                   throw new HttpError(400, "Clipboard operation must be read or write.");
-                return json(await service.computer.clipboard(session.id, input.operation, input.text));
+                return json(await computer.clipboard(session.id, input.operation, input.text));
               }
               if (action === "ticket") {
                 const input = await body(req);
                 if (input.mode !== "view" && input.mode !== "control")
                   throw new HttpError(400, "Invalid access mode.");
                 return json(
-                  await service.computer.ticket(session.id, input.mode),
+                  await computer.ticket(session.id, input.mode),
                 );
               }
             }
@@ -297,7 +315,7 @@ export async function startApp(options: AppOptions) {
               if (action === "deny") {
                 const item = service.interventions.deny(id!);
                 if (item.kind === "browser_login")
-                  service.computer.cancelLogin(id!);
+                  service.computer.get(item.agentId).cancelLogin(id!);
                 return json({ ok: true });
               }
               const input = await body(req);
@@ -336,16 +354,6 @@ export async function startApp(options: AppOptions) {
               if (url.pathname === "/api/auth/chatgpt/cancel") {
                 const input = await body(req);
                 return json(connections.cancel(session.id, input.id));
-              }
-              if (url.pathname === "/api/auth/chatgpt/callback") {
-                const input = await body(req);
-                try {
-                  return json(
-                    connections.submit(session.id, input.id, input.callback),
-                  );
-                } finally {
-                  delete input.callback;
-                }
               }
               if (url.pathname === "/api/auth/remove") {
                 const input = await body(req);
@@ -469,7 +477,7 @@ export async function startApp(options: AppOptions) {
                 },
               });
             }
-            if (req.method === "GET" && url.pathname.startsWith("/api/rendered-files/")) {
+            if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/api/rendered-files/")) {
               controls.require(req, false);
               const file = await service.harness.files.read(url.pathname);
               if (!file) throw new HttpError(404, "Rendered file not found.");
@@ -478,13 +486,22 @@ export async function startApp(options: AppOptions) {
                 const preview = text.slice(0, 16000).split("\n").slice(0, 200).join("\n");
                 return json({ text: preview, truncated: preview.length < text.length });
               }
-              return new Response(new Uint8Array(file.bytes), { headers: {
-                "Content-Type": file.metadata.mimeType,
+              const download = url.searchParams.get("download") === "1";
+              const html = !download && url.searchParams.get("inline") === "1" && isHtmlFile(file.metadata);
+              const headers = new Headers({
+                "Content-Type": html ? "text/html; charset=utf-8" : file.metadata.mimeType,
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'none'; sandbox",
-                "Content-Disposition": `${file.metadata.kind === "text" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(file.metadata.name)}`,
-              } });
+                "Content-Security-Policy": html
+                  ? "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+                  : "default-src 'none'; sandbox",
+                "Referrer-Policy": "no-referrer",
+                "Content-Disposition": `${download || (file.metadata.kind === "text" && !html) ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(file.metadata.name)}`,
+              });
+              if (file.metadata.kind === "audio" || file.metadata.kind === "video")
+                return mediaResponse(req, file.bytes, headers);
+              headers.set("Content-Length", String(file.bytes.length));
+              return new Response(req.method === "HEAD" ? null : new Uint8Array(file.bytes), { headers });
             }
             if (req.method === "GET" && url.pathname.startsWith("/api/tool-images/")) {
               controls.require(req, false);
@@ -588,7 +605,7 @@ export async function startApp(options: AppOptions) {
                 throw new HttpError(400, "Invalid project.");
               return json(
                 service.createAgent({
-                  ...profile(input),
+                  ...profile(input, true),
                   projectId: input.projectId as string | null | undefined,
                 }),
                 201,
@@ -656,8 +673,12 @@ export async function startApp(options: AppOptions) {
                 (action === "archive" || action === "restore")
               )
                 return json(service.archiveAgent(id!, action === "archive"));
-              if (req.method === "PATCH" && !action)
-                return json(service.updateAgent(id!, profile(await body(req))));
+              if (req.method === "PATCH" && !action) {
+                const input = await body(req);
+                const existing = store.agent(id!);
+                if (!existing) throw new HttpError(404, "Agent not found.");
+                return json(service.updateAgent(id!, profile({ ...existing, ...input })));
+              }
               if (req.method === "POST" && action === "messages") {
                 const input = await body(req);
                 const prompt = text(input.text, "Message", 24000);

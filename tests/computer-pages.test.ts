@@ -181,3 +181,75 @@ test("clipboard requests queued behind return-to-agent cannot use expired human 
   await expect(stale).rejects.toThrow("controlling window");
   expect(f.computer.state().control).toBe("agent");
 });
+
+test("cancelled queued browser actions never navigate, and in-flight results are discarded", async () => {
+  const f = fixture();
+  const page = f.add();
+  let finish!: () => void;
+  page.screenshot = () => new Promise<Buffer<ArrayBuffer>>(resolve => { finish = () => resolve(Buffer.from("private")); });
+  const firstController = new AbortController();
+  const first = f.computer.action("screenshot", {}, firstController.signal);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const queuedController = new AbortController();
+  const queued = f.computer.action("open", { url: target }, queuedController.signal);
+  const firstFailed = first.catch(() => "cancelled");
+  const queuedFailed = queued.catch(() => "cancelled");
+  queuedController.abort();
+  firstController.abort();
+  finish();
+  expect(await firstFailed).toBe("cancelled");
+  expect(await queuedFailed).toBe("cancelled");
+  expect(page.visited).toEqual([]);
+});
+
+test("independent sessions target only their own pages and private handoff does not block another", async () => {
+  const a = fixture(), b = fixture();
+  const opener = a.add(), pageB = b.add();
+  const popup = a.add(opener);
+  popup.close();
+  await Promise.all([a.computer.action("open", { url: target }), b.computer.action("open", { url: "https://example.org/" })]);
+  expect(opener.visited).toEqual([target]);
+  expect(pageB.visited).toEqual(["https://example.org/"]);
+  await a.computer.reserveLogin("private-a", target);
+  await expect(a.computer.action("screenshot")).rejects.toThrow("person");
+  await expect(a.computer.ticket("other", "view")).rejects.toThrow("private");
+  await b.computer.action("screenshot");
+  expect(b.computer.state().control).toBe("agent");
+  await expect(b.computer.clipboard("owner-a", "read")).rejects.toThrow("controlling window");
+  a.computer.cancelLogin("private-a");
+});
+
+test("closing rejects queued effects", async () => {
+  const f = fixture();
+  f.add();
+  let finish!: () => void;
+  const internals = f.computer as unknown as { tail: Promise<void>; context: undefined };
+  internals.tail = new Promise(resolve => { finish = resolve; });
+  const queued = f.computer.action("open", { url: target });
+  internals.context = undefined;
+  const closing = f.computer.close();
+  finish();
+  await expect(queued).rejects.toThrow("closing");
+  await closing;
+});
+
+test("Stop prevents queued clicks, typing, keys and screenshots before any page effect", async () => {
+  for (const action of ["click", "type", "key", "screenshot"] as const) {
+    const f = fixture();
+    const page = f.add();
+    let effects = 0;
+    Object.assign(page, {
+      mouse: { click: async () => { effects++; } },
+      keyboard: { insertText: async () => { effects++; }, press: async () => { effects++; } },
+      screenshot: async () => { effects++; return Buffer.from("image"); },
+    });
+    let finish!: () => void;
+    (f.computer as unknown as { tail: Promise<void> }).tail = new Promise(resolve => { finish = resolve; });
+    const controller = new AbortController();
+    const pending = f.computer.action(action, { x: 1, y: 1, text: "cancelled", key: "Enter" }, controller.signal).catch(() => "cancelled");
+    controller.abort();
+    finish();
+    expect(await pending).toBe("cancelled");
+    expect(effects).toBe(0);
+  }
+});

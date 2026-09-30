@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import type { AgentRecord, Snapshot } from "../shared/types";
 type Profile = Pick<AgentRecord, "name" | "instructions" | "color"> & {
   projectId?: string | null;
@@ -46,7 +47,7 @@ export function registerWorkspaceTools(actions: {
   register({
     name: "create_jelly_agent",
     description:
-      "Create a persistent Jelly agent with a name and instructions, then select it in the workspace.",
+      "Create a persistent Jelly agent, then select it. Omit name to start as New Agent and get a sea-themed name from the first message; supply name only when explicitly chosen.",
     inputSchema: {
       type: "object",
       properties: {
@@ -54,7 +55,7 @@ export function registerWorkspaceTools(actions: {
         instructions: { type: "string", maxLength: 12000 },
         projectId: { type: ["string", "null"] },
       },
-      required: ["name"],
+      required: [],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, untrustedContentHint: true },
@@ -69,9 +70,7 @@ export function registerWorkspaceTools(actions: {
         (p.projectId !== undefined &&
           p.projectId !== null &&
           (typeof p.projectId !== "string" || !p.projectId)) ||
-        typeof p.name !== "string" ||
-        !p.name.trim() ||
-        p.name.length > 60 ||
+        (p.name !== undefined && (typeof p.name !== "string" || !p.name.trim() || p.name.length > 60)) ||
         (p.instructions !== undefined &&
           (typeof p.instructions !== "string" || p.instructions.length > 12000))
       )
@@ -79,7 +78,7 @@ export function registerWorkspaceTools(actions: {
           "Provide a valid name and optional instructions.",
         );
       const agent = await actions.create({
-        name: p.name,
+        name: p.name as string | undefined ?? DEFAULT_AGENT_NAME,
         instructions: (p.instructions as string) ?? "",
         color: "#b5bafc",
         projectId: p.projectId as string | null | undefined,

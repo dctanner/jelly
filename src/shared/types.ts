@@ -19,7 +19,7 @@ export interface ProjectRecord {
   updatedAt: string;
 }
 export type AgentInput = Pick<AgentRecord, "name" | "instructions" | "color"> &
-  Partial<Pick<AgentRecord, "avatarId" | "projectId">>;
+  Partial<Pick<AgentRecord, "avatarId" | "projectId">> & { nameEdited?: boolean };
 export interface AgentRecord {
   projectId: string | null;
   cwd: string;
@@ -114,6 +114,7 @@ export interface ComputerState {
   error: string | null;
 }
 export interface LoginFlow {
+  userCode: string | null;
   id: string;
   status: "starting" | "waiting" | "connected" | "error" | "cancelled";
   url: string | null;

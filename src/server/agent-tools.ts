@@ -1,6 +1,6 @@
 import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Computer } from "./computer";
+import type { ComputerSessions } from "./computer-sessions";
 import type { Interventions } from "./interventions";
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -9,12 +9,13 @@ const result = (value: unknown) => ({
 const define = <T extends TSchema>(tool: ToolDefinition<T>): ToolDefinition =>
   tool as ToolDefinition;
 export function interventionTools(
-  computer: Computer,
+  sessions: ComputerSessions,
   requests: Interventions,
   agentId: string,
   runId: string,
   cwd: string,
 ): ToolDefinition[] {
+  const computer = () => sessions.get(agentId);
   return [
     define({
       name: "request_sudo",
@@ -42,12 +43,14 @@ export function interventionTools(
       name: "request_browser_login",
       label: "Request browser login",
       description:
-        "Open a website in the shared browser and wait for the user to sign in privately and return control. Never ask for login credentials in chat.",
+        "Open a website in this agent’s browser session and wait for the user to sign in privately and return control. Never ask for login credentials in chat.",
       parameters: Type.Object({
         url: Type.String(),
         reason: Type.String({ maxLength: 2000 }),
       }),
       execute: async (_id, args, signal) => {
+        signal?.throwIfAborted();
+        const browser = computer();
         const pending = requests.request(
           "browser_login",
           agentId,
@@ -55,33 +58,33 @@ export function interventionTools(
           args,
           signal,
         );
-        void pending.promise.catch(() => {});
+        void pending.promise.catch(() => browser.cancelLogin(pending.request.id));
         try {
-          await computer.reserveLogin(pending.request.id, args.url);
+          await browser.reserveLogin(pending.request.id, args.url, signal);
           return result(await pending.promise);
         } catch (e) {
           requests.cancel(pending.request.id);
           throw e;
         } finally {
-          computer.cancelLogin(pending.request.id);
+          browser.cancelLogin(pending.request.id);
         }
       },
     }),
     define({
       name: "browser_open",
       label: "Open website",
-      description: "Navigate the shared browser. Blocked during human control.",
+      description: "Navigate this agent’s browser session. Blocked during human control.",
       parameters: Type.Object({ url: Type.String() }),
-      execute: async (_id, args) => result(await computer.action("open", args)),
+      execute: async (_id, args, signal) => result(await computer().action("open", args, signal)),
     }),
     define({
       name: "browser_screenshot",
       label: "Browser screenshot",
       description:
-        "Inspect the shared browser viewport. Blocked during human control.",
+        "Inspect this agent’s browser session viewport. Blocked during human control.",
       parameters: Type.Object({}),
-      execute: async () => {
-        const value = (await computer.action("screenshot")) as {
+      execute: async (_id, _args, signal) => {
+        const value = (await computer().action("screenshot", {}, signal)) as {
           image: string;
         };
         return {
@@ -95,26 +98,26 @@ export function interventionTools(
     define({
       name: "browser_click",
       label: "Click browser",
-      description: "Click viewport coordinates in the shared browser.",
+      description: "Click viewport coordinates in this agent’s browser session.",
       parameters: Type.Object({ x: Type.Number(), y: Type.Number() }),
-      execute: async (_id, args) =>
-        result(await computer.action("click", args)),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("click", args, signal)),
     }),
     define({
       name: "browser_type",
       label: "Type in browser",
       description:
-        "Insert non-secret text in the focused browser field. For credentials request_browser_login instead.",
+        "Insert non-secret text in this agent’s focused browser field. For credentials request_browser_login instead.",
       parameters: Type.Object({ text: Type.String({ maxLength: 24000 }) }),
-      execute: async (_id, args) => result(await computer.action("type", args)),
+      execute: async (_id, args, signal) => result(await computer().action("type", args, signal)),
     }),
     define({
       name: "browser_key",
       label: "Press browser key",
       description:
-        "Press a key or shortcut, for example Enter, Tab, Control+l.",
+        "Press a key or shortcut in this agent’s browser session, for example Enter, Tab, Control+l.",
       parameters: Type.Object({ key: Type.String({ maxLength: 100 }) }),
-      execute: async (_id, args) => result(await computer.action("key", args)),
+      execute: async (_id, args, signal) => result(await computer().action("key", args, signal)),
     }),
   ];
 }

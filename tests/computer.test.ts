@@ -123,7 +123,7 @@ const available =
           sessionSeen =
             req.headers.get("cookie")?.includes("popup_session=logged-in") ??
             false;
-        return new Response('<a href="/popup" target="_blank">Sign in</a>', {
+        return new Response('<a style="position:absolute;top:100px" href="/popup" target="_blank">Sign in</a>', {
           headers: { "Content-Type": "text/html" },
         });
       },
@@ -207,7 +207,7 @@ const available =
       data?: unknown,
       headers: Record<string, string> = {},
     ) =>
-      fetch(new URL("/api" + path, app.server.url), {
+      fetch(new URL("/api" + path + (path.startsWith("/computer") ? "?agentId=" + app.service.snapshot().selectedAgentId : ""), app.server.url), {
         method: data === undefined ? "GET" : "POST",
         headers: { "Content-Type": "application/json", ...headers },
         body: data === undefined ? undefined : JSON.stringify(data),
@@ -224,7 +224,7 @@ const available =
       expect(res.status).toBe(200);
       const { ticket } = await res.json();
       const url = new URL(
-        "/api/computer/socket?ticket=" + ticket,
+        "/api/computer/socket?agentId=" + app.service.snapshot().selectedAgentId + "&ticket=" + ticket,
         app.server.url,
       );
       url.protocol = "ws:";
@@ -242,13 +242,13 @@ const available =
         other = await session();
       expect((await req("/computer/start", {}, owner)).status).toBe(200);
       await expect(
-        app.service.computer.action("open", { url: app.server.url.href }),
+        app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", { url: app.server.url.href }),
       ).rejects.toThrow("control interface");
-      const redirectResult = (await app.service.computer.action("open", {
+      const redirectResult = (await app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", {
         url: new URL("/redirect-jelly", site.url).href,
       })) as { status: number };
       expect(redirectResult.status).toBe(403);
-      await app.service.computer.action("open", { url: site.url.href });
+      await app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", { url: site.url.href });
       const { rfb: viewer, url: used } = await connect(other);
       // Request a small raw rectangle from the actual framebuffer.
       viewer.send([2, 0, 0, 1, 0, 0, 0, 0]);
@@ -276,18 +276,18 @@ const available =
         crypto.randomUUID(),
         "/fixture login " + site.url.href,
       );
-      await until(() => app.service.computer.state().handoffId !== null);
+      await until(() => app.service.computer.get(app.service.snapshot().selectedAgentId!).state().handoffId !== null);
       await until(() => viewer.closed);
       expect(
         (await req("/computer/ticket", { mode: "view" }, other)).status,
       ).toBe(403);
       expect((await req("/computer/take", {}, owner)).status).toBe(200);
       expect((await req("/computer/take", {}, other)).status).toBe(409);
-      await expect(app.service.computer.action("screenshot")).rejects.toThrow(
+      await expect(app.service.computer.get(app.service.snapshot().selectedAgentId!).action("screenshot")).rejects.toThrow(
         "person",
       );
       await expect(
-        app.service.computer.action("type", { text: "not allowed" }),
+        app.service.computer.get(app.service.snapshot().selectedAgentId!).action("type", { text: "not allowed" }),
       ).rejects.toThrow("person");
       const { rfb: controller } = await connect(owner, "control");
       controller.click(100, 140);
@@ -297,15 +297,17 @@ const available =
       await until(() => signedIn);
       controller.close();
       await until(() => controller.closed);
-      expect(app.service.computer.state().control).toBe("human");
+      expect(app.service.computer.get(app.service.snapshot().selectedAgentId!).state().control).toBe("human");
       const { rfb: reconnected } = await connect(owner, "control");
       expect((await req("/computer/release", {}, other)).status).toBe(403);
+      reconnected.close();
+      await until(() => reconnected.closed);
       expect((await req("/computer/release", {}, owner)).status).toBe(200);
       await app.service.settled();
       await until(() => reconnected.closed);
       expect(app.store.interventions()[0]?.status).toBe("completed");
       expect(app.store.runs(agent)[0]?.status).toBe("completed");
-      await app.service.computer.action("open", {
+      await app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", {
         url: new URL("/session", site.url).href,
       });
       expect(sessionSeen).toBe(true);
@@ -315,11 +317,13 @@ const available =
       expect(JSON.stringify(app.store.history(agent))).not.toContain(
         "test-login",
       );
+      for (const client of clients) client.close();
+      await until(() => clients.every(client => client.closed));
       // Same profile, new server process state: browser cookies survive orderly restart.
       await app.close();
       app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
       sessionSeen = false;
-      await app.service.computer.action("open", {
+      await app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", {
         url: new URL("/session", site.url).href,
       });
       expect(sessionSeen).toBe(true);
@@ -344,7 +348,7 @@ const available =
       { headers: { "Content-Type": "text/html" } },
     ) });
     let controller: Rfb | undefined;
-    const post = (action: string, data: unknown, headers: Record<string, string> = {}) => fetch(new URL(`/api/computer/${action}`, app.server.url), {
+    const post = (action: string, data: unknown, headers: Record<string, string> = {}) => fetch(new URL(`/api/computer/${action}?agentId=${app.service.snapshot().selectedAgentId}`, app.server.url), {
       method: "POST", headers: { "Content-Type": "application/json", Connection: "close", ...headers }, body: JSON.stringify(data),
     });
     const session = async () => {
@@ -356,18 +360,18 @@ const available =
       expect((await post("clipboard", { operation: "read" })).status).toBe(401);
       expect((await post("clipboard", { operation: "read" }, { cookie: owner.cookie })).status).toBe(403);
       expect((await post("clipboard", { operation: "read" }, owner)).status).toBe(403);
-      await app.service.computer.action("open", { url: site.url.href });
+      await app.service.computer.get(app.service.snapshot().selectedAgentId!).action("open", { url: site.url.href });
       expect((await post("take", {}, owner)).status).toBe(200);
       expect((await post("clipboard", { operation: "read" }, other)).status).toBe(403);
       expect((await post("clipboard", { operation: "write", text: "x".repeat(12001) }, owner)).status).toBe(400);
       expect((await post("clipboard", { operation: "write", text: "bad\0text" }, owner)).status).toBe(400);
       expect((await post("clipboard", { operation: "delete" }, owner)).status).toBe(400);
       const { ticket } = await (await post("ticket", { mode: "control" }, owner)).json();
-      const socketUrl = new URL(`/api/computer/socket?ticket=${ticket}`, app.server.url); socketUrl.protocol = "ws:";
+      const socketUrl = new URL(`/api/computer/socket?agentId=${app.service.snapshot().selectedAgentId}&ticket=${ticket}`, app.server.url); socketUrl.protocol = "ws:";
       controller = new Rfb(new WebSocket(socketUrl, { headers: { ...owner, Origin: app.server.url.origin } }));
       await controller.handshake();
       // Playwright here simulates the person, not an agent browser action.
-      const context = (app.service.computer as unknown as { context: BrowserContext }).context;
+      const context = (app.service.computer.get(app.service.snapshot().selectedAgentId!) as unknown as { context: BrowserContext }).context;
       const page = context.pages()[0]!;
       await page.locator("textarea").click();
       const text = "Private clipboard fixture 🦀\n日本語 and café";
@@ -382,7 +386,7 @@ const available =
       await page.locator("textarea").press("Control+a");
       await page.locator("textarea").press("Control+c");
       expect(await (await post("clipboard", { operation: "read" }, owner)).json()).toEqual({ text: copied });
-      await expect(app.service.computer.action("screenshot")).rejects.toThrow("person");
+      await expect(app.service.computer.get(app.service.snapshot().selectedAgentId!).action("screenshot")).rejects.toThrow("person");
       expect(JSON.stringify(app.service.snapshot())).not.toContain("Private clipboard fixture");
       expect(JSON.stringify(app.store.events())).not.toContain(copied);
       await page.locator("textarea").fill("x".repeat(12001));
@@ -408,3 +412,49 @@ const available =
     }
   }, 30000,
 );
+
+(available ? test : test.skip)("two real agent desktops isolate pages, focus, private handoffs and tickets", async () => {
+  const { ComputerSessions } = await import("../src/server/computer-sessions");
+  const dir = mkdtempSync(join(tmpdir(), "jelly-isolated-desktops-"));
+  symlinkSync(runtime, join(dir, "runtime"), "dir");
+  const sessions = new ComputerSessions(dir, id => ["a", "b"].includes(id));
+  const site = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => new Response(
+    `<body style="background:${new URL(request.url).pathname === "/a" ? "red" : "blue"}"><input style="position:absolute;left:10px;top:10px;width:300px;height:50px"><a style="position:absolute;top:100px" href="/popup" target="_blank">popup</a></body>`,
+    { headers: { "Content-Type": "text/html" } },
+  ) });
+  try {
+    const a = sessions.get("a"), b = sessions.get("b");
+    await Promise.all([a.action("open", { url: new URL("/a", site.url).href }), b.action("open", { url: new URL("/b", site.url).href })]);
+    await Promise.all([a.action("click", { x: 50, y: 30 }), b.action("click", { x: 50, y: 30 })]);
+    await Promise.all([a.action("type", { text: "only-a" }), b.action("type", { text: "only-b" })]);
+    const context = (computer: Computer) => (computer as unknown as { context: BrowserContext }).context;
+    const pageA = context(a).pages()[0]!, pageB = context(b).pages()[0]!;
+    expect(await pageA.locator("input").inputValue()).toBe("only-a");
+    expect(await pageB.locator("input").inputValue()).toBe("only-b");
+    const shots = await Promise.all([a.action("screenshot"), b.action("screenshot")]);
+    expect(shots[0]).not.toEqual(shots[1]);
+    const popupPromise = context(a).waitForEvent("page");
+    await pageA.locator("a").click();
+    const popup = await popupPromise;
+    await popup.close();
+    await a.action("type", { text: "" });
+    expect((a as unknown as { page: unknown }).page).toBe(pageA);
+    expect(context(a).pages()).not.toContain(pageB);
+    const display = (computer: Computer) => (computer as unknown as { clipboardEnv: { DISPLAY: string } }).clipboardEnv.DISPLAY;
+    expect(display(a)).not.toBe(display(b));
+    await a.reserveLogin("private-a", new URL("/a", site.url).href);
+    await a.take("human-a");
+    await expect(a.action("screenshot")).rejects.toThrow("person");
+    await b.action("type", { text: "-still-b" });
+    expect(await pageB.locator("input").inputValue()).toBe("only-b-still-b");
+    await b.action("screenshot");
+    const { ticket } = await a.ticket("human-a", "control");
+    expect(() => b.consume(ticket, "human-a")).toThrow("Expired");
+    expect(a.consume(ticket, "human-a").path).not.toBe(b.consume((await b.ticket("human-a", "view")).ticket, "human-a").path);
+    await expect(b.clipboard("human-a", "read")).rejects.toThrow("controlling window");
+  } finally {
+    await sessions.close();
+    site.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);

@@ -12,10 +12,11 @@ import type {
   PendingMessage,
 } from "../shared/types";
 import { Store } from "./store";
+import { thinkingPreview } from "./activity-preview";
 import { Harness } from "./harness";
 import { HttpError } from "./errors";
 export { HttpError } from "./errors";
-import { Computer } from "./computer";
+import { ComputerSessions } from "./computer-sessions";
 import { Interventions } from "./interventions";
 import { interventionTools } from "./agent-tools";
 import type { SudoExecutor } from "./sudo";
@@ -24,7 +25,11 @@ import { validateDirectory, effectiveCwd } from "./directories";
 const MAX_RUN_TURNS = 1_000;
 const MAX_RUN_DURATION_MS = 5 * 60 * 60 * 1_000;
 interface ActiveRun {
+  agentId: string;
+  thinkingPreview?: string;
+  thinkingTimer?: ReturnType<typeof setTimeout>;
   freshSession?: boolean;
+  naming?: AbortController;
   session?: AgentSession;
   cancelled: boolean;
   acceptsSteering: boolean;
@@ -36,7 +41,7 @@ export class JellyService {
   private listeners = new Set<(event: Activity) => void>();
   private active = new Map<string, ActiveRun>();
   private closing = false;
-  readonly computer: Computer;
+  readonly computer: ComputerSessions;
   readonly interventions: Interventions;
   constructor(
     readonly store: Store,
@@ -44,8 +49,8 @@ export class JellyService {
     options: { sudoExecutor?: SudoExecutor; interventionTtlMs?: number } = {},
   ) {
     store.recover();
-    this.computer = new Computer(harness.dataDir, () =>
-      this.emit(null, null, "computer_changed", {}),
+    this.computer = new ComputerSessions(harness.dataDir, id => !!store.agent(id), id =>
+      this.emit(id, null, "computer_changed", {}),
     );
     this.interventions = new Interventions(
       store,
@@ -107,10 +112,15 @@ export class JellyService {
     const page = selected
       ? this.store.historyPage(selected.id)
       : { events: [], runs: [], interventions: [], before: null };
+    const agentActivity = this.store.agentActivity();
+    for (const state of this.active.values()) {
+      if (state.thinkingPreview && agents.some(a => a.id === state.agentId && a.status === "running" && !a.archivedAt))
+        agentActivity[state.agentId] = state.thinkingPreview;
+    }
     return {
       latestAssistantMessages: this.store.latestAssistantMessages(),
       agentPreviews: this.store.agentPreviews(),
-      agentActivity: this.store.agentActivity(),
+      agentActivity,
       pendingMessages: selected ? this.store.pendingMessages(selected.id) : [],
       instance: { id: instance.id, name: instance.name },
       agents,
@@ -122,7 +132,7 @@ export class JellyService {
       cursor: this.store.cursor(),
       config: this.harness.config(instance.mode, instance),
       interventions: page.interventions,
-      computer: this.computer.state(sessionId),
+      computer: this.computer.state(selected?.id ?? null, sessionId),
     };
   }
   createAgent(input: AgentInput) {
@@ -421,7 +431,9 @@ export class JellyService {
     const config = this.harness.config(instance.mode, instance);
     this.harness.requireConnection(config);
     const events: Activity[] = [];
+    let nameAgent = false;
     const run = this.store.db.transaction(() => {
+      if (!freshSession) nameAgent = this.store.claimAgentName(agentId);
       if (!freshSession && !this.store.pendingMessage(requestId))
         this.store.enqueueMessage(requestId, agentId, prompt, mode);
       const run = this.store.createRun(
@@ -460,6 +472,7 @@ export class JellyService {
       return run;
     })();
     const state: ActiveRun = {
+      agentId,
       freshSession,
       cancelled: false,
       acceptsSteering: false,
@@ -478,10 +491,28 @@ export class JellyService {
       const deadline = setTimeout(() => {
         failure ??=
           "The run reached the 5-hour limit. Send a new message to continue.";
+        state.naming?.abort();
         if (state.session)
           stopping = this.harness.stop(state.session).catch(() => {});
       }, MAX_RUN_DURATION_MS);
       try {
+        if (nameAgent) {
+          state.naming = new AbortController();
+          let name: string | null = null;
+          try { name = await this.harness.generateAgentName(prompt, config, state.naming.signal); }
+          catch { /* Naming is best-effort; never fail or replay the user's task. */ }
+          state.naming = undefined;
+          if (state.cancelled || failure) return;
+          if (name) {
+            const event = this.store.db.transaction(() => {
+              const renamed = this.store.applyAgentName(agentId, name!);
+              return renamed ? this.store.event(agentId, null, "agent_updated", { agent: renamed }) : null;
+            })();
+            if (event) this.notify(event);
+          }
+          agent = this.store.agent(agentId)!;
+        }
+        if (state.cancelled || failure) return;
         const context = this.store.context(agentId);
         const session = await this.harness.create(
           agent,
@@ -521,9 +552,25 @@ export class JellyService {
           compacted = result.compacted;
           return;
         }
+        const updateThinking = (text: string) => {
+          const line = thinkingPreview(text);
+          if (!line || line === state.thinkingPreview) return;
+          state.thinkingPreview = line;
+          // Stream a bounded preview without writing every delta to the transcript.
+          if (!state.thinkingTimer) state.thinkingTimer = setTimeout(() => {
+            state.thinkingTimer = undefined;
+            this.emit(null, run.id, "agent_activity", { agentId });
+          }, 250);
+        };
         // Subscribe to the awaited Pi core lifecycle so each boundary is durable before execution proceeds.
         session.agent.subscribe((event) => {
-          if (event.type === "message_start" && event.message.role === "user") {
+          if (event.type === "message_update" && event.message.role === "assistant") {
+            const update = event.assistantMessageEvent;
+            if (update.type === "thinking_delta" || update.type === "thinking_end") {
+              const block = update.partial.content[update.contentIndex];
+              if (block?.type === "thinking" && !block.redacted) updateThinking(block.thinking);
+            }
+          } else if (event.type === "message_start" && event.message.role === "user") {
             const pending = state.steering.get(event.message);
             if (pending) {
               const saved = this.store.db.transaction(() => {
@@ -566,8 +613,10 @@ export class JellyService {
                   .map((block) => block.type === "thinking" ? block.thinking : "")
                   .filter((value) => value.trim())
                   .join("\n\n");
-                if (thinking)
+                if (thinking) {
+                  updateThinking(thinking);
                   saved.push(this.store.event(agentId, run.id, "thinking", { text: thinking }));
+                }
                 if (text)
                   saved.push(this.store.event(agentId, run.id, "message", {
                     role: "assistant",
@@ -633,6 +682,7 @@ export class JellyService {
         failure ??= error instanceof Error ? error.message : "The run failed.";
       } finally {
         state.acceptsSteering = false;
+        clearTimeout(state.thinkingTimer);
         clearTimeout(deadline);
         await stopping;
         if (state.session)
@@ -705,6 +755,7 @@ export class JellyService {
     for (const [id, state] of this.active)
       if (this.store.run(id)?.agentId === agentId) {
         state.cancelled = true;
+        state.naming?.abort();
         if (state.session) await this.harness.stop(state.session);
         await state.done;
         return;
@@ -722,7 +773,7 @@ export class JellyService {
   async close() {
     this.closing = true;
     const states = [...this.active.values()];
-    for (const state of states) state.cancelled = true;
+    for (const state of states) { state.cancelled = true; state.naming?.abort(); }
     const outcomes = await Promise.allSettled([
       this.interventions.close(),
       ...states.map((state) =>

@@ -1,8 +1,18 @@
 import { useTestModel } from "./fixtures/app";
 import { test, expect, afterAll } from "bun:test";
 import { Harness } from "../src/server/harness";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai";
 import { ALL_PI_TOOLS } from "../src/server/pi-setup";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "jelly-capabilities-"));
@@ -80,6 +90,151 @@ test("all Pi tools and the subagent package load; filesystem and shell execute w
     expect(readFileSync(outside, "utf8")).toBe("outside cwd is allowed");
   } finally {
     await h.dispose(s);
+  }
+});
+test("Harness composes Pi guidance with Jelly policy, append instructions, project context and skills across restored compaction", async () => {
+  const dataDir = mkdtempSync(join(dir, "prompt-"));
+  const cwd = join(dataDir, "workspace");
+  const skillDir = join(cwd, ".pi", "skills", "prompt-fixture");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(dataDir, "SYSTEM.md"), "ignored-instance-system-marker");
+  writeFileSync(join(cwd, ".pi", "SYSTEM.md"), "ignored-project-system-marker");
+  writeFileSync(join(dataDir, "APPEND_SYSTEM.md"), "instance-append-marker");
+  writeFileSync(join(dataDir, "AGENTS.md"), "instance-instruction-marker");
+  const projectInstructions = join(cwd, "AGENTS.md");
+  writeFileSync(projectInstructions, "project-instruction-v1-marker");
+  writeFileSync(
+    join(skillDir, "SKILL.md"),
+    "---\nname: prompt-fixture\ndescription: Prompt composition fixture skill.\n---\nFixture skill body.\n",
+  );
+  const profile = {
+    ...agent,
+    cwd,
+    name: "Prompt Fixture",
+    instructions: "profile-instruction-marker",
+  };
+  const h = await Harness.create(dataDir, undefined, join(dataDir, "config"));
+  useTestModel(h);
+  const config = h.config("api", { model: "gpt-6-astra", effort: "high" });
+  const assertPrompt = (prompt: string, append: string, project: string) => {
+    for (const guidance of [
+      "multiple disjoint edits in one call",
+      "Use write only for new files or complete rewrites.",
+      "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+      "Each edits[].oldText is matched against the original file",
+      "Pi documentation (read only when the user asks about pi itself",
+      "You are Prompt Fixture, a persistent agent in Jelly.",
+      profile.instructions,
+      "All tools and subagent delegation are pre-authorized by the operator.",
+      "Use the same provider/model and effort as this parent for delegated work unless asked otherwise.",
+      "Use request_sudo for privileged commands",
+      "Never ask for passwords in chat.",
+      "Use request_browser_login when a website requires sign-in",
+      "Use web_search and web_fetch, powered by Firecrawl, instead of the browser",
+      "MCP servers are user-wide, shared by all Jelly agents and projects.",
+      h.mcps.configPath,
+      "instance-instruction-marker",
+      project,
+      append,
+      "Prompt composition fixture skill.",
+      join(skillDir, "SKILL.md"),
+    ])
+      expect(prompt).toContain(guidance);
+    expect(prompt).not.toContain("ignored-instance-system-marker");
+    expect(prompt).not.toContain("ignored-project-system-marker");
+    const ordered = [
+      "<tools>",
+      "<rules>",
+      "<docs>",
+      "<addendum>",
+      "You are Prompt Fixture",
+      profile.instructions,
+      append,
+      "<project_context>",
+      "<skills>",
+      "<cwd>",
+    ].map((text) => prompt.indexOf(text));
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+  };
+  const s = await h.create(profile, [], config, instance);
+  let checkpoint: Awaited<ReturnType<Harness["freshCheckpoint"]>>;
+  try {
+    expect(s.model?.provider).toBe(config.provider);
+    expect(s.model?.id).toBe(config.model);
+    assertPrompt(
+      s.systemPrompt,
+      "instance-append-marker",
+      "project-instruction-v1-marker",
+    );
+    await s.prompt("Remember the prompt composition fixture.");
+    // Native compaction requires a text-only response, unlike the tool-loop fixture.
+    s.agent.streamFunction = (model) => {
+      const stream = createAssistantMessageEventStream();
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Remember the prompt composition fixture." },
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      };
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end(message);
+      return stream;
+    };
+    const fresh = await h.freshCheckpoint(s);
+    expect(fresh.compacted).toBe(true);
+    assertPrompt(
+      s.systemPrompt,
+      "instance-append-marker",
+      "project-instruction-v1-marker",
+    );
+    checkpoint = fresh;
+  } finally {
+    await h.dispose(s);
+  }
+  // Jelly creates a session per run; restored compaction must not freeze instructions.
+  writeFileSync(projectInstructions, "project-instruction-v2-marker");
+  writeFileSync(join(cwd, ".pi", "APPEND_SYSTEM.md"), "project-append-marker");
+  const restored = await h.create(
+    profile,
+    [],
+    config,
+    instance,
+    [],
+    undefined,
+    checkpoint.entries,
+  );
+  try {
+    assertPrompt(
+      restored.systemPrompt,
+      "project-append-marker",
+      "project-instruction-v2-marker",
+    );
+    expect(restored.systemPrompt).not.toContain(
+      "project-instruction-v1-marker",
+    );
+    expect(restored.systemPrompt).not.toContain("instance-append-marker");
+    await restored.prompt("Continue with the refreshed instructions.");
+    assertPrompt(
+      restored.systemPrompt,
+      "project-append-marker",
+      "project-instruction-v2-marker",
+    );
+  } finally {
+    await h.dispose(restored);
   }
 });
 test("real pi-subagents workflow uses the parent provider and effort and supports abort", async () => {

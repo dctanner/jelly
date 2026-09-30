@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { GeneratedImages } from "./GeneratedImages";
+import { tableHeader, tableRow } from "./markdown-tables";
 import { isGeneratedImageUrl } from "../shared/generated-images";
 /** A small, safe renderer: model text never becomes HTML or executable markup. */
 function inline(text: string): ReactNode[] {
@@ -29,6 +30,7 @@ export function MessageText({ text }: { text: string }) {
     blocks: ReactNode[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i]!;
+    const table = tableHeader(lines, i);
     const image = line.match(/^!\[([^\]\n]*)\]\((\/api\/images\/[^\s)]+)\)$/);
     if (image && isGeneratedImageUrl(image[2])) {
       blocks.push(
@@ -51,6 +53,55 @@ export function MessageText({ text }: { text: string }) {
           <pre>
             <code>{code.join("\n")}</code>
           </pre>
+        </div>,
+      );
+    } else if (table) {
+      const start = i;
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length) {
+        const cells = tableRow(lines[i]!);
+        if (!cells || /^\s*(```|#{1,3} |[-*] |\d+\. )/.test(lines[i]!)) break;
+        rows.push(cells);
+        i++;
+      }
+      blocks.push(
+        <div
+          className="markdown-table-scroll"
+          key={`table-${start}`}
+          tabIndex={0}
+          role="region"
+          aria-label="Table, scroll horizontally for more columns"
+        >
+          <table>
+            <thead>
+              <tr>
+                {table.headers.map((header, column) => (
+                  <th
+                    key={column}
+                    scope="col"
+                    style={{ textAlign: table.alignments[column] }}
+                  >
+                    {inline(header)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((cells, row) => (
+                <tr key={row}>
+                  {table.headers.map((_, column) => (
+                    <td
+                      key={column}
+                      style={{ textAlign: table.alignments[column] }}
+                    >
+                      {inline(cells[column] ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>,
       );
     } else if (/^#{1,3} /.test(line)) {
@@ -81,7 +132,8 @@ export function MessageText({ text }: { text: string }) {
       while (
         i < lines.length &&
         lines[i]!.trim() &&
-        !/^(```|!\[|#{1,3} |[-*] |\d+\. )/.test(lines[i]!)
+        !/^(```|!\[|#{1,3} |[-*] |\d+\. )/.test(lines[i]!) &&
+        !tableHeader(lines, i)
       )
         para.push(lines[i++]!);
       blocks.push(<p key={i}>{inline(para.join("\n"))}</p>);

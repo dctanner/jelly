@@ -372,8 +372,29 @@ header small {
 .composer textarea:focus-visible {
   outline: none;
 }
-.composer textarea::placeholder {
+/* Native textarea placeholders clip inconsistently across browsers. Keep the
+   visual hint separate so only it ellipsizes; real messages remain multiline. */
+.composer-input {
+  --composer-input-inset: 14px;
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+.composer-placeholder {
+  position: absolute;
+  top: 10px;
+  left: var(--composer-input-inset);
+  right: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.5;
   color: var(--muted);
+  pointer-events: none;
+}
+.composer textarea:not(:placeholder-shown) + .composer-placeholder {
+  display: none;
 }
 .composer-footer {
   display: flex;
@@ -2517,6 +2538,10 @@ main > .connection-error + .conversation {
     padding: 6px;
     border-radius: 30px;
   }
+  .composer-input {
+    --composer-input-inset: 10px;
+    font-size: 16px;
+  }
   .composer textarea {
     padding-left: 10px;
     font-size: 16px;
@@ -2581,7 +2606,7 @@ main > .connection-error + .conversation {
   .composer.has-delivery-options {
     flex-wrap: wrap;
   }
-  .composer.has-delivery-options textarea {
+  .composer.has-delivery-options .composer-input {
     flex-basis: 100%;
   }
   .composer.has-delivery-options .composer-footer {

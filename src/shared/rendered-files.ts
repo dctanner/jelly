@@ -2,9 +2,13 @@ export interface RenderedFile {
   id: string;
   url: string;
   name: string;
-  kind: "image" | "text";
+  kind: "image" | "text" | "audio" | "video";
   mimeType: string;
   size: number;
+}
+/** Includes saved attachments from before HTML previews were introduced. */
+export function isHtmlFile(file: RenderedFile): boolean {
+  return file.kind === "text" && /\.html?$/i.test(file.name);
 }
 export function isRenderedFileUrl(value: unknown): value is string {
   return (
@@ -20,7 +24,10 @@ export function isRenderedFile(value: unknown): value is RenderedFile {
   return (
     isRenderedFileUrl(file.url) &&
     typeof file.name === "string" &&
-    (file.kind === "image" || file.kind === "text") &&
+    (file.kind === "image" ||
+      file.kind === "text" ||
+      file.kind === "audio" ||
+      file.kind === "video") &&
     typeof file.mimeType === "string" &&
     typeof file.size === "number" &&
     Number.isSafeInteger(file.size) &&

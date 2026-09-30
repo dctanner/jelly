@@ -24,6 +24,7 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   globalThis.EventSource = originalEventSource;
   localStorage.clear();
+  window.location.href = "http://localhost/";
   delete (document as any).modelContext;
   if (app) await app.close();
   if (dir) rmSync(dir, { recursive: true, force: true });
@@ -60,6 +61,35 @@ async function setup(extra: Partial<Parameters<typeof startApp>[0]> = {}) {
   } as unknown as typeof EventSource;
   return app;
 }
+async function waitForConnectedAgent() {
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false);
+    expect(!!document.querySelector(".initial-agent-identity, .conversation-header .agent-identity")).toBe(true);
+  });
+}
+async function backToInboxRoot() {
+  const back = screen.queryByRole("button", { name: "Back to all agents" });
+  if (back) fireEvent.click(back);
+  await screen.findByRole("navigation", { name: "Projects and agents" });
+}
+async function openInboxProject(name: string) {
+  await backToInboxRoot();
+  fireEvent.click(await screen.findByRole("button", { name: `Open project ${name}` }));
+}
+async function editNewAgent() {
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  expect(screen.queryByRole("dialog", { name: "Create an agent" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Edit agent profile" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent profile" }));
+  return screen.getByRole("dialog", { name: "Agent profile" });
+}
+async function saveAgentProfile(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+  await screen.findByRole("dialog", { name });
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+}
 test("React client connects, creates an agent, sends through Pi, renders tool completion and restores history on remount", async () => {
   const app = await setup({ fixtureDelayMs: 300 });
   let ui = render(<App />);
@@ -71,7 +101,7 @@ test("React client connects, creates an agent, sends through Pi, renders tool co
     ).toBe(false),
   );
   fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
-  const dialog = screen.getByRole("dialog", { name: "Create an agent" });
+  const dialog = await editNewAgent();
   fireEvent.change(within(dialog).getByLabelText("Name"), {
     target: { value: "Scout" },
   });
@@ -83,11 +113,11 @@ test("React client connects, creates an agent, sends through Pi, renders tool co
     within(dialog).getByRole("button", { name: "Choose avatar" }),
   );
   fireEvent.click(within(dialog).getByRole("button", { name: "crab" }));
-  fireEvent.click(within(dialog).getByRole("button", { name: "Create agent" }));
+  await saveAgentProfile("Scout");
   await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "Meet Scout." })).toBeDefined(),
+    expect(screen.getByRole("button", { name: "Edit agent name" }).textContent).toBe("Scout"),
   );
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   const textarea = screen.getByRole("textbox", { name: "Message Scout" });
   fireEvent.change(textarea, { target: { value: "Check the workspace" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
@@ -146,8 +176,8 @@ test("floating agent identity keeps profile and workspace actions accessible", a
   });
   app.service.moveAgent(app.store.agents()[0]!.id, project.id);
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
-  fireEvent.click(screen.getByRole("button", { name: "Jelly details" }));
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   const details = screen.getByRole("dialog", { name: "Jelly" });
   expect(within(details).getAllByText("Website").length).toBeGreaterThan(0);
   expect(
@@ -182,13 +212,14 @@ test("appearance can switch between light, dark and system and survives a client
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "Theme" }));
   fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
   expect(document.documentElement.dataset.theme).toBe("dark");
@@ -205,13 +236,14 @@ test("appearance can switch between light, dark and system and survives a client
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "Theme" }));
   fireEvent.click(screen.getByRole("radio", { name: "System" }));
   expect(localStorage.getItem("jelly.theme")).toBe("system");
@@ -342,13 +374,16 @@ test("sudo approval card submits privately, clears its input, and reflects the c
     rmSync(dir, { recursive: true, force: true });
   }
 });
-test("Connection settings accept an API key privately and complete ChatGPT sign-in in the UI", async () => {
+test.each(["http://localhost/", "http://box.tailbfab3f.ts.net:5173/"])("Connection settings accept a key privately and complete ChatGPT sign-in at %s", async (url) => {
+  window.location.href = url;
+  let approve!: () => void;
   const app = await setup({
     chatgptLogin: async (callbacks) => {
-      callbacks.onAuth({
-        url: "https://auth.openai.com/oauth/authorize?state=ui-state",
+      callbacks.onDeviceCode({
+        verificationUri: "https://auth.openai.com/codex/device",
+        userCode: "ABCD-EFGH",
       });
-      await callbacks.onManualCodeInput!();
+      await new Promise<void>((resolve) => { approve = resolve; });
       return {
         access: "ui-access",
         refresh: "ui-refresh",
@@ -360,13 +395,14 @@ test("Connection settings accept an API key privately and complete ChatGPT sign-
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "OpenAI API" }));
   const key = screen.getByLabelText("OpenAI API key") as HTMLInputElement;
   expect(key.type).toBe("password");
@@ -394,15 +430,10 @@ test("Connection settings accept an API key privately and complete ChatGPT sign-
     { timeout: 3000 },
   );
   expect(link.getAttribute("href")).toContain("https://auth.openai.com/");
-  fireEvent.click(screen.getByText("Sign-in tab didn’t return?"));
-  const callback = screen.getByLabelText("Callback URL") as HTMLInputElement;
-  fireEvent.change(callback, {
-    target: {
-      value: "http://localhost:1455/auth/callback?code=ui-code&state=ui-state",
-    },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Complete sign-in" }));
-  expect(callback.value).toBe("");
+  expect(screen.getByText("ABCD-EFGH")).toBeDefined();
+  expect(screen.queryByLabelText("Callback URL")).toBeNull();
+  expect(JSON.stringify(app.service.snapshot())).not.toContain("ABCD-EFGH");
+  await act(async () => approve());
   await waitFor(
     () => expect(screen.getByText("ChatGPT connected.")).toBeDefined(),
     { timeout: 3000 },
@@ -416,20 +447,22 @@ test("grouped settings use checkmarked model and effort choices and persist on D
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   expect(screen.queryByLabelText("OpenAI API key")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(
     (screen.getByRole("radio", { name: "GPT-6 Astra" }) as HTMLInputElement)
       .checked,
   ).toBe(true);
-  fireEvent.click(screen.getByRole("radio", { name: "GPT-6 Sol" }));
+  fireEvent.click(screen.getByRole("radio", { name: "GPT-6 Astra Ultrafast" }));
+  expect(screen.getByText(/Higher API pricing/)).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
   fireEvent.click(screen.getByRole("button", { name: "Reasoning effort" }));
   expect(
@@ -439,7 +472,7 @@ test("grouped settings use checkmarked model and effort choices and persist on D
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
   await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
   expect(app.service.snapshot().config).toMatchObject({
-    selectedModel: "gpt-6-sol",
+    selectedModel: "gpt-6-astra-ultrafast",
     effort: "max",
   });
   ui.unmount();
@@ -447,15 +480,16 @@ test("grouped settings use checkmarked model and effort choices and persist on D
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   expect(screen.getByRole("button", { name: "Model" }).textContent).toContain(
-    "GPT-6 Sol",
+    "GPT-6 Astra Ultrafast",
   );
   expect(
     screen.getByRole("button", { name: "Reasoning effort" }).textContent,
@@ -488,24 +522,18 @@ test("project navigation retains per-agent drafts, empty scopes clear chat, and 
     }
   } as typeof EventSource;
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   fireEvent.change(screen.getByRole("textbox", { name: "Message Jelly" }), {
     target: { value: "Keep my Jelly draft" },
   });
-  fireEvent.click(screen.getAllByRole("button", { name: "All agents" })[0]!);
-  let switcher = screen.getByRole("dialog", { name: "Switch project" });
-  fireEvent.click(within(switcher).getByRole("button", { name: /Website/ }));
+  await openInboxProject("Website");
   await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "Meet Milo." })).toBeDefined(),
+    expect(screen.getByRole("button", { name: "Edit agent name" }).textContent).toBe("Milo"),
   );
   fireEvent.change(screen.getByRole("textbox", { name: "Message Milo" }), {
     target: { value: "Keep my Milo draft" },
   });
-  fireEvent.click(screen.getAllByRole("button", { name: "Website" })[0]!);
-  switcher = screen.getByRole("dialog", { name: "Switch project" });
-  fireEvent.click(
-    within(switcher).getByRole("button", { name: /Empty project/ }),
-  );
+  await openInboxProject("Empty project");
   await waitFor(() =>
     expect(
       screen.getByRole("heading", { name: "A fresh space for your ideas." }),
@@ -516,14 +544,8 @@ test("project navigation retains per-agent drafts, empty scopes clear chat, and 
       .getByRole("textbox", { name: "Message agent" })
       .hasAttribute("disabled"),
   ).toBe(true);
-  expect(screen.queryByRole("heading", { name: "Meet Milo." })).toBeNull();
-  fireEvent.click(screen.getAllByRole("button", { name: "Empty project" })[0]!);
-  fireEvent.click(
-    within(screen.getByRole("dialog", { name: "Switch project" })).getByRole(
-      "button",
-      { name: /Website/ },
-    ),
-  );
+  expect(screen.queryByRole("button", { name: "Edit agent name" })).toBeNull();
+  await openInboxProject("Website");
   await waitFor(() =>
     expect(
       (
@@ -533,13 +555,7 @@ test("project navigation retains per-agent drafts, empty scopes clear chat, and 
       ).value,
     ).toBe("Keep my Milo draft"),
   );
-  fireEvent.click(screen.getAllByRole("button", { name: "Website" })[0]!);
-  fireEvent.click(
-    within(screen.getByRole("dialog", { name: "Switch project" })).getByRole(
-      "button",
-      { name: /Ungrouped/ },
-    ),
-  );
+  await backToInboxRoot();
   await waitFor(() =>
     expect(
       (
@@ -568,16 +584,10 @@ test("remote membership and project deletion reconcile current scope without sen
     projectId: p.id,
   });
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
-  fireEvent.click(screen.getAllByRole("button", { name: "All agents" })[0]!);
-  fireEvent.click(
-    within(screen.getByRole("dialog", { name: "Switch project" })).getByRole(
-      "button",
-      { name: /Research/ },
-    ),
-  );
+  await waitForConnectedAgent();
+  await openInboxProject("Research");
   await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "Meet Fin." })).toBeDefined(),
+    expect(screen.getByRole("button", { name: "Edit agent name" }).textContent).toBe("Fin"),
   );
   app.service.moveAgent(a.id, null);
   await waitFor(() =>
@@ -589,7 +599,7 @@ test("remote membership and project deletion reconcile current scope without sen
   app.service.deleteProject(p.id);
   await waitFor(() =>
     expect(
-      screen.getAllByRole("button", { name: "All agents" }).length,
+      screen.getAllByRole("navigation", { name: "Projects and agents" }).length,
     ).toBeGreaterThan(0),
   );
   expect(app.store.runs(a.id)).toEqual([]);
@@ -635,30 +645,24 @@ test("project create form confirms a server folder and new agent inherits it wit
   await waitFor(() => expect(saved?.name).toBe("Test project"));
   ui.unmount();
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
-  fireEvent.click(screen.getAllByRole("button", { name: "All agents" })[0]!);
-  fireEvent.click(
-    within(screen.getByRole("dialog", { name: "Switch project" })).getByRole(
-      "button",
-      { name: /Test project/ },
-    ),
-  );
+  await waitForConnectedAgent();
+  await openInboxProject("Test project");
   await waitFor(() =>
     expect(
       screen.getByRole("heading", { name: "A fresh space for your ideas." }),
     ).toBeDefined(),
   );
-  fireEvent.click(screen.getAllByRole("button", { name: "Create agent" })[0]!);
-  const form = screen.getByRole("dialog", { name: "Create an agent" });
+  fireEvent.click(within(screen.getByRole("main")).getByRole("button", { name: "Create agent" }));
+  const form = await editNewAgent();
   fireEvent.change(within(form).getByLabelText("Name"), {
     target: { value: "Pearl" },
   });
   expect(screen.queryByLabelText("Role")).toBeNull();
   fireEvent.click(within(form).getByRole("button", { name: "Choose avatar" }));
   fireEvent.click(within(form).getByRole("button", { name: "sea turtle" }));
-  fireEvent.click(within(form).getByRole("button", { name: "Create agent" }));
+  await saveAgentProfile("Pearl");
   await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "Meet Pearl." })).toBeDefined(),
+    expect(screen.getByRole("button", { name: "Edit agent name" }).textContent).toBe("Pearl"),
   );
   const a = app.store.agents().find((a) => a.name === "Pearl")!;
   expect(a.cwd).toBe(saved.defaultCwd);
@@ -675,7 +679,7 @@ test("late history from a rapid A to B to A switch cannot replace the selected c
     color: "#a4c8e8",
   });
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   fireEvent.change(screen.getByRole("textbox", { name: "Message Jelly" }), {
     target: { value: "Still my draft" },
   });
@@ -879,11 +883,12 @@ test("chat model menu persists choices without changing connection mode and dism
     name: "Model",
   }) as HTMLSelectElement;
   expect(model.value).toBe("gpt-6-astra");
-  fireEvent.change(model, { target: { value: "gpt-6-sol" } });
+  fireEvent.change(model, { target: { value: "gpt-6-astra-ultrafast" } });
   await waitFor(() => {
-    expect(model.value).toBe("gpt-6-sol");
+    expect(model.value).toBe("gpt-6-astra-ultrafast");
     expect(model.disabled).toBe(false);
   });
+  expect(screen.getByText(/Higher API pricing/)).toBeDefined();
   const effort = screen.getByRole("combobox", {
     name: "Reasoning effort",
   }) as HTMLSelectElement;
@@ -893,7 +898,7 @@ test("chat model menu persists choices without changing connection mode and dism
     expect(effort.disabled).toBe(false);
   });
   expect(app.service.snapshot().config).toMatchObject({
-    selectedModel: "gpt-6-sol",
+    selectedModel: "gpt-6-astra-ultrafast",
     effort: "high",
     mode: "api",
   });
@@ -940,13 +945,14 @@ test("settings shows read-only MCP status and refreshes agent configuration chan
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "MCP connections" }));
   const fieldset = await screen.findByRole("group", {
     name: "MCP connections",
@@ -981,7 +987,7 @@ test("agent menu uploads multiple files to a chosen host folder and appends only
   mkdirSync(destination);
   const agent = app.store.agents()[0]!;
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   const draft = screen.getByRole("textbox", {
     name: "Message Jelly",
   }) as HTMLTextAreaElement;
@@ -1059,7 +1065,7 @@ test("composer upload button opens the shared modal and partial failures retry o
   const retryFolder = join(dir!, "retry");
   mkdirSync(retryFolder);
   render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   const draft = screen.getByRole("textbox", {
     name: "Message Jelly",
   }) as HTMLTextAreaElement;
@@ -1104,7 +1110,7 @@ test("busy composer defaults to Queued, can promote a sent message, and resets S
   const app = await setup({ fixtureDelayMs: 800 });
   const id = app.store.agents()[0]!.id;
   let ui = render(<App />);
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   app.service.start(id, "ui-first", "Keep working");
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Queue message" })).toBeDefined(),
@@ -1547,9 +1553,7 @@ test("agent list shows only unread and attention dots, never ready or working do
     ).toBeDefined();
     expect(row.querySelector(".agent-indicator.attention")).not.toBeNull();
   }
-  expect(
-    document.querySelector(".header-status .status-dot.idle"),
-  ).not.toBeNull();
+  expect(document.querySelector(".initial-agent-identity .status-dot")).toBeNull();
 });
 
 test("unread agent dots track assistant messages and persist read receipts across reloads", async () => {
@@ -1687,13 +1691,14 @@ test("settings cancellation protects unsaved choices and never persists discarde
   await waitFor(() =>
     expect(
       screen
-        .getByRole("button", { name: "Connection and appearance" })
+        .getByRole("button", { name: "Agent list menu" })
         .hasAttribute("disabled"),
     ).toBe(false),
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Connection and appearance" }),
+    screen.getByRole("button", { name: "Agent list menu" }),
   );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("radio", { name: "GPT-6 Sol" }));
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -1714,8 +1719,8 @@ test("settings cancellation protects unsaved choices and never persists discarde
 test("agent details uses one sheet for workspace and profile, guarding profile edits", async () => {
   const app = await setup();
   render(<App />);
-  await screen.findByRole("button", { name: "Jelly details" });
-  fireEvent.click(screen.getByRole("button", { name: "Jelly details" }));
+  await screen.findByRole("button", { name: "Agent options" });
+  fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   const original = screen.getByRole("dialog", { name: "Jelly" });
   expect(original.getAttribute("data-detent")).toBe("medium");
   expect(original.querySelector(".directory-path")).toBeNull();
@@ -1846,19 +1851,50 @@ test("touch focus stays quiet while keyboard navigation retains focus indicators
   expect(root.dataset.inputModality).toBeUndefined();
 });
 
-test("new agent has one Cancel action, without a duplicate close button", async () => {
-  await setup();
+test("plus creates and opens an agent immediately without a modal or duplicate in-flight requests", async () => {
+  const app = await setup();
   render(<App />);
   await waitFor(() => expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false));
+  const fetchBefore = globalThis.fetch;
+  let release = () => {}, requests = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (input === "/api/agents" && init?.method === "POST") { requests++; await gate; }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
   fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
-  const form = screen.getByRole("dialog", { name: "Create an agent" });
-  expect(within(form).getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
-  expect(within(form).queryByRole("button", { name: "Close dialog" })).toBeNull();
-  fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Unsaved agent" } });
-  fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-  expect(screen.getByRole("alertdialog", { name: "Discard changes?" })).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
-  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+  expect(requests).toBe(1);
+  expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(true);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  release();
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  expect(app.store.agents()).toHaveLength(2);
+  expect(app.store.agents().find(a => a.name === "New Agent")?.projectId).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.querySelector(".app")?.classList.contains("show-chat")).toBe(true);
+});
+
+test("quick-create failure stays visible and allows a fresh attempt", async () => {
+  const app = await setup();
+  render(<App />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false));
+  const fetchBefore = globalThis.fetch;
+  let fail = true;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (fail && input === "/api/agents" && init?.method === "POST")
+      return Response.json({ error: "Could not create this agent" }, { status: 503 });
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toContain("Could not create this agent");
+  expect(app.store.agents()).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false);
+  fail = false;
+  fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("assistant copy control is revealed on touch and can be hidden again", async () => {
@@ -2072,7 +2108,7 @@ test("read-tool image attachments render outside work disclosures live and after
 test("render_file displays images and expandable inert text with download and history", async () => {
   const app = await setup();
   const agent = app.store.agents()[0]!;
-  const source = join(dir!, "preview.html");
+  const source = join(dir!, "preview.txt");
   writeFileSync(source, '<script>window.stolen=true</script>\n' + "hello from the file\n".repeat(220));
   const textFile = await app.service.harness.files.save(source, dir!);
   const imageSource = join(dir!, "cafe.png");
@@ -2082,7 +2118,7 @@ test("render_file displays images and expandable inert text with download and hi
   app.store.event(agent.id, null, "file_rendered", { files: [textFile, imageFile] });
   let ui = render(<App />);
   await screen.findByRole("img", { name: "cafe.png" });
-  const file = screen.getByRole("region", { name: "File: preview.html" });
+  const file = screen.getByRole("region", { name: "File: preview.txt" });
   expect(file.textContent).not.toContain("hello from the file");
   const details = file.querySelector("details")!;
   await act(async () => { details.open = true; fireEvent(details, new window.Event("toggle")); });
@@ -2095,7 +2131,7 @@ test("render_file displays images and expandable inert text with download and hi
   ui.unmount();
   ui = render(<App />);
   await screen.findByRole("img", { name: "cafe.png" });
-  expect(screen.getByRole("region", { name: "File: preview.html" }).textContent).not.toContain("hello from the file");
+  expect(screen.getByRole("region", { name: "File: preview.txt" }).textContent).not.toContain("hello from the file");
 });
 
 test("active work stays after mid-turn replies, steering and attachments, then returns to history on settlement", async () => {
@@ -2153,7 +2189,7 @@ test("scrolling up prepends old messages once, preserves position and keeps the 
   for (let i = 1; i <= 240; i++) app.store.event(id, null, "message", { role: "user", text: `History line ${i}` });
   render(<App />);
   await screen.findByText("History line 240");
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   expect(screen.queryByText("History line 140")).toBeNull();
   const chat = mockConversationLayout();
   expect(screen.queryByRole("button", { name: "Jump to bottom" })).toBeNull();
@@ -2205,7 +2241,7 @@ test("history failures are retryable and late pagination cannot leak across agen
   for (let i = 1; i <= 120; i++) app.store.event(id, null, "message", { role: "user", text: `Jelly history ${i}` });
   app.store.event(other.id, null, "message", { role: "user", text: "Pearl only" });
   render(<App />); await screen.findByText("Jelly history 120");
-  await waitFor(() => expect(screen.getByText("Ready")).toBeDefined());
+  await waitForConnectedAgent();
   const chat = mockConversationLayout();
   const fetchBefore = globalThis.fetch;
   let fail = true, requests = 0, release = () => {};
@@ -2433,10 +2469,12 @@ for (const chatgptReady of [true, false]) {
 test("chat profile avatar shows a working ring only for the selected running agent", async () => {
   const app = await setup();
   const id = app.store.agents()[0]!.id;
+  app.service.emit(id, null, "message", { role: "user", text: "Earlier work" });
   app.store.setStatus(id, "running");
   const other = app.service.createAgent({ name: "Pearl", instructions: "", color: "#a4c8e8" });
+  app.service.emit(other.id, null, "message", { role: "user", text: "Earlier work" });
   render(<App />);
-  const pill = await screen.findByRole("button", { name: "Jelly details" });
+  const pill = await screen.findByRole("button", { name: "Edit Jelly profile" });
   const ring = () => pill.querySelector(".agent-avatar.is-working");
   expect(ring()).not.toBeNull();
   expect(ring()!.getAttribute("aria-hidden")).toBe("true");
@@ -2448,14 +2486,15 @@ test("chat profile avatar shows a working ring only for the selected running age
     expect(!!ring()).toBe(status === "running");
   }
   fireEvent.click(screen.getByTitle("Pearl · idle"));
-  const idlePill = await screen.findByRole("button", { name: "Pearl details" });
+  const idlePill = await screen.findByRole("button", { name: "Edit Pearl profile" });
   expect(idlePill.querySelector(".agent-avatar.is-working")).toBeNull();
   expect(app.store.agent(other.id)!.status).toBe("idle");
   fireEvent.click(screen.getByTitle("Jelly · running"));
-  const workingPill = await screen.findByRole("button", { name: "Jelly details" });
+  const workingPill = await screen.findByRole("button", { name: "Edit Jelly profile" });
   expect(workingPill.querySelector(".agent-avatar.is-working")).not.toBeNull();
   fireEvent.click(workingPill);
-  expect(screen.getByRole("dialog", { name: "Jelly" })).toBeDefined();
+  expect(screen.getByRole("dialog", { name: "Agent profile" })).toBeDefined();
+  expect(screen.getByLabelText("Name").closest("fieldset")!.disabled).toBe(true);
 });
 
 test("in-chat forms use the shared iOS card with reviewable commands and accessible private fields", async () => {
@@ -2554,7 +2593,7 @@ test("remote clipboard transfers are explicit, private, and have HTTP paste/copy
   const requests: { operation: string; text?: string }[] = [];
   let copied = "", pasteCount = 0;
   globalThis.fetch = (async (input: any, init: any) => {
-    if (input === "/api/computer/clipboard") {
+    if (input === "/api/computer/clipboard?agentId=test-agent") {
       const value = JSON.parse(init.body); requests.push(value);
       return Response.json(value.operation === "read" ? { text: "remote fixture 🦀" } : { success: true });
     }
@@ -2564,7 +2603,7 @@ test("remote clipboard transfers are explicit, private, and have HTTP paste/copy
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
       readText: async () => "local fixture 🐙", writeText: async (text: string) => { copied = text; },
     } });
-    const ui = render(<RemoteClipboard paste={() => { pasteCount++; }} />);
+    const ui = render(<RemoteClipboard agentId="test-agent" paste={() => { pasteCount++; }} />);
     expect(requests).toHaveLength(0); // never automatically synchronize private data
     fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
     await waitFor(() => expect(pasteCount).toBe(1));
@@ -2592,7 +2631,7 @@ test("remote clipboard transfers are explicit, private, and have HTTP paste/copy
     expect(remote.selectionEnd).toBe(remote.value.length);
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("textbox")).toBeNull();
-    ui.rerender(<RemoteClipboard disabled paste={() => { pasteCount++; }} />);
+    ui.rerender(<RemoteClipboard agentId="test-agent" disabled paste={() => { pasteCount++; }} />);
     expect(screen.getByRole("button", { name: "Paste to remote" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
   } finally {
@@ -2602,7 +2641,7 @@ test("remote clipboard transfers are explicit, private, and have HTTP paste/copy
   }
 });
 
-test("closing the private clipboard discards late results without pasting into the remote browser", async () => {
+test("switching agent sessions clears private clipboard and discards late paste results", async () => {
   const { RemoteClipboard } = await import("../src/client/RemoteClipboard");
   await setup();
   const priorClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -2610,16 +2649,16 @@ test("closing the private clipboard discards late results without pasting into t
   let release = () => {}, submitted = false, pasteCount = 0;
   const gate = new Promise<void>(resolve => { release = resolve; });
   globalThis.fetch = (async (input: any, init: any) => {
-    if (input === "/api/computer/clipboard") { submitted = true; await gate; return Response.json({ success: true }); }
+    if (input === "/api/computer/clipboard?agentId=test-agent") { submitted = true; await gate; return Response.json({ success: true }); }
     return fetchBefore(input, init);
   }) as typeof fetch;
   try {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "private fixture" } });
-    const ui = render(<RemoteClipboard paste={() => { pasteCount++; }} />);
+    const ui = render(<RemoteClipboard agentId="test-agent" paste={() => { pasteCount++; }} />);
     fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
     await waitFor(() => expect(submitted).toBe(true));
     expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
-    ui.unmount(); release();
+    ui.rerender(<RemoteClipboard agentId="other-agent" paste={() => { pasteCount++; }} />); release();
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
     expect(pasteCount).toBe(0);
     expect(document.body.textContent).not.toContain("private fixture");
@@ -2627,5 +2666,516 @@ test("closing the private clipboard discards late results without pasting into t
     release();
     if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
     else delete (navigator as any).clipboard;
+  }
+});
+
+test("new agents default to New Agent and receive a sea-themed name after the first message", async () => {
+  const app = await setup();
+  const prompts: string[] = [];
+  app.service.harness.generateAgentName = async prompt => { prompts.push(prompt); return "Coral Coder"; };
+  render(<App />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  expect(prompts).toEqual([]);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message New Agent" }), { target: { value: "Build a React app" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByRole("textbox", { name: "Message Coral Coder" });
+  expect(prompts).toEqual(["Build a React app"]);
+  expect(within(screen.getByRole("main")).getByText("Build a React app")).toBeDefined();
+  await act(async () => { await app.service.settled(); });
+});
+
+test("editing the placeholder name before the first message opts out even when changed back", async () => {
+  const app = await setup();
+  let calls = 0;
+  app.service.harness.generateAgentName = async () => { calls++; return "Never Applied"; };
+  const agent = app.service.createAgent({ name: "New Agent", instructions: "", color: "#b5bafc" });
+  render(<App />);
+  fireEvent.click(await screen.findByTitle("New Agent · idle"));
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent name" }));
+  fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "My choice" } });
+  fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "New Agent" } });
+  fireEvent.blur(screen.getByLabelText("Agent name"));
+  await waitFor(() => expect(!!screen.queryByLabelText("Agent name")).toBe(false));
+  fireEvent.change(screen.getByRole("textbox", { name: "Message New Agent" }), { target: { value: "Organize the workspace" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(!!within(screen.getByRole("main")).queryByText("Organize the workspace")).toBe(true));
+  await act(async () => { await app.service.settled(); });
+  expect(calls).toBe(0);
+  expect(app.store.agent(agent.id)!.name).toBe("New Agent");
+});
+
+test("centered identity edits the name in place, preserves other fields, and skips automatic naming", async () => {
+  const app = await setup();
+  const agent = app.service.createAgent({ name: "New Agent", instructions: "Keep these instructions", color: "#abcdef", avatarId: "crab" });
+  let namingCalls = 0;
+  app.service.harness.generateAgentName = async () => { namingCalls++; return "Coral Coder"; };
+  render(<App />);
+  fireEvent.click(await screen.findByTitle("New Agent · idle"));
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  expect(document.querySelector(".conversation-header .agent-identity")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent name" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const input = screen.getByRole("textbox", { name: "Agent name" });
+  expect(input.closest(".initial-agent-identity")).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Save agent name" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel name edit" })).toBeNull();
+  fireEvent.change(input, { target: { value: "My Crab" } });
+  fireEvent.blur(input);
+  await waitFor(() => expect(app.store.agent(agent.id)!.name).toBe("My Crab"));
+  await screen.findByRole("textbox", { name: "Message My Crab" });
+  expect(app.store.agent(agent.id)!.instructions).toBe("Keep these instructions");
+  expect(app.store.agent(agent.id)!.color).toBe("#abcdef");
+  expect(app.store.agent(agent.id)!.avatarId).toBe("crab");
+  expect(screen.getByRole("button", { name: "Edit agent name" }).textContent).toBe("My Crab");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message My Crab" }), { target: { value: "Help with code" } });
+  await waitFor(() => expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByRole("button", { name: "Edit My Crab profile" });
+  await act(async () => { await app.service.settled(); });
+  expect(namingCalls).toBe(0);
+  expect(screen.queryByRole("button", { name: "Edit agent name" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit My Crab profile" }));
+  await screen.findByRole("dialog", { name: "Agent profile" });
+  expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("My Crab");
+  expect(screen.getByRole("button", { name: "Save profile" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Edit agent profile" })).toBeNull();
+});
+
+test("avatar edits are inline, leave automatic naming eligible, and remain centered while scrolling", async () => {
+  const app = await setup();
+  const agent = app.service.createAgent({ name: "New Agent", instructions: "Preserve", color: "#aabbcc" });
+  app.service.harness.generateAgentName = async () => "Coral Coder";
+  render(<App />);
+  fireEvent.click(await screen.findByTitle("New Agent · idle"));
+  await screen.findByRole("textbox", { name: "Message New Agent" });
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent avatar" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const grid = screen.getByRole("group", { name: "Sea creature avatars" });
+  expect(within(grid).getAllByRole("button")).toHaveLength(12);
+  expect(screen.queryByText("Choose avatar")).toBeNull();
+  expect(screen.queryByText("Choose a sea creature")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  const chat = screen.getByLabelText("Conversation");
+  Object.defineProperties(chat, { scrollHeight: { value: 1000, configurable: true }, clientHeight: { value: 300, configurable: true }, scrollTop: { value: 100, writable: true, configurable: true } });
+  fireEvent.scroll(chat);
+  expect(screen.getByRole("button", { name: "Edit agent name" })).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "octopus" }));
+  await waitFor(() => expect(app.store.agent(agent.id)!.avatarId).toBe("octopus"));
+  await waitFor(() => expect(!!screen.queryByRole("group", { name: "Sea creature avatars" })).toBe(false));
+  expect(app.store.agent(agent.id)!.instructions).toBe("Preserve");
+  expect(app.store.agent(agent.id)!.color).toBe("#aabbcc");
+  expect(document.querySelector(".initial-agent-avatar img")!.getAttribute("src")).toContain("octopus");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message New Agent" }), { target: { value: "Make a web app" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByRole("textbox", { name: "Message Coral Coder" });
+  await act(async () => { await app.service.settled(); });
+  expect(app.store.agent(agent.id)!.avatarId).toBe("octopus");
+});
+
+test("inline name Escape cancels, blur saves, and failures remain retryable without racing Send", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  render(<App />);
+  await screen.findByRole("textbox", { name: "Message Jelly" });
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent name" }));
+  fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Discard this" } });
+  fireEvent.keyDown(screen.getByLabelText("Agent name"), { key: "Escape" });
+  expect(screen.queryByLabelText("Agent name")).toBeNull();
+  expect(app.store.agent(agent.id)!.name).toBe("Jelly");
+  const fetchBefore = globalThis.fetch;
+  let reject = true;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (reject && init?.method === "PATCH") return Response.json({ error: "Try again" }, { status: 503 });
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  fireEvent.click(screen.getByRole("button", { name: "Edit agent name" }));
+  fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Jelly Updated" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message Jelly" }), { target: { value: "A preserved draft" } });
+  expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.blur(screen.getByLabelText("Agent name"), { relatedTarget: screen.getByRole("textbox", { name: "Message Jelly" }) });
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toBe("Try again");
+  expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("Jelly Updated");
+  expect(app.store.agent(agent.id)!.name).toBe("Jelly");
+  reject = false;
+  fireEvent.blur(screen.getByLabelText("Agent name"));
+  await screen.findByRole("textbox", { name: "Message Jelly Updated" });
+  expect((screen.getByRole("textbox", { name: "Message Jelly Updated" }) as HTMLTextAreaElement).value).toBe("A preserved draft");
+  await waitFor(() => expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+
+test("centered identity has no Ready indicator or workspace prompt suggestion", async () => {
+  const app = await setup();
+  render(<App />);
+  await waitForConnectedAgent();
+  const pill = screen.getByRole("group", { name: "Agent profile" });
+  expect(within(pill).queryByText("Ready")).toBeNull();
+  expect(pill.querySelector(".status-dot")).toBeNull();
+  expect(screen.queryByRole("button", { name: /Tell me about this workspace/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "Edit agent name" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Edit agent avatar" })).toBeDefined();
+  act(() => { app.service.emit(app.store.agents()[0]!.id, null, "message", { role: "user", text: "Begin work" }); });
+  const headerPill = await screen.findByRole("button", { name: "Edit Jelly profile" });
+  expect(within(headerPill).getByText("Ready")).toBeDefined();
+});
+
+test("inbox sorts by latest assistant response and updates live without changing selection", async () => {
+  const app = await setup();
+  const original = app.store.agents()[0]!;
+  const recent = app.service.createAgent({ name: "Recent responder", instructions: "Test", color: "#abc" });
+  const empty = app.service.createAgent({ name: "No replies yet", instructions: "Test", color: "#abc" });
+  const older = app.service.emit(original.id, null, "message", { role: "assistant", text: "Earlier answer." });
+  const newer = app.service.emit(recent.id, null, "message", { role: "assistant", text: "Recent answer." });
+  app.store.db.query("UPDATE timeline SET createdAt=? WHERE id=?").run(new Date(Date.now() - 60000).toISOString(), older.id);
+  app.store.db.query("UPDATE timeline SET createdAt=? WHERE id=?").run(new Date(Date.now() - 30000).toISOString(), newer.id);
+  render(<App />);
+  await screen.findByTitle("Recent responder · idle");
+  const order = () => [...document.querySelectorAll(".sidebar nav .agent-row strong")].map(row => row.textContent);
+  expect(order()).toEqual([recent.name, original.name, empty.name]);
+  expect(screen.getByTitle(`${original.name} · idle`).getAttribute("aria-current")).toBe("page");
+  app.service.emit(empty.id, null, "message", { role: "user", text: "A prompt must not bump this agent." });
+  app.store.setStatus(empty.id, "running");
+  app.service.emit(empty.id, null, "tool_started", { name: "read", toolCallId: "sort-test", args: {} });
+  await screen.findByTitle("No replies yet · running");
+  expect(order()).toEqual([recent.name, original.name, empty.name]);
+  app.service.emit(empty.id, null, "message", { role: "assistant", text: "Newest response." });
+  await waitFor(() => expect(order()).toEqual([empty.name, recent.name, original.name]));
+  expect(screen.getByTitle(`${original.name} · idle`).getAttribute("aria-current")).toBe("page");
+  expect(screen.queryByLabelText("Find an agent")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Search" }));
+  const search = screen.getByRole("dialog", { name: "Search" });
+  fireEvent.change(within(search).getByLabelText("Find an agent"), { target: { value: "Recent" } });
+  expect(within(search).getAllByRole("button").filter(b => b.classList.contains("agent-row")).map(b => b.querySelector("strong")?.textContent)).toEqual([recent.name]);
+  expect(order()).toEqual([empty.name, recent.name, original.name]);
+});
+
+test("response ordering uses timestamps before IDs, breaks ties, and leaves the snapshot unchanged", async () => {
+  const { sortAgentsByResponse } = await import("../src/client/agent-order");
+  const app = await setup();
+  const original = app.store.agents()[0]!;
+  const agents = Object.freeze(["empty-1", "older", "tie-1", "tie-2", "empty-2"].map(id => ({ ...original, id })));
+  const previews = {
+    older: { text: "Older timestamp, larger ID", createdAt: "2026-01-01T00:00:00Z" },
+    "tie-1": { text: "Same millisecond", createdAt: "2026-01-02T00:00:00Z" },
+    "tie-2": { text: "Same millisecond", createdAt: "2026-01-02T00:00:00Z" },
+  };
+  const sorted = sortAgentsByResponse(agents, previews, { older: 99, "tie-1": 2, "tie-2": 3 });
+  expect(sorted.map(agent => agent.id)).toEqual(["tie-2", "tie-1", "older", "empty-1", "empty-2"]);
+  expect(agents.map(agent => agent.id)).toEqual(["empty-1", "older", "tie-1", "tie-2", "empty-2"]);
+  expect(sortAgentsByResponse(agents, undefined, {}).map(agent => agent.id)).toEqual(agents.map(agent => agent.id));
+  expect(sortAgentsByResponse(agents, { older: { text: "Invalid date", createdAt: "invalid" } }, {}).map(agent => agent.id)).toEqual(agents.map(agent => agent.id));
+});
+
+test("inbox menu contains archive, settings and theme, supports keyboard dismissal and survives live updates", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  const archived = app.service.createAgent({ name: "Archived fixture", instructions: "Test", color: "#abc" });
+  app.service.archiveAgent(archived.id, true);
+  render(<App />);
+  await waitForConnectedAgent();
+  const trigger = screen.getByRole("button", { name: "Agent list menu" });
+  expect(document.querySelector(".sidebar-bottom")).toBeNull();
+  expect(screen.queryByText("Connected locally")).toBeNull();
+  expect(screen.getByRole("button", { name: "Create agent" }).classList.contains("agent-create-fab")).toBe(true);
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const archive = screen.getByRole("menuitem", { name: "Archived agents" });
+  const settings = screen.getByRole("menuitem", { name: "Settings" });
+  const searchItem = screen.getByRole("menuitem", { name: "Search" });
+  expect(document.activeElement === searchItem).toBe(true);
+  fireEvent.keyDown(searchItem, { key: "ArrowDown" });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement === archive).toBe(true);
+  fireEvent.keyDown(archive, { key: "ArrowDown" });
+  expect(document.activeElement === settings).toBe(true);
+  app.service.emit(agent.id, null, "message", { role: "user", text: "A live update while the menu is open." });
+  await screen.findByText("A live update while the menu is open.");
+  expect(document.activeElement === settings).toBe(true);
+  fireEvent.keyDown(settings, { key: "Escape" });
+  expect(!!screen.queryByRole("menu")).toBe(false);
+  expect(document.activeElement === trigger).toBe(true);
+  fireEvent.keyDown(trigger, { key: "ArrowUp" });
+  const target = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  const theme = screen.getByRole("menuitem", { name: `Switch to ${target} mode` });
+  expect(document.activeElement === theme).toBe(true);
+  fireEvent.click(theme);
+  expect(document.documentElement.dataset.theme).toBe(target);
+  expect(localStorage.getItem("jelly.theme")).toBe(target);
+  expect(!!screen.queryByRole("menu")).toBe(false);
+  expect(document.activeElement === trigger).toBe(true);
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(screen.getByRole("heading", { name: "Agents" }));
+  expect(!!screen.queryByRole("menu")).toBe(false);
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Archived agents" }));
+  const dialog = await screen.findByRole("dialog", { name: "Archived agents" });
+  await within(dialog).findByRole("button", { name: "Archived fixture" });
+  expect(!!screen.queryByRole("menu")).toBe(false);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+  expect(document.activeElement === trigger).toBe(true);
+});
+
+test("projects replace grouped agents at the inbox root and aggregate live attention without archived members", async () => {
+  const app = await setup();
+  const original = app.store.agents()[0]!;
+  app.service.emit(original.id, null, "message", { role: "assistant", text: "Earlier unassigned reply." });
+  const project = app.service.saveProject(null, { name: "Design team", defaultCwd: dir! });
+  const member = app.service.createAgent({ name: "Designer", instructions: "Test", color: "#abc", projectId: project.id });
+  const archived = app.service.createAgent({ name: "Archived designer", instructions: "Test", color: "#abc", projectId: project.id });
+  app.service.archiveAgent(archived.id, true);
+  app.store.setStatus(archived.id, "error");
+  app.store.setStatus(member.id, "waiting");
+  render(<App />);
+  await waitForConnectedAgent();
+  const root = screen.getByRole("navigation", { name: "Projects and agents" });
+  expect(within(root).queryByTitle("Designer · waiting")).toBeNull();
+  expect(screen.queryByLabelText("Find an agent")).toBeNull();
+  expect(document.querySelector(".project-trigger")).toBeNull();
+  const row = within(root).getByRole("button", { name: "Open project Design team" });
+  const rootOrder = () => [...root.querySelectorAll(".agent-row strong")].map(node => node.textContent);
+  expect(rootOrder()).toEqual([original.name, project.name]);
+  expect(within(row).getByText("1 agent needs attention")).toBeDefined();
+  expect(within(row).getByRole("img", { name: "Needs attention" })).toBeDefined();
+  expect(row.querySelectorAll(".project-avatars img").length).toBe(3);
+  app.store.setStatus(member.id, "idle");
+  app.service.emit(member.id, null, "message", { role: "assistant", text: "Design is ready." });
+  await within(row).findByText("1 agent");
+  expect(rootOrder()).toEqual([project.name, original.name]);
+  expect(within(row).queryByRole("img", { name: "Needs attention" })).toBeNull();
+  expect(within(row).getByRole("img", { name: "Unread messages" })).toBeDefined();
+  fireEvent.click(row);
+  const child = screen.getByRole("navigation", { name: "Design team agents" });
+  expect(within(child).getByTitle("Designer · idle")).toBeDefined();
+  expect(within(child).queryByText("Archived designer")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Design team" })).toBeDefined();
+  await backToInboxRoot();
+  expect(screen.getByRole("heading", { name: "Agents" })).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Search" }));
+  const search = screen.getByRole("dialog", { name: "Search" });
+  fireEvent.change(within(search).getByLabelText("Find an agent"), { target: { value: "Designer" } });
+  expect(within(search).queryByText("Archived designer")).toBeNull();
+  fireEvent.click(within(search).getByTitle("Designer · idle"));
+  await screen.findByRole("textbox", { name: "Message Designer" });
+  expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  expect(screen.getByRole("navigation", { name: "Design team agents" })).toBeDefined();
+});
+
+test("HTML attachments use isolated inline frames, including saved text metadata, and retain downloads", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  const source = join(dir!, "preview.HTML");
+  writeFileSync(source, '<h1>Rendered page</h1><script>window.stolen=true</script>');
+  const html = await app.service.harness.files.save(source, dir!);
+  expect(html.kind).toBe("text");
+  app.store.event(agent.id, null, "message", { role: "user", text: "Show the page" });
+  app.store.event(agent.id, null, "file_rendered", { files: [html] });
+  const ui = render(<App />);
+  const frame = await screen.findByTitle("HTML preview: preview.HTML");
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  expect(frame.getAttribute("src")).toBe(html.url + "?inline=1");
+  expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
+  const card = screen.getByRole("region", { name: "File: preview.HTML" });
+  expect(card.querySelector("pre")).toBeNull();
+  expect(card.querySelector("details")).toBeNull();
+  expect(card.textContent).not.toContain("window.stolen");
+  expect(within(card).getByRole("link", { name: "Download file" }).getAttribute("href")).toBe(html.url);
+  ui.unmount();
+  render(<App />);
+  expect((await screen.findByTitle("HTML preview: preview.HTML")).getAttribute("sandbox")).toBe("allow-scripts");
+});
+
+test("project front avatar spins while any active member works, independently of attention", async () => {
+  const app = await setup();
+  const project = app.service.saveProject(null, { name: "Working team", defaultCwd: dir! });
+  const members = ["One", "Two", "Waiting", "Archived"].map(name => app.service.createAgent({ name, instructions: "Test", color: "#abc", projectId: project.id }));
+  app.service.archiveAgent(members[3]!.id, true);
+  for (const member of members) app.store.setStatus(member.id, member.name === "Waiting" ? "idle" : "running");
+  render(<App />);
+  const row = await screen.findByRole("button", { name: "Open project Working team" });
+  const spinning = () => !!row.querySelector(".project-avatar-front.is-working");
+  expect(spinning()).toBe(true);
+  expect(row.querySelectorAll(".project-avatars .is-working").length).toBe(1);
+  expect(row.querySelector(".project-avatars")?.lastElementChild?.classList.contains("project-avatar-front")).toBe(true);
+  expect(within(row).getByText("2 agents working")).toBeDefined();
+  app.store.setStatus(members[0]!.id, "idle");
+  app.service.emit(members[0]!.id, null, "run_completed", { status: "completed" });
+  await within(row).findByText("1 agent working");
+  expect(spinning()).toBe(true);
+  app.store.setStatus(members[2]!.id, "waiting");
+  app.service.emit(members[2]!.id, null, "status_changed", { status: "waiting" });
+  await within(row).findByText("1 agent needs attention");
+  expect(spinning()).toBe(true);
+  expect(within(row).getByRole("img", { name: "Needs attention" })).toBeDefined();
+  app.store.setStatus(members[1]!.id, "idle");
+  app.service.emit(members[1]!.id, null, "run_completed", { status: "completed" });
+  await waitFor(() => expect(spinning()).toBe(false));
+  expect(within(row).getByRole("img", { name: "Needs attention" })).toBeDefined();
+});
+
+test("Markdown tables render semantic aligned cells and safe inline formatting beside paragraphs", async () => {
+  const { MessageText } = await import("../src/client/MessageText");
+  render(<MessageText text={'Before the table\n| Name | Status | Count |\n| :--- | :---: | ---: |\n| **Jelly** | `a|b` | 2 |\n| [Docs](https://example.com) | a\\|b | <img src=x onerror=alert(1)> |\nAfter the table'} />);
+  const table = screen.getByRole("table");
+  expect(within(table).getAllByRole("columnheader").map(cell => cell.style.textAlign)).toEqual(["left", "center", "right"]);
+  expect(within(table).getAllByRole("row")).toHaveLength(3);
+  expect(within(table).getByText("Jelly").tagName).toBe("STRONG");
+  expect(within(table).getByText("a|b", { selector: "code" })).toBeDefined();
+  expect(within(table).getByRole("link", { name: "Docs" }).getAttribute("href")).toBe("https://example.com");
+  expect(table.querySelector("img")).toBeNull();
+  expect(within(table).getByText("<img src=x onerror=alert(1)>")).toBeDefined();
+  expect(screen.getByText("Before the table").tagName).toBe("P");
+  expect(screen.getByText("After the table").tagName).toBe("P");
+  expect(table.parentElement?.getAttribute("tabindex")).toBe("0");
+});
+
+test("Markdown table parsing handles optional outer pipes, ragged rows, CRLF and single columns", async () => {
+  const { MessageText } = await import("../src/client/MessageText");
+  render(<MessageText text={'A | B\r\n--- | ---\r\n| one |\r\n| two | three | ignored |\r\n\r\n| Single |\n| --- |\n| value |'} />);
+  const tables = screen.getAllByRole("table");
+  expect(tables).toHaveLength(2);
+  expect(within(tables[0]!).getAllByRole("cell").map(cell => cell.textContent)).toEqual(["one", "", "two", "three"]);
+  expect(within(tables[1]!).getByRole("cell").textContent).toBe("value");
+});
+
+test("Code fences, ordinary pipes and malformed separators are not Markdown tables", async () => {
+  const { MessageText } = await import("../src/client/MessageText");
+  render(<MessageText text={'```md\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n\nA | B\nnot | a separator\n\n| A | B |\n| --- |\n\nhello\n---'} />);
+  expect(screen.queryByRole("table")).toBeNull();
+  expect(document.querySelector(".code-block code")?.textContent).toContain("| --- | --- |");
+});
+
+test("render_file audio and video use native controls without autoplay, with download, retry and replay", async () => {
+  const app = await setup();
+  const { wavFixture, mp4Header } = await import("./fixtures/media");
+  const agent = app.store.agents()[0]!;
+  const audioPath = join(dir!, "sound.wav"), videoPath = join(dir!, "movie.mp4");
+  writeFileSync(audioPath, wavFixture()); writeFileSync(videoPath, mp4Header());
+  const audio = await app.service.harness.files.save(audioPath, dir!);
+  const video = await app.service.harness.files.save(videoPath, dir!);
+  app.store.event(agent.id, null, "message", { role: "user", text: "Show these media files" });
+  app.store.event(agent.id, null, "file_rendered", { files: [audio, video] });
+  const ui = render(<App />);
+  const sound = await screen.findByLabelText("Audio: sound.wav");
+  const movie = await screen.findByLabelText("Video: movie.mp4");
+  expect(sound.tagName).toBe("AUDIO"); expect(movie.tagName).toBe("VIDEO");
+  for (const element of [sound, movie]) {
+    expect(element.hasAttribute("controls")).toBe(true);
+    expect(element.hasAttribute("autoplay")).toBe(false);
+    expect(element.getAttribute("preload")).toBe("metadata");
+  }
+  expect(movie.hasAttribute("playsinline")).toBe(true);
+  const card = screen.getByRole("region", { name: "File: movie.mp4" });
+  expect(within(card).getByRole("link", { name: "Download file" }).getAttribute("href")).toBe(video.url + "?download=1");
+  fireEvent.error(movie);
+  expect(within(card).getByRole("alert").textContent).toContain("could not be played");
+  fireEvent.click(within(card).getByRole("button", { name: "Retry" }));
+  await within(card).findByLabelText("Video: movie.mp4");
+  ui.unmount(); render(<App />);
+  await screen.findByLabelText("Audio: sound.wav"); await screen.findByLabelText("Video: movie.mp4");
+});
+
+test("switching ComputerPanel sessions ignores late startup and takeover responses", async () => {
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  await setup();
+  const fetchBefore = globalThis.fetch;
+  const state = { status: "ready", control: "human", owned: false, handoffId: null, error: null };
+  let finishTake!: () => void, took = false, changed = 0;
+  const taking = new Promise<void>(resolve => { finishTake = resolve; });
+  const paths: string[] = [];
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (typeof input === "string" && input.startsWith("/api/computer")) {
+      paths.push(input);
+      if (input === "/api/computer/take?agentId=a") {
+        took = true;
+        await taking;
+        return Response.json({ ...state, owned: true });
+      }
+      return Response.json(state);
+    }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  try {
+    const props = { onClose: () => {}, onChange: () => { changed++; } };
+    const ui = render(<ComputerPanel agentId="a" {...props} />);
+    const take = await screen.findByRole("button", { name: "Take control" });
+    await waitFor(() => expect(take.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(take);
+    await waitFor(() => expect(took).toBe(true));
+    ui.rerender(<ComputerPanel agentId="b" {...props} />);
+    await waitFor(() => expect(paths).toContain("/api/computer/start?agentId=b"));
+    finishTake();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(changed).toBe(0);
+    expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull();
+    expect(paths.some(path => path.includes("/ticket"))).toBe(false);
+    expect(screen.getByRole("button", { name: "Take control" }).hasAttribute("disabled")).toBe(false);
+  } finally {
+    finishTake();
+    globalThis.fetch = fetchBefore;
+  }
+});
+
+test("ComputerPanel disconnects old VNC and never attaches a late ticket to another agent", async () => {
+  const { mock } = await import("bun:test");
+  const connections: { url: string; disconnected: boolean }[] = [];
+  class FakeRfb extends EventTarget {
+    viewOnly = false;
+    scaleViewport = false;
+    resizeSession = false;
+    item: { url: string; disconnected: boolean };
+    constructor(_screen: HTMLElement, url: string) {
+      super();
+      this.item = { url, disconnected: false };
+      connections.push(this.item);
+    }
+    disconnect() { this.item.disconnected = true; }
+  }
+  mock.module("@novnc/novnc", () => ({ default: FakeRfb }));
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  await setup();
+  const fetchBefore = globalThis.fetch;
+  let finish!: () => void, requestedA = false;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (typeof input === "string" && input.startsWith("/api/computer")) {
+      const agentId = new URL(input, "http://localhost").searchParams.get("agentId");
+      if (input.includes("/ticket")) {
+        if (agentId === "a") { requestedA = true; await gate; }
+        return Response.json({ ticket: `ticket-${agentId}` });
+      }
+      return Response.json({ status: "ready", control: "agent", owned: false, handoffId: null, error: null });
+    }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  try {
+    const props = { onClose: () => {}, onChange: () => {} };
+    const ui = render(<ComputerPanel agentId="a" {...props} />);
+    await waitFor(() => expect(requestedA).toBe(true));
+    ui.rerender(<ComputerPanel agentId="b" {...props} />);
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(new URL(connections[0]!.url).searchParams.get("agentId")).toBe("b");
+    finish();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(connections).toHaveLength(1);
+    ui.rerender(<ComputerPanel agentId="c" {...props} />);
+    await waitFor(() => expect(connections).toHaveLength(2));
+    expect(connections[0]!.disconnected).toBe(true);
+    expect(new URL(connections[1]!.url).searchParams.get("agentId")).toBe("c");
+    ui.unmount();
+    expect(connections[1]!.disconnected).toBe(true);
+  } finally {
+    finish();
+    globalThis.fetch = fetchBefore;
   }
 });

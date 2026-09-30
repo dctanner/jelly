@@ -1,6 +1,7 @@
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
 import type { ModelId, Effort } from "../shared/models";
-import { activityPreview } from "./activity-preview";
+import { activityPreview, thinkingPreview } from "./activity-preview";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -35,7 +36,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 8)
+    if (version > 9)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -122,9 +123,18 @@ export class Store {
         // Keep historical demo conversations, but require credentials for new runs.
         this.db.exec("UPDATE instance SET mode='auto' WHERE mode='demo'; PRAGMA user_version=8;");
       })();
+    if (version < 9)
+      this.db.transaction(() => {
+        // Existing agents have no pending job: never rename an old profile.
+        this.db.exec(`CREATE TABLE IF NOT EXISTS agent_naming (
+          agentId TEXT PRIMARY KEY REFERENCES agents(id),
+          state TEXT NOT NULL CHECK(state IN ('pending','manual','attempted','generated'))
+        ); PRAGMA user_version=9;`);
+      })();
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
     this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_timeline_thinking ON timeline(runId, id) WHERE type='thinking';
       CREATE INDEX IF NOT EXISTS idx_timeline_tool_starts
         ON timeline(runId, id) WHERE type='tool_started';
       CREATE INDEX IF NOT EXISTS idx_timeline_tool_ends
@@ -285,6 +295,9 @@ export class Store {
     // The completion index avoids repeatedly parsing large tool-result bodies.
     const rows = this.db.query(`
       SELECT r.agentId,
+        (SELECT substr(json_extract(th.data, '$.text'), -8192) FROM timeline th
+          WHERE th.runId=r.id AND th.type='thinking'
+          ORDER BY th.id DESC LIMIT 1) AS thinking,
         substr(json_extract(t.data, '$.name'), 1, 96) AS name,
         substr(json_extract(t.data, '$.args.command'), 1, 512) AS command
       FROM runs r JOIN agents a ON a.id=r.agentId
@@ -298,8 +311,8 @@ export class Store {
         ORDER BY s.id DESC LIMIT 1
       )
       WHERE r.status='running' AND a.status='running' AND a.archivedAt IS NULL
-    `).all() as { agentId: string; name: string | null; command: string | null }[];
-    return Object.fromEntries(rows.map(({ agentId, name, command }) => [agentId, activityPreview(name, command)]));
+    `).all() as { agentId: string; thinking: string | null; name: string | null; command: string | null }[];
+    return Object.fromEntries(rows.map(({ agentId, thinking, name, command }) => [agentId, thinkingPreview(thinking ?? "") || activityPreview(name, command)]));
   }
   agents(includeArchived = true) {
     return this.db
@@ -315,8 +328,9 @@ export class Store {
   }
   addAgent(input: AgentInput) {
     const id = crypto.randomUUID();
+    const { nameEdited, ...profile } = input;
     const agent: AgentRecord = {
-      ...input,
+      ...profile,
       projectId: input.projectId ?? null,
       cwd: input.projectId
         ? this.project(input.projectId)!.defaultCwd
@@ -344,9 +358,13 @@ export class Store {
         agent.managedCwd,
         agent.avatarId,
       );
+    this.db.query("INSERT INTO agent_naming(agentId,state) VALUES (?,?)")
+      .run(id, agent.name === DEFAULT_AGENT_NAME && !nameEdited ? "pending" : "manual");
     return agent;
   }
   updateAgent(id: string, input: AgentInput) {
+    if (input.nameEdited || input.name !== this.agent(id)?.name)
+      this.db.query("UPDATE agent_naming SET state='manual' WHERE agentId=?").run(id);
     this.db
       .query(
         "UPDATE agents SET name=?,instructions=?,color=?,avatarId=? WHERE id=?",
@@ -358,6 +376,21 @@ export class Store {
         input.avatarId ?? this.agent(id)!.avatarId,
         id,
       );
+    return this.agent(id)!;
+  }
+  claimAgentName(id: string) {
+    return this.db.query(`UPDATE agent_naming SET state='attempted'
+      WHERE agentId=? AND state='pending'
+      AND EXISTS (SELECT 1 FROM agents WHERE id=? AND name=?)
+      AND NOT EXISTS (SELECT 1 FROM messages WHERE agentId=? AND json_extract(payload,'$.role')='user')`)
+      .run(id, id, DEFAULT_AGENT_NAME, id).changes > 0;
+  }
+  applyAgentName(id: string, name: string) {
+    const changed = this.db.query(`UPDATE agents SET name=? WHERE id=? AND name=?
+      AND EXISTS (SELECT 1 FROM agent_naming WHERE agentId=? AND state='attempted')`)
+      .run(name, id, DEFAULT_AGENT_NAME, id).changes;
+    if (!changed) return null;
+    this.db.query("UPDATE agent_naming SET state='generated' WHERE agentId=?").run(id);
     return this.agent(id)!;
   }
   archiveAgent(id: string, archived: boolean) {

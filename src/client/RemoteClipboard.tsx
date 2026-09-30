@@ -7,10 +7,15 @@ import { ChatFormActions, ChatFormCard } from "./ChatFormCard";
 const MAX_TEXT = 12000;
 /** Mounted only on the connected owner's desktop. Never mirror clipboards or
  * persist this state; text may be a password supplied through a private handoff. */
-export function RemoteClipboard({
+export function RemoteClipboard(props: { agentId: string; paste: () => void; disabled?: boolean }) {
+  return <SessionRemoteClipboard key={props.agentId} {...props} />;
+}
+function SessionRemoteClipboard({
+  agentId,
   paste,
   disabled = false,
 }: {
+  agentId: string;
   paste: () => void;
   disabled?: boolean;
 }) {
@@ -75,7 +80,7 @@ export function RemoteClipboard({
     validate(value);
     if (!value) throw new Error("There is no text to paste.");
     clearText();
-    await control("/computer/clipboard", { operation: "write", text: value });
+    await control(`/computer/clipboard?agentId=${encodeURIComponent(agentId)}`, { operation: "write", text: value });
     if (!alive.current || !allowed.current) return;
     paste();
     setMode(null);
@@ -100,7 +105,7 @@ export function RemoteClipboard({
   }
   async function copyRemote() {
     await run(async () => {
-      const result = await control<{ text: string }>("/computer/clipboard", {
+      const result = await control<{ text: string }>(`/computer/clipboard?agentId=${encodeURIComponent(agentId)}`, {
         operation: "read",
       });
       if (!alive.current || !allowed.current) return;

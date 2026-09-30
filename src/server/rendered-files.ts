@@ -9,9 +9,11 @@ import {
   type RenderedFile,
 } from "../shared/rendered-files";
 import { rasterMime } from "./raster-images";
+import { isMediaName, mediaType } from "./media-files";
 
 const MAX_FILE = 20 * 1024 * 1024;
 const MAX_TEXT = 2 * 1024 * 1024;
+const MAX_MEDIA = 100 * 1024 * 1024;
 
 async function readRegularFile(path: string, limit: number, noFollow = false) {
   const file = await open(
@@ -24,11 +26,11 @@ async function readRegularFile(path: string, limit: number, noFollow = false) {
     const stat = await file.stat();
     if (!stat.isFile())
       throw new Error(
-        "Render a regular image or text file, not a directory or device.",
+        "Render a regular image, audio, video or text file, not a directory or device.",
       );
     if (stat.size > limit)
       throw new Error(
-        "File is too large to render (20 MiB images, 2 MiB text).",
+        "File is too large to render (100 MiB audio/video, 20 MiB images, 2 MiB text).",
       );
     // Bound the read even if another process grows the source after stat().
     const buffer = Buffer.alloc(stat.size + 1);
@@ -76,17 +78,22 @@ export class RenderedFiles {
   ): Promise<RenderedFile> {
     signal?.throwIfAborted();
     const source = resolve(cwd, path);
-    const bytes = await readRegularFile(source, MAX_FILE);
+    const bytes = await readRegularFile(source, isMediaName(source) ? MAX_MEDIA : MAX_FILE);
     const imageType = rasterMime(bytes);
-    if (!imageType) textContents(bytes);
+    const media = imageType ? null : mediaType(bytes, source);
+    if (imageType && bytes.length > MAX_FILE) throw new Error("Image is too large to render (20 MiB maximum).");
+    if (!imageType && !media) {
+      if (isMediaName(source)) throw new Error("Unsupported or invalid audio/video file.");
+      textContents(bytes);
+    }
     signal?.throwIfAborted();
     const id = crypto.randomUUID();
     const metadata: RenderedFile = {
       id,
       url: `/api/rendered-files/${id}`,
       name: basename(source),
-      kind: imageType ? "image" : "text",
-      mimeType: imageType ?? "text/plain; charset=utf-8",
+      kind: imageType ? "image" : media?.kind ?? "text",
+      mimeType: imageType ?? media?.mimeType ?? "text/plain; charset=utf-8",
       size: bytes.length,
     };
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -131,12 +138,15 @@ export class RenderedFiles {
         return null;
       const bytes = await readRegularFile(
         join(this.directory, `${id}.bin`),
-        MAX_FILE,
+        metadata.kind === "audio" || metadata.kind === "video" ? MAX_MEDIA : MAX_FILE,
         true,
       );
       if (bytes.length !== metadata.size) return null;
       if (metadata.kind === "image") {
         if (rasterMime(bytes) !== metadata.mimeType) return null;
+      } else if (metadata.kind === "audio" || metadata.kind === "video") {
+        const media = mediaType(bytes, metadata.name);
+        if (media?.kind !== metadata.kind || media.mimeType !== metadata.mimeType) return null;
       } else {
         if (metadata.mimeType !== "text/plain; charset=utf-8") return null;
         textContents(bytes);
@@ -157,7 +167,7 @@ export function renderFileTool(
     name: "render_file",
     label: "Show file in chat",
     description:
-      "Display an existing local image or UTF-8 text file in chat without reading its contents into model context. Images appear inline; text gets an expandable plain-text preview and download. Returns only metadata. Use this when asked to show a file; no prior read is needed. Supports PNG, JPEG, GIF, WebP and BMP (up to 20 MiB), and text/code/Markdown/HTML/SVG as inert text (up to 2 MiB). Relative paths use the agent working directory. Files are copied privately so attachments survive source edits. Do not repeat the attachment in Markdown.",
+      "Display an existing local image, audio, video or UTF-8 text file in chat without reading its contents into model context. Audio and video appear in embedded players with playback controls (no autoplay). Images appear inline; HTML files render in a sandboxed iframe with inline scripts enabled, isolated from Jelly; external resources remain blocked; other text gets an expandable plain-text preview. All files remain downloadable. Returns only metadata. Use this when asked to show a file; no prior read is needed. Supports MP4/M4V/MOV and WebM video, MP3/M4A/AAC/WAV/FLAC and Ogg audio/video (up to 100 MiB; codec playback depends on the browser), PNG, JPEG, GIF, WebP and BMP (up to 20 MiB), and HTML previews and text/code/Markdown/SVG as inert text (up to 2 MiB). Relative paths use the agent working directory. Files are copied privately so attachments survive source edits. Do not repeat the attachment in Markdown.",
     parameters: Type.Object({
       path: Type.String({
         minLength: 1,
