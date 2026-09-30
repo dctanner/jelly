@@ -403,19 +403,19 @@ test("model and effort defaults, validation, mode-only updates and restart persi
   ])
     expect((await f.request("/api/config", "PUT", data)).status).toBe(400);
   const response = await f.request("/api/config", "PUT", {
-    model: "gpt-6-sol",
+    model: "gpt-6-astra-ultrafast",
     effort: "max",
   });
   expect(response.status).toBe(200);
-  expect((await response.json()).selectedModel).toBe("gpt-6-sol");
+  expect((await response.json()).selectedModel).toBe("gpt-6-astra-ultrafast");
   f.app.service.setMode("auto");
   expect(f.app.service.snapshot().config.effort).toBe("max");
-  expect(f.app.service.snapshot().config.selectedModel).toBe("gpt-6-sol");
+  expect(f.app.service.snapshot().config.selectedModel).toBe("gpt-6-astra-ultrafast");
   // An independent connection sees the committed settings; no browser preference is involved.
   const { Store } = await import("../src/server/store");
   const reader = new Store(join(f.dir, "jelly.sqlite"));
   try {
-    expect(reader.instance().model).toBe("gpt-6-sol");
+    expect(reader.instance().model).toBe("gpt-6-astra-ultrafast");
     expect(reader.instance().effort).toBe("max");
   } finally {
     reader.close();
@@ -493,7 +493,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 8,
+        user_version: 9,
       });
     } finally {
       store.close();
@@ -844,7 +844,7 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
   store = new Store(path);
   try {
     expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
-    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 8 });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 9 });
     expect(store.agent(agent.id)).toEqual(agent);
     expect(store.run(run.id)?.mode).toBe("demo");
     expect(store.historyPage(agent.id).events).toContainEqual(event);

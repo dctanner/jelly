@@ -107,9 +107,9 @@ See [human intervention verification](../plans_done/02-interventions.md).
 
 The React settings panel calls session/CSRF-protected `/api/auth/*` endpoints. `POST /api/auth/api-key` saves a literal OpenAI key through Pi’s locked credential store and selects API mode. The key is format-checked and never resolved as a command or environment-variable name. `POST /api/auth/remove` clears the selected stored provider, retaining environment-based configuration.
 
-`POST /api/auth/chatgpt/start` starts the installed Pi OAuth provider on the server. A session-owned, in-memory login record exposes only a status and the authorization URL to its initiating browser. `/status` polls it; `/chatgpt/cancel` cancels it; `/chatgpt/callback` accepts the full callback URL with the matching state as a fallback. The normal callback is handled by Pi on loopback port 1455. Only successful, non-cancelled flows persist credentials; late results after timeout/cancellation/shutdown are discarded. Raw provider failures are replaced with a generic error to avoid leaking token responses.
+`POST /api/auth/chatgpt/start` selects device-code login in the installed Pi OAuth provider. A session-owned, in-memory login record exposes the status, one-time user code, and OpenAI verification URL only to its initiating browser. Pi polls OpenAI for approval; `/status` polls Jelly for completion and `/chatgpt/cancel` cancels it. No localhost callback listener or pasted callback URL is needed, including over Tailscale. Codes are cleared when login completes, expires, fails, or is cancelled. Device-code login must be enabled in the ChatGPT account security settings or workspace permissions. Only successful, non-cancelled flows persist credentials; late results after timeout/cancellation/shutdown are discarded. Raw provider failures are replaced with a generic error to avoid leaking token responses.
 
-Credentials remain outside SQLite and durable events. Only the selected mode changes in the activity stream. The existing authenticated provider adapters use the same saved credentials on the next run. Tests cover UI submission, private storage, session ownership, CSRF, callback state, cancellation, expiry, token redaction, and real Pi authorization startup/cancellation without attempting account authentication.
+Credentials remain outside SQLite and durable events. Only the selected mode changes in the activity stream. The existing authenticated provider adapters use the same saved credentials on the next run. Tests cover automatic UI completion on local and Tailscale origins, private storage, session ownership, CSRF, cancellation, expiry, token redaction, and the installed Pi device-code request/poll/cancel path with mocked OpenAI responses.
 
 ## Tailscale development transport
 
@@ -261,3 +261,22 @@ loss of the connected owner panel. Late responses cannot paste after unmount.
 its older general handoff/shutdown test currently times out with Bun's server-closed
 WebSocket shutdown behavior, including with the prior release implementation. The
 clipboard test explicitly closes its VNC client before teardown.
+
+## First-message agent naming
+
+Schema v9 adds `agent_naming`, with persistent pending/manual/attempted/generated
+states. Existing profiles are not enrolled. New placeholder profiles are pending
+unless `nameEdited` records an explicit user choice. The first non-compaction run
+claims the naming attempt in the same transaction that saves its first message;
+queued/steering/replayed requests cannot issue a second naming call. Saving a
+manual name cancels eligibility, including edits back to the placeholder.
+
+Before creating that run's Pi session, Harness performs an isolated, tool-free
+`ModelRuntime.completeSimple` call using the selected OpenAI provider/model and
+existing credential refresh. It sends up to 4,000 characters of the first message,
+uses minimal reasoning, a small output budget, no retries, and a ten-second timeout.
+It does not use a fallback billing mode or append naming messages to model history.
+Stop/shutdown cancel the call. Output must be a short plain display name; errors
+leave the placeholder and allow the task to continue. A guarded database update
+prevents a late result overwriting a manually saved name, then emits `agent_updated`
+and builds the actual task session with the current name.

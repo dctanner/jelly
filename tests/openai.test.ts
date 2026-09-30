@@ -4,6 +4,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApp } from "../src/server/app";
+import { ultrafastOptions } from "../src/server/ultrafast";
+import { getModel } from "@earendil-works/pi-ai/compat";
+
+test("Ultrafast preserves payload hooks and does not affect other models", async () => {
+  const astra = getModel("openai", "gpt-6-astra")!;
+  const sol = getModel("openai", "gpt-6-sol")!;
+  const options = ultrafastOptions({
+    onPayload: async (payload: unknown) => ({ ...(payload as object), instructions: "preserved" }),
+  });
+  expect(await options.onPayload!({ model: astra.id }, astra)).toEqual({
+    model: astra.id, instructions: "preserved", service_tier: "ultrafast",
+  });
+  expect(await options.onPayload!({ model: sol.id }, sol)).toEqual({
+    model: sol.id, instructions: "preserved",
+  });
+});
 for (const mode of ["api", "chatgpt"] as const)
   test(`the ${mode} adapter sends GPT-6 model and effort choices, tools and history to Responses`, async () => {
     const provider = mode === "api" ? "openai" : "openai-codex";
@@ -12,6 +28,7 @@ for (const mode of ["api", "chatgpt"] as const)
         ? "jelly-local-test-key"
         : `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.test`;
     const requests: { path: string; auth: string | null; body: any }[] = [];
+    let denyUltrafast = false;
     const fake = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -30,6 +47,8 @@ for (const mode of ["api", "chatgpt"] as const)
                 )
               : await req.json(),
         });
+        if (denyUltrafast && requests.at(-1)?.body.service_tier === "ultrafast")
+          return Response.json({ error: { message: "Ultrafast is not enabled for this account", type: "invalid_request_error" } }, { status: 403 });
         const item = {
           type: "message",
           id: "msg_test",
@@ -144,7 +163,7 @@ for (const mode of ["api", "chatgpt"] as const)
       expect(JSON.stringify(requests[1]?.body.input)).toContain(
         "A response from the local API fixture.",
       );
-      for (const model of ["gpt-6-astra", "gpt-6-sol"] as const)
+      for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-astra-ultrafast"] as const)
         for (const effort of [
           "low",
           "medium",
@@ -155,11 +174,34 @@ for (const mode of ["api", "chatgpt"] as const)
           app.service.setConfig({ model, effort });
           app.service.start(id, `${model}-${effort}`, "Verify settings");
           await app.service.settled();
-          expect(requests.at(-1)?.body.model).toBe(model);
+          expect(requests.at(-1)?.body.model).toBe(model === "gpt-6-astra-ultrafast" ? "gpt-6-astra" : model);
+          expect(requests.at(-1)?.body.service_tier).toBe(model === "gpt-6-astra-ultrafast" ? "ultrafast" : undefined);
           expect(requests.at(-1)?.body.reasoning.effort).toBe(effort);
           expect(app.store.runs(id).at(-1)?.status).toBe("completed");
           expect(requests.at(-1)?.body.temperature).toBeUndefined();
         }
+      const beforeSummary = requests.length;
+      app.service.freshSession(id, "ultrafast-summary");
+      await app.service.settled();
+      expect(requests.length).toBeGreaterThan(beforeSummary);
+      for (const request of requests.slice(beforeSummary)) {
+        expect(request.body.model).toBe("gpt-6-astra");
+        expect(request.body.service_tier).toBe("ultrafast");
+      }
+      await app.service.harness.generateAgentName("Test name", app.service.snapshot().config, new AbortController().signal);
+      expect(requests.at(-1)?.body.service_tier).toBe("ultrafast");
+      denyUltrafast = true;
+      const beforeDenied = requests.length;
+      app.service.start(id, "ultrafast-denied", "No fallback please");
+      await app.service.settled();
+      expect(requests.length).toBe(beforeDenied + 1);
+      expect(app.store.runs(id).at(-1)?.status).toBe("failed");
+      expect(app.store.runs(id).at(-1)?.error).toContain("Ultrafast is not enabled");
+      app.service.setConfig({ model: "gpt-6-astra" });
+      app.service.start(id, "standard-again", "Back to standard");
+      await app.service.settled();
+      expect(requests.at(-1)?.body.service_tier).toBeUndefined();
+      expect(app.store.runs(id).at(-1)?.status).toBe("completed");
     } finally {
       await app.close();
       fake.stop(true);
@@ -515,6 +557,8 @@ test("ChatGPT uses cached WebSockets across runs, isolates agents, and reconnect
       "New instructions for this agent.",
     );
     expect(posts).toBe(1); // Cancellation did not trigger a retry.
+    app.service.setConfig({ model: "gpt-6-astra-ultrafast" });
+    const beforeUltrafast = frames.length;
     recoverOverHttp = true;
     behavior = "tool-then-fail";
     const callsBefore = app.store
@@ -523,6 +567,12 @@ test("ChatGPT uses cached WebSockets across runs, isolates agents, and reconnect
     await run("Use a tool then recover a dropped connection");
     const recovered = app.store.runs(agent.id).at(-1)!;
     expect(posts).toBe(2);
+    expect(frames.length).toBeGreaterThan(beforeUltrafast);
+    for (const frame of frames.slice(beforeUltrafast)) {
+      expect(frame.body.model).toBe("gpt-6-astra");
+      expect(frame.body.service_tier).toBe("ultrafast");
+    }
+    expect(httpInputs.at(-1).service_tier).toBe("ultrafast");
     expect(httpInputs.at(-1).previous_response_id).toBeUndefined();
     expect(httpInputs.at(-1).store).toBe(false);
     expect(

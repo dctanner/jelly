@@ -6,12 +6,9 @@ type Flow = {
   view: LoginFlow;
   owner: string;
   controller: AbortController;
-  resolve: (value: string) => void;
-  reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   done?: Promise<void>;
   finished: boolean;
-  submitted: boolean;
 };
 export class Connections {
   private flow?: Flow;
@@ -20,7 +17,7 @@ export class Connections {
     private auth: JellyAuth,
     private connected: (mode: "chatgpt" | "api" | "auto") => void,
     login: ChatGPTLogin | undefined,
-    private ttlMs = 10 * 60 * 1000,
+    private ttlMs = 15 * 60 * 1000,
   ) {
     if (login) auth.installLoginDriver(login);
   }
@@ -68,33 +65,17 @@ export class Connections {
         "ChatGPT sign-in is already open in another browser session.",
       );
     }
-    if (
-      process.env.PI_OAUTH_CALLBACK_HOST &&
-      process.env.PI_OAUTH_CALLBACK_HOST !== "127.0.0.1"
-    )
-      throw new HttpError(
-        400,
-        "ChatGPT sign-in requires a loopback OAuth callback host.",
-      );
-    let resolve!: (value: string) => void, reject!: (error: Error) => void;
-    const manual = new Promise<string>((yes, no) => {
-      resolve = yes;
-      reject = no;
-    });
-    void manual.catch(() => {});
     const flow: Flow = {
       owner,
       view: {
         id: crypto.randomUUID(),
         status: "starting",
         url: null,
+        userCode: null,
         error: null,
       },
       controller: new AbortController(),
-      resolve,
-      reject,
       finished: false,
-      submitted: false,
       timer: setTimeout(
         () => this.abort(flow, "Sign-in expired. Try connecting again."),
         this.ttlMs,
@@ -107,29 +88,59 @@ export class Connections {
         if (flow.controller.signal.aborted) throw new Error("Cancelled");
         return this.auth.login({
           signal: flow.controller.signal,
-          onDeviceCode: () => {},
-          onSelect: async (p) =>
-            p.options.find((o) => o.id === "browser")?.id ?? p.options[0]!.id,
-          onAuth: ({ url }) => {
+          onSelect: async (p) => {
+            const method = p.options.find((o) => o.id === "device_code");
+            if (!method) throw new Error("Device-code login unavailable");
+            return method.id;
+          },
+          onDeviceCode: ({ verificationUri, userCode, expiresInSeconds }) => {
             if (flow.controller.signal.aborted) return;
-            const parsed = new URL(url);
+            const parsed = new URL(verificationUri);
             if (
               parsed.origin !== "https://auth.openai.com" ||
-              !parsed.searchParams.get("state")
+              parsed.pathname !== "/codex/device" ||
+              parsed.username ||
+              parsed.password ||
+              !userCode
+            )
+              throw new Error("Invalid device-code login response");
+            flow.view = {
+              ...flow.view,
+              status: "waiting",
+              url: parsed.href,
+              userCode,
+            };
+            if (
+              expiresInSeconds &&
+              Number.isFinite(expiresInSeconds) &&
+              expiresInSeconds > 0
             ) {
-              this.abort(flow, "Could not start ChatGPT sign-in.");
-              return;
+              clearTimeout(flow.timer);
+              flow.timer = setTimeout(
+                () =>
+                  this.abort(flow, "Sign-in expired. Try connecting again."),
+                Math.min(this.ttlMs, expiresInSeconds * 1000),
+              );
+              flow.timer.unref();
             }
-            flow.view = { ...flow.view, status: "waiting", url };
           },
-          onPrompt: () => manual,
-          onManualCodeInput: () => manual,
+          onAuth: () => {
+            throw new Error("Browser login is unsupported");
+          },
+          onPrompt: async () => {
+            throw new Error("Unexpected sign-in prompt");
+          },
         });
       })
-      .then((credentials) => {
+      .then(() => {
         if (this.closed || flow.controller.signal.aborted) return;
 
-        flow.view = { ...flow.view, status: "connected", url: null };
+        flow.view = {
+          ...flow.view,
+          status: "connected",
+          url: null,
+          userCode: null,
+        };
         this.connected("chatgpt");
       })
       .catch(() => {
@@ -138,14 +149,14 @@ export class Connections {
             ...flow.view,
             status: "error",
             url: null,
+            userCode: null,
             error:
-              "ChatGPT sign-in did not complete. Try again, or use an OpenAI API key.",
+              "ChatGPT sign-in did not complete. Enable device-code login in your ChatGPT security settings (or ask your workspace admin), then try again.",
           };
       })
       .finally(() => {
         clearTimeout(flow.timer);
         flow.finished = true;
-        flow.reject(new Error("Login finished"));
       });
     return flow.view;
   }
@@ -155,44 +166,6 @@ export class Connections {
       throw new HttpError(404, "Sign-in request not found.");
     return flow;
   }
-  submit(owner: string, id: unknown, input: unknown) {
-    const flow = this.owned(owner, id);
-    if (
-      flow.finished ||
-      flow.controller.signal.aborted ||
-      flow.submitted ||
-      !flow.view.url
-    )
-      throw new HttpError(
-        409,
-        "This sign-in is no longer accepting a callback.",
-      );
-    if (typeof input !== "string" || input.length > 16000)
-      throw new HttpError(400, "Paste the full callback URL.");
-    let url: URL;
-    try {
-      url = new URL(input.trim());
-    } catch {
-      throw new HttpError(
-        400,
-        "Paste the full callback URL from the sign-in tab.",
-      );
-    }
-    const expected = new URL(flow.view.url);
-    if (
-      url.origin !== "http://localhost:1455" ||
-      url.pathname !== "/auth/callback" ||
-      !url.searchParams.get("code") ||
-      url.searchParams.get("state") !== expected.searchParams.get("state")
-    )
-      throw new HttpError(
-        400,
-        "This callback URL does not match the current sign-in.",
-      );
-    flow.submitted = true;
-    flow.resolve(url.href);
-    return { ok: true };
-  }
   private abort(flow: Flow, error?: string) {
     if (flow.finished) return;
     flow.controller.abort();
@@ -200,9 +173,9 @@ export class Connections {
       ...flow.view,
       status: error ? "error" : "cancelled",
       url: null,
+      userCode: null,
       error: error ?? null,
     };
-    flow.reject(new Error("Cancelled"));
   }
   cancel(owner: string, id: unknown) {
     this.abort(this.owned(owner, id));

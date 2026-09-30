@@ -34,6 +34,15 @@ bun run dev
 
 Open **http://127.0.0.1:5173**. **A ChatGPT subscription or OpenAI API key is required to run agents.** Connect your account or add a key in Settings before sending a message. Automatic mode prefers ChatGPT, then an API key; there is no no-key demo mode. Model availability depends on your account.
 
+Select **GPT-6 Astra Ultrafast** in Settings → Model or the composer's model menu
+for eligible ChatGPT subscriptions (Pro 500 or Enterprise) or OpenAI API access.
+This requests Astra with `service_tier: "ultrafast"`; standard Astra remains the
+default. [Ultrafast has higher API pricing and separate limits](https://developers.openai.com/api/docs/guides/ultrafast-mode).
+Account-access errors are surfaced rather than silently falling back to standard.
+The selection covers chat turns, tool continuations, naming, and compaction;
+Pi subagents still use their own service-tier settings (they inherit Astra and effort,
+not Jelly's Ultrafast selection).
+
 Optional environment settings are documented in [`.env.example`](.env.example). Put local values in `.env.local`, which is ignored by Git. Set `FIRECRAWL_API_KEY` to enable web search and fetching.
 
 ### Production
@@ -46,6 +55,8 @@ bun start
 Open **http://127.0.0.1:3100**. Stop development first; both modes use API port 3100 by default. Production has no hot reload—restart after code changes when agents are idle. Development backend reloads interrupt active runs; set `JELLY_WATCH_API=0` to disable them.
 
 Development serves only frontend source and assets; instance data, server source, and other repository files are not downloadable through Vite. Keep credentials and private files out of `public/`, `src/client/`, `src/shared/`, and `node_modules/`.
+
+ChatGPT sign-in uses a one-time device code. Open the approval link shown in Settings, enter the code, and Jelly connects automatically. This works over Tailscale without a localhost redirect. If needed, enable device-code login in your ChatGPT security settings or ask your workspace admin.
 
 ### Optional browser desktop
 
@@ -98,3 +109,21 @@ only to the controlling window. They are not sent to agents, chat history, or lo
 Returning control clears the remote clipboard; it does not clear this device's
 clipboard. The desktop runtime now requires `xclip`; run `bun run setup:desktop`
 to update an older installation if it is not already installed on the host.
+
+## Automatic agent names
+
+The top-left **+** immediately creates and opens **New Agent**, without a form.
+It inherits the current project (or gets a private workspace outside a project).
+Before the first message, click the centered name or avatar to edit it in place.
+Name edits save with Enter or on blur (Escape cancels); avatar changes save when selected.
+After the first message, the pill moves to the header and opens the profile edit form
+directly. The separate options button still exposes workspace and agent actions.
+When its first message is sent, Jelly makes
+one small, tool-free OpenAI request through the selected ChatGPT subscription or
+API connection to suggest a sea-themed name related to that message. The new name
+appears in the agent list and conversation header before the agent begins work.
+
+Editing and saving the name before sending the first message opts out—even if you
+change it back to **New Agent**. Editing only instructions or the avatar does not.
+Existing agents retain their names. Naming failures/timeouts keep **New Agent** and
+do not stop the task or retry the naming request on subsequent messages.

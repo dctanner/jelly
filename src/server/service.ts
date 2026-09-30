@@ -25,6 +25,7 @@ const MAX_RUN_TURNS = 1_000;
 const MAX_RUN_DURATION_MS = 5 * 60 * 60 * 1_000;
 interface ActiveRun {
   freshSession?: boolean;
+  naming?: AbortController;
   session?: AgentSession;
   cancelled: boolean;
   acceptsSteering: boolean;
@@ -421,7 +422,9 @@ export class JellyService {
     const config = this.harness.config(instance.mode, instance);
     this.harness.requireConnection(config);
     const events: Activity[] = [];
+    let nameAgent = false;
     const run = this.store.db.transaction(() => {
+      if (!freshSession) nameAgent = this.store.claimAgentName(agentId);
       if (!freshSession && !this.store.pendingMessage(requestId))
         this.store.enqueueMessage(requestId, agentId, prompt, mode);
       const run = this.store.createRun(
@@ -478,10 +481,28 @@ export class JellyService {
       const deadline = setTimeout(() => {
         failure ??=
           "The run reached the 5-hour limit. Send a new message to continue.";
+        state.naming?.abort();
         if (state.session)
           stopping = this.harness.stop(state.session).catch(() => {});
       }, MAX_RUN_DURATION_MS);
       try {
+        if (nameAgent) {
+          state.naming = new AbortController();
+          let name: string | null = null;
+          try { name = await this.harness.generateAgentName(prompt, config, state.naming.signal); }
+          catch { /* Naming is best-effort; never fail or replay the user's task. */ }
+          state.naming = undefined;
+          if (state.cancelled || failure) return;
+          if (name) {
+            const event = this.store.db.transaction(() => {
+              const renamed = this.store.applyAgentName(agentId, name!);
+              return renamed ? this.store.event(agentId, null, "agent_updated", { agent: renamed }) : null;
+            })();
+            if (event) this.notify(event);
+          }
+          agent = this.store.agent(agentId)!;
+        }
+        if (state.cancelled || failure) return;
         const context = this.store.context(agentId);
         const session = await this.harness.create(
           agent,
@@ -705,6 +726,7 @@ export class JellyService {
     for (const [id, state] of this.active)
       if (this.store.run(id)?.agentId === agentId) {
         state.cancelled = true;
+        state.naming?.abort();
         if (state.session) await this.harness.stop(state.session);
         await state.done;
         return;
@@ -722,7 +744,7 @@ export class JellyService {
   async close() {
     this.closing = true;
     const states = [...this.active.values()];
-    for (const state of states) state.cancelled = true;
+    for (const state of states) { state.cancelled = true; state.naming?.abort(); }
     const outcomes = await Promise.allSettled([
       this.interventions.close(),
       ...states.map((state) =>

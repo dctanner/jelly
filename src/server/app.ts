@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { AVATARS } from "../shared/avatars";
 import { directories, effectiveCwd } from "./directories";
 import { uploadFile } from "./uploads";
@@ -82,7 +83,9 @@ function text(value: unknown, name: string, max: number, empty = false) {
     );
   return value.trim();
 }
-function profile(input: Record<string, unknown>) {
+function profile(input: Record<string, unknown>, creating = false) {
+  if (input.nameEdited !== undefined && typeof input.nameEdited !== "boolean")
+    throw new HttpError(400, "Invalid name edit flag.");
   const color = input.color ?? "#b5bafc";
   if (typeof color !== "string" || !/^#[a-fA-F0-9]{6}$/.test(color))
     throw new HttpError(400, "Choose a valid avatar color.");
@@ -93,7 +96,8 @@ function profile(input: Record<string, unknown>) {
     throw new HttpError(400, "Choose a valid sea avatar.");
   return {
     avatarId: input.avatarId as string | undefined,
-    name: text(input.name, "Name", 60),
+    name: text(creating && input.name === undefined ? DEFAULT_AGENT_NAME : input.name, "Name", 60),
+    nameEdited: input.nameEdited as boolean | undefined,
     instructions: text(input.instructions ?? "", "Instructions", 12000, true),
     color,
   };
@@ -347,16 +351,6 @@ export async function startApp(options: AppOptions) {
                 const input = await body(req);
                 return json(connections.cancel(session.id, input.id));
               }
-              if (url.pathname === "/api/auth/chatgpt/callback") {
-                const input = await body(req);
-                try {
-                  return json(
-                    connections.submit(session.id, input.id, input.callback),
-                  );
-                } finally {
-                  delete input.callback;
-                }
-              }
               if (url.pathname === "/api/auth/remove") {
                 const input = await body(req);
                 if (
@@ -598,7 +592,7 @@ export async function startApp(options: AppOptions) {
                 throw new HttpError(400, "Invalid project.");
               return json(
                 service.createAgent({
-                  ...profile(input),
+                  ...profile(input, true),
                   projectId: input.projectId as string | null | undefined,
                 }),
                 201,
@@ -666,8 +660,12 @@ export async function startApp(options: AppOptions) {
                 (action === "archive" || action === "restore")
               )
                 return json(service.archiveAgent(id!, action === "archive"));
-              if (req.method === "PATCH" && !action)
-                return json(service.updateAgent(id!, profile(await body(req))));
+              if (req.method === "PATCH" && !action) {
+                const input = await body(req);
+                const existing = store.agent(id!);
+                if (!existing) throw new HttpError(404, "Agent not found.");
+                return json(service.updateAgent(id!, profile({ ...existing, ...input })));
+              }
               if (req.method === "POST" && action === "messages") {
                 const input = await body(req);
                 const prompt = text(input.text, "Message", 24000);
