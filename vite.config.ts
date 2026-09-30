@@ -1,12 +1,14 @@
+import { privateDevFiles } from "./scripts/dev-files";
 import { publicOrigins } from "./src/shared/network";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 export default defineConfig({
-  plugins: [react()],
+  plugins: [privateDevFiles(), react()],
   server: {
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    cors: false,
     allowedHosts: publicOrigins(process.env.JELLY_PUBLIC_ORIGINS).map(
       (origin) => new URL(origin).hostname,
     ),

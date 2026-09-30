@@ -1,5 +1,9 @@
 # Jelly
 
+**Jelly is a local multi-bot agent system**
+
+The target user is someone building an running there whole business from a single VM (inspired by https://x.com/levelsio).
+
 <p align="center">
   <a href="https://dctanner.github.io/jelly/">
     <img src="docs/images/jelly-mobile-preview.jpg" width="360" alt="Watch Jelly’s launch reel: open-source agents on your hardware, with real mobile UI, private browser handoffs, and sudo.">
@@ -10,16 +14,14 @@
 
 Real mobile UI with demonstration data and an original soundtrack; sudo execution and website sign-in are simulated.
 
-A local-first workspace for persistent AI agents. Give each agent a name, instructions, and a project folder, then chat through a simple web interface.
-
-Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
-
-- Persistent conversations, project workspaces, and background agent runs
-- File editing, shell tools, subagents, and MCP connections
-- Browser control with private sign-in handoffs; Linux desktop support
-- Administrator commands via `request_sudo`, with private password handoffs
-- File uploads, inline images, and downloadable artifacts
-- ChatGPT subscription or OpenAI API access (required)
+- Run it on your on hardware: a Mac, Linux box or VM.
+- Create as many agents as you want. Group into project directories.
+- Access the web UI locally, or setup Tailscale and use from your laptop or phone (add it to your iPhone home screen and it feels like a native app).
+- Use your existing ChatGPT subscription or API key.
+- Agents can use your local Chrome browser. If the agent needs to login somewhere, you can take control of the browser anytime (using VNC in the web UI).
+- If an agent needs sudo access, it can securely request it from you.
+- Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
+- Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
 
 ## Quick start
 
@@ -54,6 +56,8 @@ bun start
 
 Open **http://127.0.0.1:3100**. Stop development first; both modes use API port 3100 by default. Production has no hot reload—restart after code changes when agents are idle. Development backend reloads interrupt active runs; set `JELLY_WATCH_API=0` to disable them.
 
+Development serves only frontend source and assets; instance data, server source, and other repository files are not downloadable through Vite. Keep credentials and private files out of `public/`, `src/client/`, `src/shared/`, and `node_modules/`.
+
 ChatGPT sign-in uses a one-time device code. Open the approval link shown in Settings, enter the code, and Jelly connects automatically. This works over Tailscale without a localhost redirect. If needed, enable device-code login in your ChatGPT security settings or ask your workspace admin.
 
 ### Optional browser desktop
@@ -65,6 +69,8 @@ bun run setup:desktop
 ```
 
 Set `JELLY_BROWSER_PATH` if the browser is outside its usual system location.
+
+If browser control is stuck after a session expires or cookies are lost, open **Agent computer → Recover lost control…**. Confirming recovery disconnects the old controller, discards private tabs and the remote clipboard, and gives you a blank desktop. Website sign-ins remain stored. Agents stay paused until you explicitly return control.
 
 ### Administrator commands
 

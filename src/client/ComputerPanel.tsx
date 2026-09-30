@@ -1,3 +1,4 @@
+import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 import { Modal } from "./Modal";
 import { RemoteClipboard } from "./RemoteClipboard";
 import { useEffect, useRef, useState } from "react";
@@ -25,7 +26,8 @@ function SessionComputerPanel({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [revision, setRevision] = useState(0),
-    [connected, setConnected] = useState(false);
+    [connected, setConnected] = useState(false),
+    [confirmRecovery, setConfirmRecovery] = useState(false);
   useEffect(() => {
     let dead = false;
     void control<ComputerState>(scoped("/computer/start"))
@@ -94,13 +96,16 @@ function SessionComputerPanel({
       screen.current?.replaceChildren();
     };
   }, [ready, owned, privateScreen, revision]);
-  async function action(name: "take" | "release" | "close") {
+  async function action(name: "take" | "release" | "close" | "recover") {
     setBusy(true);
     setError("");
     try {
-      const next = await control<ComputerState>(scoped(`/computer/${name}`));
+      const next = await control<ComputerState>(scoped(`/computer/${name}`),
+        name === "recover" ? { confirm: "discard-private-desktop" } : {});
       if (!alive.current) return;
       setState(next);
+      setConfirmRecovery(false);
+      if (name === "recover") setRevision((v) => v + 1);
       onChange();
       if (name === "close") onClose();
     } catch (e) {
@@ -188,6 +193,17 @@ function SessionComputerPanel({
             handoff.
           </p>
         </div>
+      )}
+      {privateScreen && (
+        confirmRecovery ? (
+          <ChatFormCard title="Reset private desktop?" icon={<RotateCw size={20} />}
+            description="Use this if the controlling window or its session was lost. This disconnects it, closes all private tabs, and clears the remote clipboard. Website sign-ins are retained. You receive a blank desktop; agents stay paused until you return control.">
+            <ChatFormActions>
+              <button disabled={busy} onClick={() => setConfirmRecovery(false)}>Cancel</button>
+              <button className="primary" disabled={busy} onClick={() => void action("recover")}>Discard private tabs and take control</button>
+            </ChatFormActions>
+          </ChatFormCard>
+        ) : <button disabled={busy} onClick={() => setConfirmRecovery(true)}>Recover lost control…</button>
       )}
       <p className="subtle">
         {owned
