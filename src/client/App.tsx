@@ -1808,11 +1808,13 @@ export function App() {
                     : "Guide the current run at its next interruption point"
                   : "Enter to send · Shift + Enter for a new line"}
               </span>
-              {data && (
+              {agent && (
                 <ComposerSettings
-                  model={data.config.selectedModel}
-                  effort={data.config.effort}
-                  disabled={!connected || sending}
+                  key={agent.id}
+                  agentId={agent.id}
+                  model={agent.model}
+                  effort={agent.effort}
+                  disabled={!connected || sending || savingModel}
                   refresh={() => refresh.current()}
                   onBusy={setSavingModel}
                 />

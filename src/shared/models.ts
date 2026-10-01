@@ -2,6 +2,7 @@ export const MODEL_OPTIONS = [
   { id: "gpt-6-astra", label: "GPT-6 Astra" },
   { id: "gpt-6-astra-ultrafast", label: "GPT-6 Astra Ultrafast" },
   { id: "gpt-6-sol", label: "GPT-6 Sol" },
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
 ] as const;
 export const EFFORT_OPTIONS = [
   { id: "low", label: "Low" },
@@ -13,7 +14,9 @@ export const EFFORT_OPTIONS = [
 export type ModelId = (typeof MODEL_OPTIONS)[number]["id"];
 export type Effort = (typeof EFFORT_OPTIONS)[number]["id"];
 // Ultrafast is a Jelly selection, not an upstream model ID.
-export function upstreamModel(model: ModelId): "gpt-6-astra" | "gpt-6-sol" {
+export function upstreamModel(
+  model: ModelId,
+): Exclude<ModelId, "gpt-6-astra-ultrafast"> {
   return model === "gpt-6-astra-ultrafast" ? "gpt-6-astra" : model;
 }
 export const ULTRAFAST_NOTICE =

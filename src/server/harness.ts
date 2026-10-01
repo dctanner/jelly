@@ -65,7 +65,7 @@ export class Harness {
     preparePi(dataDir);
     const runtime = await ModelRuntime.create({
       authPath,
-      modelsPath: null,
+      modelsPath: fileURLToPath(new URL("./models.json", import.meta.url)),
       allowModelNetwork: false,
     });
     return new Harness(dataDir, runtime, authPath, configDir);
@@ -229,7 +229,7 @@ export class Harness {
     });
     await session.bindExtensions({ mode: "print" });
     session.setActiveToolsByName(session.getAllTools().map((t) => t.name));
-    // Per-session defaults travel with the tool call, never through shared .pi files.
+    // New-launch defaults travel with the tool call, never through shared .pi files.
     const delegate = session.agent.state.tools.find(
       (tool) => tool.name === "subagent",
     );
@@ -237,6 +237,10 @@ export class Harness {
       const execute = delegate.execute.bind(delegate);
       delegate.execute = (id, value, signal, onUpdate) => {
         const input = value as Record<string, unknown>;
+        // Management calls own their argument contract. In particular, resume
+        // must reuse the persisted child model and rejects any model override.
+        if (input.action !== undefined)
+          return execute(id, value, signal, onUpdate);
         return execute(
           id,
           {

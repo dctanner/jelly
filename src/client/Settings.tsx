@@ -185,7 +185,7 @@ export function Settings({
             </div>
           </section>
           <section className="settings-section">
-            <h3>Model</h3>
+            <h3>New agent defaults</h3>
             <div className="settings-group">
               <SettingsRow
                 label="Model"
@@ -238,7 +238,7 @@ export function Settings({
             </div>
           </section>
           <p className="settings-footnote">
-            Model and access changes apply to new runs when you tap Done.
+            Model and effort are defaults for new agents. Change an existing agent in its chat. Access changes apply to all agents’ new runs when you tap Done.
           </p>
         </>
       )}

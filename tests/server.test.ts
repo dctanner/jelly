@@ -421,6 +421,82 @@ test("model and effort defaults, validation, mode-only updates and restart persi
     reader.close();
   }
 });
+test("model switches pin the selected agent, preserve peers, and seed new agents atomically", async () => {
+  const f = await fixture();
+  const first = f.app.store.agents()[0]!;
+  const other = f.app.service.createAgent({ name: "Other", instructions: "", color: "#fff" });
+  const change = (input: object) => f.request("/api/config", "PUT", input);
+  expect((await change({ agentId: first.id, model: "gpt-6.1-sol", effort: "max" })).status).toBe(200);
+  expect(f.app.store.agent(first.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  expect(f.app.store.agent(other.id)).toMatchObject({ model: "gpt-6-astra", effort: "medium" });
+  const newer = f.app.service.createAgent({ name: "Newer", instructions: "", color: "#fff" });
+  expect(newer).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  // Effort-only changes keep this agent's model, not the latest global default.
+  expect((await change({ agentId: other.id, effort: "low" })).status).toBe(200);
+  expect(f.app.store.agent(other.id)).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+  expect(f.app.store.instance()).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+  expect(f.app.store.agent(first.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  expect(f.app.store.agent(newer.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  // Defaults in Settings do not modify any existing agent (including archived ones).
+  f.app.store.archiveAgent(newer.id, true);
+  expect((await change({ model: "gpt-6-sol", effort: "high" })).status).toBe(200);
+  expect(f.app.store.agent(newer.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  expect(f.app.store.agent(first.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  expect(f.app.store.agent(other.id)).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+  // Access remains global, but a mode-only request never overwrites model defaults.
+  expect((await change({ agentId: first.id, mode: "api" })).status).toBe(200);
+  const defaults = f.app.store.instance();
+  expect(defaults).toMatchObject({ model: "gpt-6-sol", effort: "high", mode: "api" });
+  for (const [agentId, status] of [["missing", 404], [null, 400], ["", 400], [7, 400]] as const)
+    expect((await change({ agentId, model: "gpt-6-astra-ultrafast" })).status).toBe(status);
+  expect(f.app.store.instance()).toEqual(defaults);
+  const { Store } = await import("../src/server/store");
+  const reader = new Store(join(f.dir, "jelly.sqlite"));
+  try {
+    expect(reader.agent(first.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+    expect(reader.agent(other.id)).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+    expect(reader.agent(newer.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+    expect(reader.instance()).toEqual(defaults);
+  } finally { reader.close(); }
+});
+
+test("schema v9 pins historical agent settings once, preserving Ultrafast and archived agents", async () => {
+  const { Store } = await import("../src/server/store");
+  const dir = mkdtempSync(join(tmpdir(), "jelly-agent-model-migrate-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "jelly.sqlite");
+  let store = new Store(path);
+  const profile = { name: "Existing", instructions: "", color: "#fff" };
+  const sol = store.addAgent(profile), ultra = store.addAgent(profile), unused = store.addAgent(profile);
+  const solRun = store.createRun(sol.id, "sol", "Hello", "api", "gpt-6-sol");
+  store.event(sol.id, solRun.id, "run_started", { model: "gpt-6-sol", effort: "high" });
+  store.finishRun(solRun.id, "completed", null);
+  store.archiveAgent(sol.id, true);
+  store.event(null, null, "config_changed", { model: "gpt-6-astra-ultrafast", effort: "max" });
+  const ultraRun = store.createRun(ultra.id, "ultra", "Hello", "api", "gpt-6-astra");
+  store.event(ultra.id, ultraRun.id, "run_started", { model: "gpt-6-astra", effort: "max" });
+  store.finishRun(ultraRun.id, "completed", null);
+  store.setConfig("api", "gpt-6.1-sol", "low");
+  store.event(null, null, "config_changed", { model: "gpt-6.1-sol", effort: "low" });
+  const history = store.historyPage(ultra.id);
+  store.db.exec("ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; PRAGMA user_version=9;");
+  store.close();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    store = new Store(path);
+    try {
+      expect(store.agent(sol.id)).toMatchObject({ model: "gpt-6-sol", effort: "high" });
+      expect(store.agent(sol.id)?.archivedAt).not.toBeNull();
+      expect(store.agent(ultra.id)).toMatchObject({ model: "gpt-6-astra-ultrafast", effort: "max" });
+      expect(store.agent(unused.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "low" });
+      expect(store.historyPage(ultra.id)).toEqual(history);
+      expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 10 });
+      expect(store.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      // Later default changes and reopening must not rerun the backfill.
+      store.setConfig("api", "gpt-6-astra", "medium");
+    } finally { store.close(); }
+  }
+});
+
 test("schema v2 upgrades existing instances to Astra/Medium without losing agents", async () => {
   const { Store } = await import("../src/server/store");
   const dir = mkdtempSync(join(tmpdir(), "jelly-model-migrate-"));
@@ -435,7 +511,7 @@ test("schema v2 upgrades existing instances to Astra/Medium without losing agent
     color: "#b5bafc",
   });
   store.db.exec(
-    "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''; DROP TABLE contexts; DROP TABLE timeline; DROP INDEX idx_agents_archive; DROP INDEX idx_agents_project; ALTER TABLE agents DROP COLUMN projectId; ALTER TABLE agents DROP COLUMN cwd; ALTER TABLE agents DROP COLUMN managedCwd; ALTER TABLE agents DROP COLUMN avatarId; ALTER TABLE agents DROP COLUMN archivedAt; DROP TABLE projects; ALTER TABLE instance DROP COLUMN model; ALTER TABLE instance DROP COLUMN effort; PRAGMA user_version=2;",
+    "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''; DROP TABLE contexts; DROP TABLE timeline; DROP INDEX idx_agents_archive; DROP INDEX idx_agents_project; ALTER TABLE agents DROP COLUMN projectId; ALTER TABLE agents DROP COLUMN cwd; ALTER TABLE agents DROP COLUMN managedCwd; ALTER TABLE agents DROP COLUMN avatarId; ALTER TABLE agents DROP COLUMN archivedAt; ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; DROP TABLE projects; ALTER TABLE instance DROP COLUMN model; ALTER TABLE instance DROP COLUMN effort; PRAGMA user_version=2;",
   );
   store.close();
   store = new Store(path);
@@ -473,7 +549,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
     color: "#b5bafc",
   });
   store.db.exec(
-    "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''; PRAGMA user_version=5;",
+    "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''; ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; PRAGMA user_version=5;",
   );
   store.db
     .query("UPDATE agents SET role=? WHERE id=?")
@@ -493,7 +569,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 9,
+        user_version: 10,
       });
     } finally {
       store.close();
@@ -839,12 +915,12 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
   store.finishRun(run.id, "completed", null);
   const id = store.instance().id;
   store.db.query("UPDATE instance SET mode=?").run(mode);
-  store.db.exec("PRAGMA user_version=7;");
+  store.db.exec("ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; PRAGMA user_version=7;");
   store.close();
   store = new Store(path);
   try {
     expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
-    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 10 });
     expect(store.agent(agent.id)).toEqual(agent);
     expect(store.run(run.id)?.mode).toBe("demo");
     expect(store.historyPage(agent.id).events).toContainEqual(event);

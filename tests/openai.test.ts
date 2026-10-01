@@ -122,6 +122,7 @@ for (const mode of ["api", "chatgpt"] as const)
       });
       app.service.setMode(mode);
       const id = app.store.agents()[0]!.id;
+      const untouched = app.service.createAgent({ name: "Untouched", instructions: "", color: "#fff" });
       app.service.start(id, "api-one", "Hello via API");
       await app.service.settled();
       expect(app.store.runs(id)[0]?.error).toBeNull();
@@ -152,7 +153,7 @@ for (const mode of ["api", "chatgpt"] as const)
       expect(
         app.store.events(0, id).some((e) => e.type.includes("delta")),
       ).toBe(false);
-      app.service.setConfig({ model: "gpt-6-sol", effort: "high" });
+      app.service.setConfig({ agentId: id, model: "gpt-6-sol", effort: "high" });
       app.service.start(id, "api-two", "Remember the previous message");
       await app.service.settled();
       expect(requests[1]?.body.model).toBe("gpt-6-sol");
@@ -163,7 +164,7 @@ for (const mode of ["api", "chatgpt"] as const)
       expect(JSON.stringify(requests[1]?.body.input)).toContain(
         "A response from the local API fixture.",
       );
-      for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-astra-ultrafast"] as const)
+      for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra-ultrafast"] as const)
         for (const effort of [
           "low",
           "medium",
@@ -171,7 +172,7 @@ for (const mode of ["api", "chatgpt"] as const)
           "xhigh",
           "max",
         ] as const) {
-          app.service.setConfig({ model, effort });
+          app.service.setConfig({ agentId: id, model, effort });
           app.service.start(id, `${model}-${effort}`, "Verify settings");
           await app.service.settled();
           expect(requests.at(-1)?.body.model).toBe(model === "gpt-6-astra-ultrafast" ? "gpt-6-astra" : model);
@@ -180,6 +181,13 @@ for (const mode of ["api", "chatgpt"] as const)
           expect(app.store.runs(id).at(-1)?.status).toBe("completed");
           expect(requests.at(-1)?.body.temperature).toBeUndefined();
         }
+      await app.service.harness.generateAgentName(
+        "Test name",
+        app.service.harness.config(mode, { model: "gpt-6.1-sol", effort: "medium" }),
+        new AbortController().signal,
+      );
+      expect(requests.at(-1)?.body.model).toBe("gpt-6.1-sol");
+      expect(requests.at(-1)?.body.reasoning.effort).toBe("low");
       const beforeSummary = requests.length;
       app.service.freshSession(id, "ultrafast-summary");
       await app.service.settled();
@@ -197,11 +205,40 @@ for (const mode of ["api", "chatgpt"] as const)
       expect(requests.length).toBe(beforeDenied + 1);
       expect(app.store.runs(id).at(-1)?.status).toBe("failed");
       expect(app.store.runs(id).at(-1)?.error).toContain("Ultrafast is not enabled");
-      app.service.setConfig({ model: "gpt-6-astra" });
+      app.service.setConfig({ agentId: id, model: "gpt-6-astra" });
       app.service.start(id, "standard-again", "Back to standard");
       await app.service.settled();
       expect(requests.at(-1)?.body.service_tier).toBeUndefined();
       expect(app.store.runs(id).at(-1)?.status).toBe("completed");
+      // Creation defaults can change without changing any existing agent.
+      app.service.setConfig({ model: "gpt-6.1-sol", effort: "low" });
+      const newer = app.service.createAgent({ name: "New defaults", instructions: "", color: "#fff" });
+      for (const [agentId, expectedModel, expectedEffort] of [
+        [untouched.id, "gpt-6-astra", "medium"],
+        [id, "gpt-6-astra", "max"],
+        [newer.id, "gpt-6.1-sol", "low"],
+      ] as const) {
+        app.service.start(agentId, `pinned-${agentId}`, "Verify pinned settings");
+        await app.service.settled();
+        expect(requests.at(-1)?.body.model).toBe(expectedModel);
+        expect(requests.at(-1)?.body.reasoning.effort).toBe(expectedEffort);
+        expect(app.store.runs(agentId).at(-1)?.status).toBe("completed");
+      }
+      const beforeFresh = requests.length;
+      app.service.freshSession(untouched.id, "pinned-fresh");
+      await app.service.settled();
+      expect(requests.length).toBeGreaterThan(beforeFresh);
+      expect(requests.slice(beforeFresh).every(r => r.body.model === "gpt-6-astra")).toBe(true);
+      // A switch during an active run takes effect on the next queued run only.
+      app.service.setConfig({ agentId: id, model: "gpt-6-sol", effort: "high" });
+      const beforeSwitch = requests.length;
+      app.service.start(id, "before-agent-switch", "Keep this running model");
+      app.service.start(id, "after-agent-switch", "Use my next model");
+      app.service.setConfig({ agentId: id, model: "gpt-6.1-sol", effort: "max" });
+      app.service.setConfig({ model: "gpt-6-astra", effort: "low" });
+      await app.service.settled();
+      expect(requests.slice(beforeSwitch).map(r => [r.body.model, r.body.reasoning.effort]))
+        .toEqual([["gpt-6-sol", "high"], ["gpt-6.1-sol", "max"]]);
     } finally {
       await app.close();
       fake.stop(true);
@@ -491,7 +528,7 @@ test("ChatGPT uses cached WebSockets across runs, isolates agents, and reconnect
     expect(JSON.stringify(frames[2]!.body.input)).not.toContain(
       "First message",
     );
-    app.service.setConfig({ model: "gpt-6-sol", effort: "high" });
+    app.service.setConfig({ agentId: agent.id, model: "gpt-6-sol", effort: "high" });
     await run("Changed model");
     expect(frames[3]!.body.previous_response_id).toBeUndefined();
     expect(JSON.stringify(frames[3]!.body.input)).toContain("First message");
@@ -557,7 +594,7 @@ test("ChatGPT uses cached WebSockets across runs, isolates agents, and reconnect
       "New instructions for this agent.",
     );
     expect(posts).toBe(1); // Cancellation did not trigger a retry.
-    app.service.setConfig({ model: "gpt-6-astra-ultrafast" });
+    app.service.setConfig({ agentId: agent.id, model: "gpt-6-astra-ultrafast" });
     const beforeUltrafast = frames.length;
     recoverOverHttp = true;
     behavior = "tool-then-fail";

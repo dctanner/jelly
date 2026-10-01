@@ -8,7 +8,7 @@ import { interventionTools } from "../src/server/agent-tools";
 import { APPLY_PATCH_GRAMMAR } from "../src/server/vendor/apply-patch-grammar";
 
 for (const mode of ["api", "chatgpt"] as const)
-  for (const model of ["gpt-6-astra", "gpt-6-sol"] as const) {
+  for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol"] as const) {
     test(`apply_patch ${mode}/${model}: actual Harness custom grammar, execution, and history replay`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "jelly-patch-transport-"));
       const patch =

@@ -275,18 +275,24 @@ export class JellyService {
   setMode(mode: Mode) {
     return this.setConfig({ mode });
   }
-  setConfig(input: { mode?: Mode; model?: ModelId; effort?: Effort }) {
+  setConfig(input: { agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort }) {
     if (input.mode !== undefined && !["auto", "chatgpt", "api"].includes(input.mode))
       throw new HttpError(400, "Unknown connection mode.");
     const current = this.store.instance();
+    const agent = input.agentId !== undefined ? this.store.agent(input.agentId) : null;
+    if (input.agentId !== undefined && !agent)
+      throw new HttpError(404, "Agent not found.");
+    const switching = input.model !== undefined || input.effort !== undefined;
+    const baseline = agent && switching ? agent : current;
     const next = {
       mode: input.mode ?? current.mode,
-      model: input.model ?? current.model,
-      effort: input.effort ?? current.effort,
+      model: input.model ?? baseline.model,
+      effort: input.effort ?? baseline.effort,
     };
     const event = this.store.db.transaction(() => {
       this.store.setConfig(next.mode, next.model, next.effort);
-      return this.store.event(null, null, "config_changed", next);
+      if (agent && switching) this.store.setAgentConfig(agent.id, next.model, next.effort);
+      return this.store.event(null, null, "config_changed", { ...next, agentId: agent?.id ?? null });
     })();
     this.notify(event);
     return this.harness.config(next.mode, next);
@@ -304,7 +310,7 @@ export class JellyService {
     if (agent.archivedAt) throw new HttpError(409, "Restore this agent before starting a fresh session.");
     if (this.activeFor(agentId)) throw new HttpError(409, "Wait for this agent to finish before starting a fresh session.");
     const instance = this.store.instance();
-    this.harness.requireConnection(this.harness.config(instance.mode, instance));
+    this.harness.requireConnection(this.harness.config(instance.mode, agent));
     return this.startRun(agent, `fresh-session:${requestId}`, "Fresh Session", "queue", true);
   }
   start(
@@ -343,7 +349,7 @@ export class JellyService {
     if (agent.archivedAt)
       throw new HttpError(409, "Restore this agent before sending a message.");
     const instance = this.store.instance();
-    this.harness.requireConnection(this.harness.config(instance.mode, instance));
+    this.harness.requireConnection(this.harness.config(instance.mode, agent));
     const active = this.activeFor(agentId);
     if (active?.cancelled)
       throw new HttpError(
@@ -381,7 +387,9 @@ export class JellyService {
   steer(agentId: string, messageId: string) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
     const instance = this.store.instance();
-    this.harness.requireConnection(this.harness.config(instance.mode, instance));
+    const agent = this.store.agent(agentId);
+    if (!agent) throw new HttpError(404, "Agent not found.");
+    this.harness.requireConnection(this.harness.config(instance.mode, agent));
     const message = this.store.pendingMessage(messageId);
     if (!message || message.agentId !== agentId)
       throw new HttpError(404, "Message not found.");
@@ -428,7 +436,7 @@ export class JellyService {
   ) {
     const agentId = agent.id;
     const instance = this.store.instance();
-    const config = this.harness.config(instance.mode, instance);
+    const config = this.harness.config(instance.mode, agent);
     this.harness.requireConnection(config);
     const events: Activity[] = [];
     let nameAgent = false;
@@ -465,6 +473,7 @@ export class JellyService {
           operation: freshSession ? "fresh_session" : "message",
           mode: config.activeMode,
           model: config.model,
+          selectedModel: config.selectedModel,
           effort: config.effort,
           status: "running",
         }),

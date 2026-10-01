@@ -36,6 +36,8 @@ test("the agent can configure, discover, call and remove user-wide MCPs through 
   const session = await harness.create(
     {
       id: "mcp-agent",
+      model: "gpt-6-astra",
+      effort: "medium",
       name: "Jelly",
       instructions: "",
       cwd: join(root, "workspace"),

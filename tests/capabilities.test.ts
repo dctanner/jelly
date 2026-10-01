@@ -31,6 +31,8 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 const agent = {
+  model: "gpt-6-astra" as const,
+  effort: "medium" as const,
   id: "capabilities",
   cwd: join(dir, "workspaces", "capabilities"),
   managedCwd: 1,
@@ -291,7 +293,7 @@ test("real pi-subagents workflow uses the parent provider and effort and support
   const s = await h.create(
     agent,
     [],
-    h.config("api", { model: "gpt-6-sol", effort: "high" }),
+    h.config("api", { model: "gpt-6.1-sol", effort: "high" }),
     instance,
     [],
     (type, data) => {
@@ -313,7 +315,7 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     );
     expect(JSON.stringify(result)).toContain("Child completed");
     expect(requests).toHaveLength(1);
-    expect(requests[0].model).toBe("gpt-6-sol");
+    expect(requests[0].model).toBe("gpt-6.1-sol");
     expect(requests[0].reasoning.effort).toBe("high");
     for (const name of ALL_PI_TOOLS)
       expect(requests[0].tools.map((t: any) => t.name)).toContain(name);
@@ -337,9 +339,8 @@ test("real pi-subagents workflow uses the parent provider and effort and support
           .map((r) => r.reasoning.effort)
           .sort(),
       ).toEqual(["high", "low"]);
-      expect(requests.slice(before).every((r) => r.model === "gpt-6-sol")).toBe(
-        true,
-      );
+      expect(requests.slice(before).map(r => `${r.model}:${r.reasoning.effort}`).sort())
+        .toEqual(["gpt-6-sol:low", "gpt-6.1-sol:high"].sort());
     } finally {
       await h.dispose(low);
     }
@@ -374,6 +375,37 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     expect(activities).toContain("subagent_started");
     expect(activities).toContain("subagent_completed");
     expect(completions.at(-1)?.success).toBe(true);
+    // A direct resume must not inherit launch-only model/session defaults.
+    // Start a real persisted child against the local fixture, then resume it.
+    await tool.execute(
+      "resume-child",
+      { agent: "delegate", task: "Reply Child completed", async: true, acceptance: false },
+      new AbortController().signal,
+    );
+    await h.settle(s);
+    expect(completions.at(-1)?.success).toBe(true);
+    const completed = completions.at(-1)!;
+    const childId = completed.runId ?? completed.id;
+    expect(typeof childId).toBe("string");
+    const beforeResume = requests.length;
+    const resumed = await tool.execute(
+      "direct-resume",
+      { action: "resume", id: childId, message: "Continue and reply Child completed" },
+      new AbortController().signal,
+    );
+    expect(JSON.stringify(resumed)).not.toContain("does not accept a model override");
+    expect((resumed as { isError?: boolean }).isError).not.toBe(true);
+    await h.settle(s);
+    expect(requests.length).toBeGreaterThan(beforeResume);
+    expect(requests.at(-1).model).toBe("gpt-6.1-sol");
+    expect(requests.at(-1).reasoning.effort).toBe("high");
+    expect(completions.at(-1)?.success).toBe(true);
+    // Do not silently strip overrides that a caller actually supplies.
+    await expect(tool.execute(
+      "explicit-resume-override",
+      { action: "resume", id: childId, message: "Continue", model: "openai/gpt-6-astra" },
+      new AbortController().signal,
+    )).rejects.toThrow("does not accept a model override");
   } finally {
     await h.dispose(s);
     server.stop(true);

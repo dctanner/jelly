@@ -883,6 +883,9 @@ test("chat model menu persists choices without changing connection mode and dism
     name: "Model",
   }) as HTMLSelectElement;
   expect(model.value).toBe("gpt-6-astra");
+  expect(document.activeElement === trigger).toBe(true);
+  expect(document.activeElement === model).toBe(false);
+  expect(within(model).getByRole("option", { name: "GPT-6.1 Sol" })).toBeDefined();
   fireEvent.change(model, { target: { value: "gpt-6-astra-ultrafast" } });
   await waitFor(() => {
     expect(model.value).toBe("gpt-6-astra-ultrafast");
@@ -903,11 +906,56 @@ test("chat model menu persists choices without changing connection mode and dism
     mode: "api",
   });
   fireEvent.keyDown(effort, { key: "Escape" });
+  fireEvent.click(trigger);
+  fireEvent.change(screen.getByRole("combobox", { name: "Model" }), { target: { value: "gpt-6.1-sol" } });
+  await waitFor(() => expect(app.service.snapshot().config.selectedModel).toBe("gpt-6.1-sol"));
+  expect(app.service.snapshot().config.model).toBe("gpt-6.1-sol");
+  fireEvent.keyDown(trigger, { key: "Escape" });
   expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
   expect(document.activeElement).toBe(trigger);
   fireEvent.click(trigger);
   fireEvent.pointerDown(document.body);
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("composer model settings follow the selected agent rather than the latest creation defaults", async () => {
+  const app = await setup();
+  const first = app.store.agents()[0]!;
+  const other = app.service.createAgent({ name: "Other", instructions: "", color: "#fff" });
+  render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByTitle(`${first.name} · idle`));
+  const open = async () => {
+    const button = screen.getByRole("button", { name: "Model and effort" });
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(button);
+    return screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+  };
+  const choose = async (name: string, value: string) => {
+    fireEvent.change(screen.getByRole("combobox", { name }), { target: { value } });
+    await waitFor(() => {
+      const select = screen.getByRole("combobox", { name }) as HTMLSelectElement;
+      expect(select.value).toBe(value);
+      expect(select.disabled).toBe(false);
+    });
+  };
+  await open();
+  await choose("Model", "gpt-6.1-sol");
+  await choose("Reasoning effort", "max");
+  const newer = app.service.createAgent({ name: "Newer", instructions: "", color: "#fff" });
+  expect(newer).toMatchObject({ model: "gpt-6.1-sol", effort: "max" });
+  fireEvent.click(screen.getByTitle("Other · idle"));
+  await screen.findByRole("textbox", { name: "Message Other" });
+  expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+  expect((await open()).value).toBe("gpt-6-astra");
+  expect((screen.getByRole("combobox", { name: "Reasoning effort" }) as HTMLSelectElement).value).toBe("medium");
+  await choose("Reasoning effort", "low");
+  expect(app.store.agent(other.id)).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+  expect(app.store.instance()).toMatchObject({ model: "gpt-6-astra", effort: "low" });
+  fireEvent.click(screen.getByTitle(`${first.name} · idle`));
+  await screen.findByRole("textbox", { name: `Message ${first.name}` });
+  expect((await open()).value).toBe("gpt-6.1-sol");
+  expect((screen.getByRole("combobox", { name: "Reasoning effort" }) as HTMLSelectElement).value).toBe("max");
 });
 
 test("composer expands, caps at the available page height, and shrinks when text is removed", async () => {

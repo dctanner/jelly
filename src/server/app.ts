@@ -640,6 +640,7 @@ export async function startApp(options: AppOptions) {
                 throw new HttpError(400, "Unknown reasoning effort.");
               return json(
                 service.setConfig({
+                  agentId: input.agentId === undefined ? undefined : text(input.agentId, "Agent ID", 100),
                   mode: input.mode as Mode | undefined,
                   model: input.model as ModelId | undefined,
                   effort: input.effort as Effort | undefined,

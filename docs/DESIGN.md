@@ -34,6 +34,13 @@ Both themes share layout and spacing tokens. Narrow screens use a full-width inb
 - Search is a menu action, not a permanent input. At the root it finds projects and agents across projects; inside a project it searches that project's agents. Search results route to the appropriate project/conversation. Cmd/Ctrl+K also opens search.
 - Keep the 60px floating create button at the bottom right, clear of the safe area. Creation inherits the current project, or creates an unassigned agent at the root. New project, Manage project, and Add existing agent remain available through the menu.
 
+## Model and effort scope
+
+- The composer switcher shows the current agent’s saved model and effort. A change updates that agent and the defaults for agents created afterward, never other existing agents.
+- Settings labels its model/effort group **New agent defaults**. Changes there do not update existing agents; connection mode remains instance-wide.
+- Changes take effect on the selected agent’s next run. Active runs retain their captured settings; new subagents inherit that run’s settings, and resumed subagents retain their persisted model and effort.
+- Opening the switcher focuses its trigger, not the native model dropdown. Keep Tab/Escape navigation and reset the popover when changing agents.
+
 ## Default in-chat form cards
 
 Use `ChatFormCard` and `ChatFormActions` from `src/client/ChatFormCard.tsx` for all new inline forms, approval requests, and private handoffs. Sudo and browser sign-in use this shared shell; do not create another ad-hoc intervention card or reuse a modal's focus trap in the transcript.

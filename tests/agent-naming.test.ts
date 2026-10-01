@@ -193,7 +193,7 @@ test("naming eligibility persists across reopen; migrations never opt old agents
     instructions: "",
     color: "#fff",
   });
-  store.db.exec("DROP TABLE agent_naming; PRAGMA user_version=8;");
+  store.db.exec("DROP TABLE agent_naming; ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; PRAGMA user_version=8;");
   store.close();
   store = new Store(path);
   expect(store.agent(old.id)!.name).toBe("New Agent");
@@ -216,7 +216,7 @@ test("naming eligibility persists across reopen; migrations never opt old agents
     expect(store.claimAgentName(pending.id)).toBe(false);
     expect(store.claimAgentName(manual.id)).toBe(false);
     expect(store.db.query("PRAGMA user_version").get()).toEqual({
-      user_version: 9,
+      user_version: 10,
     });
   } finally {
     store.close();

@@ -10,12 +10,14 @@ import {
 import { api } from "./api";
 
 export function ComposerSettings({
+  agentId,
   model,
   effort,
   disabled,
   refresh,
   onBusy,
 }: {
+  agentId: string;
   model: ModelId;
   effort: Effort;
   disabled: boolean;
@@ -27,10 +29,8 @@ export function ComposerSettings({
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const first = useRef<HTMLSelectElement>(null);
   useEffect(() => {
     if (!open) return;
-    first.current?.focus();
     const outside = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
@@ -38,7 +38,7 @@ export function ComposerSettings({
       if (event.key === "Escape") {
         event.preventDefault();
         setOpen(false);
-        trigger.current?.focus();
+        trigger.current?.focus({ preventScroll: true });
       }
     };
     document.addEventListener("pointerdown", outside);
@@ -53,7 +53,7 @@ export function ComposerSettings({
     onBusy(true);
     setError("");
     try {
-      await api("/config", { method: "PUT", body: JSON.stringify(change) });
+      await api("/config", { method: "PUT", body: JSON.stringify({ ...change, agentId }) });
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -83,7 +83,10 @@ export function ComposerSettings({
         aria-controls="composer-settings-menu"
         disabled={disabled}
         title={`${MODEL_OPTIONS.find((m) => m.id === model)?.label} · ${EFFORT_OPTIONS.find((e) => e.id === effort)?.label}`}
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          trigger.current?.focus({ preventScroll: true });
+          setOpen(!open);
+        }}
       >
         <Settings2 size={20} />
       </button>
@@ -97,7 +100,6 @@ export function ComposerSettings({
           <label>
             Model
             <select
-              ref={first}
               aria-label="Model"
               value={model}
               disabled={busy || disabled}
@@ -128,7 +130,7 @@ export function ComposerSettings({
           {model === "gpt-6-astra-ultrafast" && (
             <p className="subtle">{ULTRAFAST_NOTICE}</p>
           )}
-          <p className="subtle">Applies to new runs across all chats.</p>
+          <p className="subtle">Applies to this agent’s next run and becomes the default for new agents. Other agents and existing subagents keep their settings.</p>
           {busy && <p role="status">Saving…</p>}
           {error && (
             <p className="error-text" role="alert">

@@ -21,6 +21,8 @@ export interface ProjectRecord {
 export type AgentInput = Pick<AgentRecord, "name" | "instructions" | "color"> &
   Partial<Pick<AgentRecord, "avatarId" | "projectId">> & { nameEdited?: boolean };
 export interface AgentRecord {
+  model: ModelId;
+  effort: Effort;
   projectId: string | null;
   cwd: string;
   managedCwd: number;

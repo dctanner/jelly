@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
-import type { ModelId, Effort } from "../shared/models";
+import { MODEL_OPTIONS, EFFORT_OPTIONS, type ModelId, type Effort } from "../shared/models";
 import { activityPreview, thinkingPreview } from "./activity-preview";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -36,7 +36,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 9)
+    if (version > 10)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -130,6 +130,39 @@ export class Store {
           agentId TEXT PRIMARY KEY REFERENCES agents(id),
           state TEXT NOT NULL CHECK(state IN ('pending','manual','attempted','generated'))
         ); PRAGMA user_version=9;`);
+      })();
+    if (version < 10)
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT 'gpt-6-astra';
+          ALTER TABLE agents ADD COLUMN effort TEXT NOT NULL DEFAULT 'medium';
+        `);
+        const defaults = this.instance();
+        for (const agent of this.agents()) {
+          // Old versions stored choices globally. Preserve each agent's last
+          // recorded run where possible; never guess a missing historical choice.
+          const last = this.db.query(`SELECT id, data FROM timeline
+            WHERE agentId=? AND type='run_started' ORDER BY id DESC LIMIT 1`)
+            .get(agent.id) as { id: number; data: string } | null;
+          const recorded = last ? JSON.parse(last.data) : {};
+          const run = this.db.query("SELECT model FROM runs WHERE agentId=? ORDER BY rowid DESC LIMIT 1")
+            .get(agent.id) as { model: string } | null;
+          let model = recorded.selectedModel ?? recorded.model ?? run?.model ?? defaults.model;
+          // Older run events used the upstream Astra ID for Ultrafast. A
+          // retained config event can disambiguate without assuming today's tier.
+          if (last && model === "gpt-6-astra") {
+            const prior = this.db.query(`SELECT data FROM events
+              WHERE type='config_changed' AND id<? ORDER BY id DESC LIMIT 1`)
+              .get(last.id) as { data: string } | null;
+            if (prior && JSON.parse(prior.data).model === "gpt-6-astra-ultrafast")
+              model = "gpt-6-astra-ultrafast";
+          }
+          const effort = recorded.effort ?? defaults.effort;
+          this.setAgentConfig(agent.id,
+            MODEL_OPTIONS.some(option => option.id === model) ? model : defaults.model,
+            EFFORT_OPTIONS.some(option => option.id === effort) ? effort : defaults.effort);
+        }
+        this.db.exec("PRAGMA user_version=10;");
       })();
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
@@ -328,9 +361,12 @@ export class Store {
   }
   addAgent(input: AgentInput) {
     const id = crypto.randomUUID();
+    const defaults = this.instance();
     const { nameEdited, ...profile } = input;
     const agent: AgentRecord = {
       ...profile,
+      model: defaults.model,
+      effort: defaults.effort,
       projectId: input.projectId ?? null,
       cwd: input.projectId
         ? this.project(input.projectId)!.defaultCwd
@@ -344,7 +380,7 @@ export class Store {
     };
     this.db
       .query(
-        "INSERT INTO agents (id,name,instructions,color,status,createdAt,projectId,cwd,managedCwd,avatarId) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (id,name,instructions,color,status,createdAt,projectId,cwd,managedCwd,avatarId,model,effort) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .run(
         agent.id,
@@ -357,10 +393,15 @@ export class Store {
         agent.cwd,
         agent.managedCwd,
         agent.avatarId,
+        agent.model,
+        agent.effort,
       );
     this.db.query("INSERT INTO agent_naming(agentId,state) VALUES (?,?)")
       .run(id, agent.name === DEFAULT_AGENT_NAME && !nameEdited ? "pending" : "manual");
     return agent;
+  }
+  setAgentConfig(id: string, model: ModelId, effort: Effort) {
+    this.db.query("UPDATE agents SET model=?,effort=? WHERE id=?").run(model, effort, id);
   }
   updateAgent(id: string, input: AgentInput) {
     if (input.nameEdited || input.name !== this.agent(id)?.name)
