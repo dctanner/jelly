@@ -14,6 +14,7 @@
     "test:server": "bun test tests/session-work.test.ts tests/agent-naming.test.ts tests/dev-files.test.ts tests/computer-recovery.test.ts tests/fresh-session.test.ts tests/computer-pages.test.ts tests/computer-sessions.test.ts tests/server.test.ts tests/openai.test.ts tests/restart.test.ts tests/interventions.test.ts tests/connections.test.ts tests/projects.test.ts tests/mcps.test.ts tests/web-tools.test.ts tests/uploads.test.ts tests/image-generation.test.ts tests/tool-images.test.ts tests/rendered-files.test.ts tests/browser-tools.test.ts tests/apply-patch.test.ts tests/apply-patch-transport.test.ts",
     "test:agent-identity": "bun run build && bun tests/agent-identity.browser.ts",
     "test:history-scroll": "bun run build && bun tests/history-scroll.browser.ts",
+    "test:computer-viewport": "bun run build && bun tests/computer-viewport.browser.ts",
     "test:client": "bun test tests/client.test.tsx",
     "format": "prettier --write src scripts tests *.json *.ts *.html *.md docs/*.md plans/*.md plans_done/*.md",
     "setup:desktop": "bun scripts/setup-desktop.ts",

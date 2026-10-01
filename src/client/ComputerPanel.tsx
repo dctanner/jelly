@@ -1,6 +1,7 @@
 import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 import { Modal } from "./Modal";
 import { RemoteClipboard } from "./RemoteClipboard";
+import { ComputerViewport } from "./ComputerViewport";
 import { useEffect, useRef, useState } from "react";
 import { X, Monitor, RotateCw } from "lucide-react";
 import type { ComputerState } from "../shared/types";
@@ -180,11 +181,8 @@ function SessionComputerPanel({
           {error || state?.error}
         </p>
       )}
-      <div
-        className="computer-screen"
-        ref={screen}
-        style={{ display: privateScreen ? "none" : undefined }}
-      />
+      <ComputerViewport displayRef={screen} interactive={owned && connected}
+        hidden={privateScreen} onPan={() => connection.current?.blur()} />
       {privateScreen && (
         <div className="computer-private">
           <Monitor size={32} />

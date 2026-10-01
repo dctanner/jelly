@@ -46,6 +46,17 @@ Use `ChatFormCard` and `ChatFormActions` from `src/client/ChatFormCard.tsx` for 
 - Errors use the shell's `error` prop and an alert. Never put credentials in React state, stored transcripts, logs or persistence; clear password fields before submitting private requests.
 - Do not steal focus when a card arrives. Collapse settled requests back into tool history; restore an empty, retryable form if submission fails.
 
+## Mobile remote browser
+
+While a person controls the remote browser in a portrait viewport up to 767px
+wide, scale the desktop to fill the viewer's height and clip its sides. Place
+a 44px-tall, keyboard-accessible horizontal pan slider directly above the viewer.
+Panning moves only the local view; do not change the website zoom, remote screen
+resolution, or touch/click coordinate mapping. Desktop, landscape, and view-only
+sessions continue fitting the entire desktop. Private handoff restrictions are
+unchanged. `bun run test:computer-viewport` checks this with real Chromium/VNC
+using temporary data and the installed desktop dependencies.
+
 ## Agent identity editing
 
 Before the first message, show a single centered identity pill. Its name and avatar

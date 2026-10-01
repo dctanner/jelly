@@ -1,0 +1,53 @@
+.computer-viewer { min-width: 0; }
+.computer-viewer[hidden] { display: none; }
+.computer-display { height: 100%; transform-origin: top left; }
+.computer-pan {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+}
+.app .computer-pan input[type="range"] {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.computer-pan input::-webkit-slider-runnable-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 6px;
+}
+.computer-pan input::-webkit-slider-thumb {
+  appearance: none;
+  width: 44px;
+  height: 24px;
+  margin-top: -9px;
+  border-radius: 12px;
+  background: var(--accent);
+}
+.computer-pan input::-moz-range-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 6px;
+}
+.computer-pan input::-moz-range-thumb {
+  width: 44px;
+  height: 24px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+}
