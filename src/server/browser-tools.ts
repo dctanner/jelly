@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Page, ElementHandle, Request } from "playwright-core";
+import type { Page, ElementHandle, Request, FileChooser } from "playwright-core";
+import { readBrowserUploadFiles } from "./browser-upload";
 
 // Runs in Chromium for both observations and labels. Text ranges, rather than
 // ancestor boxes, prevent long partially visible blocks leaking offscreen text.
@@ -37,7 +38,7 @@ function visibleBrowserText(root?: HTMLElement) {
 }
 
 export type StructuredAction =
-  "snapshot" | "fill" | "tabs" | "scroll" | "wait_for" | "diagnostics";
+  "snapshot" | "fill" | "upload" | "tabs" | "scroll" | "wait_for" | "diagnostics";
 /** Session-local capabilities; never locators that can silently resolve to replacement nodes. */
 export class BrowserTools {
   private refs = new Map<string, ElementHandle<HTMLElement>>();
@@ -45,9 +46,11 @@ export class BrowserTools {
   private records: { pageId: string; kind: string; detail: string }[] = [];
   private removers = new Map<Page, () => void>();
   private epoch = 0;
+  private cancelUploads = new Set<() => void>();
   constructor(private allowed: () => boolean) {}
   invalidate(clearDiagnostics = true) {
     this.epoch++;
+    for (const cancel of [...this.cancelUploads]) cancel();
     for (const handle of this.refs.values())
       void handle.dispose().catch(() => {});
     this.refs.clear();
@@ -157,7 +160,7 @@ export class BrowserTools {
         const el = walker.currentNode as Element;
         if (
           el.matches(
-            "a,button,input,textarea,select,[role=button],[contenteditable=true]",
+            "a,button,input,textarea,select,[role=button],[role=menuitem],[contenteditable=true]",
           )
         )
           result.push(el);
@@ -209,7 +212,7 @@ export class BrowserTools {
             tag: el.tagName.toLowerCase(),
             type: type.slice(0, 40),
             label: "",
-            hasLabel: el.matches("button,a"),
+            hasLabel: el.matches("button,a,[role=button],[role=menuitem]"),
           };
         });
         if (info?.hasLabel)
@@ -234,6 +237,77 @@ export class BrowserTools {
           .filter((h) => !retained.has(h as ElementHandle<HTMLElement>))
           .map((h) => h.dispose().catch(() => {})),
       );
+    }
+  }
+  async upload(page: Page, ref: unknown, paths: unknown, guard: () => void) {
+    const handle = this.refs.get(String(ref));
+    if (!handle)
+      throw new Error("Stale or foreign reference; take a new browser_snapshot.");
+    const epoch = this.epoch;
+    const check = () => {
+      guard();
+      if (epoch !== this.epoch)
+        throw new Error("Page changed; take a new browser_snapshot.");
+    };
+    check();
+    const direct = await handle.evaluate(el =>
+      el instanceof HTMLInputElement && el.type === "file");
+    check();
+    const files = await readBrowserUploadFiles(paths, check);
+    check();
+    {
+      let input: ElementHandle = handle;
+      if (!direct) {
+        // Intercept only for this action, never while a person uses the browser.
+        // Register before clicking so synchronous hidden-input choosers are caught.
+        let resolve!: (chooser: FileChooser) => void;
+        let reject!: (error: Error) => void;
+        const pending = new Promise<FileChooser>((yes, no) => {
+          resolve = yes; reject = no;
+        });
+        // A click failure can happen before we await the chooser.
+        void pending.catch(() => {});
+        const cancel = () => reject(new Error("Browser control or page changed during upload."));
+        const received = (chooser: FileChooser) => resolve(chooser);
+        const timer = setTimeout(() =>
+          reject(new Error("No file chooser opened. Use a fresh reference to the upload button or file input.")), 5000);
+        this.cancelUploads.add(cancel);
+        page.on("filechooser", received);
+        try {
+          check();
+          await this.target(ref, undefined, false, check);
+          const chooser = await pending;
+          check();
+          if (chooser.page() !== page) throw new Error("Foreign file chooser.");
+          input = chooser.element();
+        } finally {
+          clearTimeout(timer);
+          page.off("filechooser", received);
+          this.cancelUploads.delete(cancel);
+        }
+      }
+      check();
+      const valid = await input.evaluate((el, { count, direct }) => {
+        // Sites may remove a transient input immediately after input.click().
+        // The chooser owns that exact node, even while detached. Direct snapshot
+        // references still require attachment; never retarget a replacement.
+        if (!(el instanceof HTMLInputElement) || el.type !== "file" || (direct && !el.isConnected))
+          return "Upload input changed; take a new browser_snapshot.";
+        if (el.disabled) return "Upload input is disabled.";
+        if (el.webkitdirectory) return "Directory uploads are not supported.";
+        if (count > 1 && !el.multiple) return "This input only accepts one file.";
+        return null;
+      }, { count: files.length, direct });
+      check();
+      if (valid) throw new Error(valid);
+      // Exact element, not a locator that could retry against a replacement.
+      await input.setInputFiles(files, { timeout: 10000 });
+      check();
+      return {
+        ok: true,
+        files: files.map(({ name, buffer }) => ({ name, size: buffer.length })),
+        note: "Files selected. Check the website for upload completion before saving or publishing.",
+      };
     }
   }
   async target(ref: unknown, text: unknown, fill: boolean, guard: () => void) {

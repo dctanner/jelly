@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
+import { useAnchoredPopover } from "./useAnchoredPopover";
 import {
   Archive,
   Menu,
@@ -39,11 +41,13 @@ export function AgentListMenu({
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useAnchoredPopover(open, trigger, panel, "below");
   const firstFocus = useRef<"first" | "last">("first");
   const tabbing = useRef(false);
   const id = useId();
   const items = () => [
-    ...(root.current?.querySelectorAll<HTMLButtonElement>(
+    ...(panel.current?.querySelectorAll<HTMLButtonElement>(
       '[role="menuitem"]:not(:disabled)',
     ) ?? []),
   ];
@@ -79,13 +83,18 @@ export function AgentListMenu({
     const buttons = items();
     focusItem(firstFocus.current === "last" ? buttons.at(-1) : buttons[0]);
     const outside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+      if (!root.current?.contains(event.target as Node) && !panel.current?.contains(event.target as Node)) setOpen(false);
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
   }, [open]);
   function navigate(event: KeyboardEvent) {
-    if (open && event.key === "Tab") tabbing.current = true;
+    if (open && event.key === "Tab") {
+      tabbing.current = true;
+      // Continue native tab order from the trigger, not the body portal.
+      close(true);
+      return;
+    }
     if (event.key === "Escape" && open) {
       event.preventDefault();
       event.stopPropagation();
@@ -118,7 +127,8 @@ export function AgentListMenu({
       onBlur={(event) => {
         if (
           tabbing.current ||
-          !event.currentTarget.contains(event.relatedTarget as Node | null)
+          (!root.current?.contains(event.relatedTarget as Node | null) &&
+            !panel.current?.contains(event.relatedTarget as Node | null))
         )
           setOpen(false);
         tabbing.current = false;
@@ -149,9 +159,10 @@ export function AgentListMenu({
       >
         <Menu size={24} aria-hidden="true" />
       </button>
-      {open && (
+      {open && createPortal(
         <div
-          className="agent-list-menu-panel"
+          ref={panel}
+          className="agent-list-menu-panel floating-popover"
           role="menu"
           aria-label="Agent list options"
           id={id}
@@ -231,7 +242,8 @@ export function AgentListMenu({
               <Moon size={18} aria-hidden="true" />
             )}
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

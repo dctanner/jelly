@@ -39,7 +39,22 @@ Both themes share layout and spacing tokens. Narrow screens use a full-width inb
 - The composer switcher shows the current agent’s saved model and effort. A change updates that agent and the defaults for agents created afterward, never other existing agents.
 - Settings labels its model/effort group **New agent defaults**. Changes there do not update existing agents; connection mode remains instance-wide.
 - Changes take effect on the selected agent’s next run. Active runs retain their captured settings; new subagents inherit that run’s settings, and resumed subagents retain their persisted model and effort.
-- Opening the switcher focuses its trigger, not the native model dropdown. Keep Tab/Escape navigation and reset the popover when changing agents.
+- On phones, model/effort opens in the shared bottom sheet and focuses its heading, not a native select. Wider layouts keep an anchored popup with trigger focus and logical Tab/Escape navigation. Reset it when changing agents.
+
+## Mobile controls, overlays, and composer
+
+- Editable controls and selects use at least 16px text on narrow or touch layouts, including landscape phones, to avoid iOS focus zoom. Preserve larger inherited text and intentional pinch zoom; never disable user scaling.
+- The composer always has a full-width textarea above its button toolbar. Keep 44px actions, wrapping the toolbar when necessary rather than stealing text width or shrinking control text.
+- Growing drafts reserve at least one quarter of the current visible viewport for conversation below the header. Count toolbar, notices, padding, and safe areas in the composer budget. Long drafts scroll inside the textarea; exceptionally short viewports or tall notices make the bounded wrapper scroll as well.
+- Shared modal shells use visual-viewport bounds, including keyboard offsets and safe areas. Keep headings/dismissal reachable and scroll long bodies. Inline `ChatFormCard` content stays in transcript flow, with shrinkable columns and wrapping paths/errors.
+- Anchored menus use `useAnchoredPopover` and body portals to escape transformed/clipping ancestors. Flip and shift into safe viewport bounds and keep their focus/outside-click handling portal-aware.
+- `bun run test:mobile-layout` checks isolated browser layouts at 320–1280px, with running/idle controls, long drafts/notices, keyboard geometry, and rotation. This does not replace real iPhone Safari/PWA verification of native focus zoom and keyboard behavior.
+
+## Directory selection and creation
+
+- New project and file upload dialogs provide **New Directory** alongside their folder-browsing controls. The shared folder picker offers the same action.
+- Create a single named directory inside the displayed parent, then enter it and offer **Use this folder**. Preserve the project name and selected upload files while choosing a destination.
+- Keep creation inline in the picker, with a labeled name field, Cancel/Create actions, and visible retryable errors. Do not overwrite existing entries or create missing parents. Disable navigation and dismissal while creation is in progress.
 
 ## Default in-chat form cards
 
@@ -61,7 +76,9 @@ a 44px-tall, keyboard-accessible horizontal pan slider directly above the viewer
 Panning moves only the local view; do not change the website zoom, remote screen
 resolution, or touch/click coordinate mapping. Desktop, landscape, and view-only
 sessions continue fitting the entire desktop. Private handoff restrictions are
-unchanged. `bun run test:computer-viewport` checks this with real Chromium/VNC
+unchanged. Closing the Agent computer panel (close button, Escape, backdrop, or swipe) returns control if this session owns it, using the normal handback that clears the remote clipboard and completes a pending sign-in. Keep the browser session and website sign-ins; do not release another session’s private control. Wait for handback before dismissing, and keep the panel open with a retryable error if it fails.
+
+`bun run test:computer-viewport` checks the viewport with real Chromium/VNC
 using temporary data and the installed desktop dependencies.
 
 ## Agent identity editing

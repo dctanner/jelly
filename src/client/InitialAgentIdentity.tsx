@@ -36,7 +36,7 @@ export function InitialAgentIdentity({
     if (!avatars) return;
     choices.current
       ?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')
-      ?.focus();
+      ?.focus({ preventScroll: true });
     const outside = (event: PointerEvent) => {
       if (!pending.current && !root.current?.contains(event.target as Node))
         setAvatars(false);

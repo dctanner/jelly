@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { AVATARS } from "../shared/avatars";
-import { directories, effectiveCwd } from "./directories";
+import { createDirectory, directories, effectiveCwd } from "./directories";
 import { uploadFile } from "./uploads";
 import { readToolImage } from "./tool-images";
 import { isHtmlFile } from "../shared/rendered-files";
@@ -550,6 +550,11 @@ export async function startApp(options: AppOptions) {
                 await uploadFile(req, directory, url.searchParams.get("name")),
                 201,
               );
+            }
+            if (req.method === "POST" && url.pathname === "/api/directories") {
+              controls.require(req);
+              const input = await body(req);
+              return json({ path: createDirectory(input.parent, input.name) }, 201);
             }
             if (req.method === "GET" && url.pathname === "/api/directories") {
               controls.require(req, false);

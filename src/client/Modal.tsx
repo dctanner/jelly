@@ -6,11 +6,13 @@ import {
   type PointerEvent,
 } from "react";
 import { ChevronLeft, X } from "lucide-react";
+import { observeViewport, visibleViewport } from "./viewport";
 
 export function Modal({
   title,
   children,
   onClose,
+  beforeClose,
   kind = "modal",
   className = "",
   dismissible = true,
@@ -20,10 +22,12 @@ export function Modal({
   onBack,
   backDiscards = false,
   cancelLabel,
+  focusHeading = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  beforeClose?: () => Promise<boolean>;
   kind?: "modal" | "dropdown" | "panel";
   className?: string;
   dismissible?: boolean;
@@ -33,6 +37,7 @@ export function Modal({
   onBack?: () => void;
   backDiscards?: boolean;
   cancelLabel?: string;
+  focusHeading?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -48,26 +53,27 @@ export function Modal({
   useEffect(() => {
     const el = ref.current!;
     const prior = document.activeElement as HTMLElement;
+    if (focusHeading) heading.current?.setAttribute("autofocus", "");
     el.showModal();
+    if (focusHeading) heading.current?.focus({ preventScroll: true });
     void el.offsetWidth;
     el.classList.add("is-open");
     el.dataset.open = "true";
-    const viewport = window.visualViewport;
     const resize = () => {
-      if (!viewport || Math.abs(viewport.scale - 1) > 0.01) return;
+      const viewport = visibleViewport();
       el.style.setProperty("--sheet-viewport-height", `${viewport.height}px`);
+      el.style.setProperty("--sheet-viewport-width", `${viewport.width}px`);
+      el.style.setProperty("--sheet-viewport-left", `${viewport.left}px`);
+      el.style.setProperty("--sheet-viewport-top", `${viewport.top}px`);
       el.style.setProperty(
         "--sheet-keyboard-inset",
-        `${Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)}px`,
+        `${Math.max(0, window.innerHeight - viewport.height - viewport.top)}px`,
       );
     };
-    resize();
-    viewport?.addEventListener("resize", resize);
-    viewport?.addEventListener("scroll", resize);
+    const unobserve = observeViewport(resize);
     return () => {
       clearTimeout(timer.current);
-      viewport?.removeEventListener("resize", resize);
-      viewport?.removeEventListener("scroll", resize);
+      unobserve();
       el.close();
       if (prior?.isConnected) prior.focus({ preventScroll: true });
     };
@@ -78,10 +84,22 @@ export function Modal({
     if (body.current) body.current.scrollTop = 0;
     heading.current?.focus({ preventScroll: true });
   }, [title]);
-  function finishClose() {
+  async function finishClose() {
     if (closing.current || !dismissible) return;
     closing.current = true;
-    const el = ref.current!;
+    if (beforeClose) {
+      try {
+        if (!(await beforeClose())) {
+          closing.current = false;
+          return;
+        }
+      } catch {
+        closing.current = false;
+        return;
+      }
+    }
+    const el = ref.current;
+    if (!el?.isConnected) return;
     el.classList.remove("is-open");
     el.classList.add("is-closing");
     el.dataset.open = "false";
@@ -95,7 +113,7 @@ export function Modal({
         ) || 150;
     timer.current = setTimeout(onClose, duration);
   }
-  function request(action = finishClose, checkDirty = true) {
+  function request(action: () => void = () => { void finishClose(); }, checkDirty = true) {
     if (!dismissible) return;
     if (checkDirty && dirty) {
       discardFocus.current = document.activeElement as HTMLElement;

@@ -197,6 +197,7 @@ for (const mode of ["api", "chatgpt"] as const)
             "browser_snapshot",
             "browser_click",
             "browser_fill",
+            "browser_upload",
             "browser_tabs",
             "browser_scroll",
             "browser_wait_for",

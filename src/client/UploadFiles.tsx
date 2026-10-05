@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Modal } from "./Modal";
+import { FolderPlus } from "lucide-react";
 import { DirectoryPicker } from "./Projects";
 import { projectApi } from "./api";
 import type { AgentRecord } from "../shared/types";
@@ -17,7 +18,7 @@ export function UploadFiles({
   onUploaded: (name: string) => void;
 }) {
   const [directory, setDirectory] = useState(agent.cwd);
-  const [browsing, setBrowsing] = useState(false);
+  const [browsing, setBrowsing] = useState<"choose" | "create" | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -103,14 +104,24 @@ export function UploadFiles({
               spellCheck={false}
             />
           </label>
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy}
-            onClick={() => setBrowsing(true)}
-          >
-            Browse host folders
-          </button>
+          <div className="folder-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => setBrowsing("choose")}
+            >
+              Browse host folders
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => setBrowsing("create")}
+            >
+              <FolderPlus size={17} aria-hidden="true" /> New Directory
+            </button>
+          </div>
           <p className="subtle">
             Use an absolute folder path on the host. Existing files are kept.
           </p>
@@ -138,10 +149,11 @@ export function UploadFiles({
             agent.managedCwd && directory === agent.cwd ? undefined : directory
           }
           instance={instance}
-          onClose={() => setBrowsing(false)}
+          createInitially={browsing === "create"}
+          onClose={() => setBrowsing(null)}
           onChoose={(path) => {
             setDirectory(path);
-            setBrowsing(false);
+            setBrowsing(null);
           }}
         />
       )}

@@ -39,6 +39,46 @@ export function effectiveCwd(agent: AgentRecord) {
   if (agent.managedCwd) mkdirSync(agent.cwd, { recursive: true, mode: 0o700 });
   return validateDirectory(agent.cwd);
 }
+export function createDirectory(parent: unknown, name: unknown) {
+  if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    [".", ".."].includes(name.trim()) ||
+    /[/\\\u0000-\u001f\u007f]/.test(name) ||
+    Buffer.byteLength(name.trim(), "utf8") > 255
+  )
+    throw new HttpError(
+      400,
+      "Enter a directory name, not a path (up to 255 bytes).",
+    );
+  const path = join(validateDirectory(parent), name.trim());
+  try {
+    // Never overwrite an existing entry or create missing parent directories.
+    mkdirSync(path, { mode: 0o700 });
+    return path;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST")
+      throw new HttpError(
+        409,
+        "A file or directory with this name already exists.",
+      );
+    if (code === "EACCES" || code === "EPERM")
+      throw new HttpError(
+        403,
+        "Permission denied. Choose another parent folder.",
+      );
+    if (code === "ENOENT" || code === "ENOTDIR")
+      throw new HttpError(
+        409,
+        "The parent folder is no longer available. Choose it again.",
+      );
+    throw new HttpError(
+      500,
+      "Could not create the directory. Try another name or parent folder.",
+    );
+  }
+}
 export function directories(path = homedir(), after = "", hidden = false) {
   const current = validateDirectory(path);
   const entries = readdirSync(current, { withFileTypes: true })

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Download } from "lucide-react";
 import { api } from "./api";
 import { isGeneratedImageUrl } from "../shared/generated-images";
 import { isToolImageUrl } from "../shared/tool-images";
@@ -75,6 +76,9 @@ function ImageAttachment({
       </div>
       <figcaption>
         <a
+          className="image-download"
+          aria-label="Download image"
+          title="Download image"
           href={ready ? image.url : undefined}
           aria-disabled={!ready || undefined}
           download={
@@ -85,7 +89,7 @@ function ImageAttachment({
                 : `image.${image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/gif" ? "gif" : image.mimeType === "image/webp" ? "webp" : image.mimeType === "image/bmp" ? "bmp" : "png"}`
           }
         >
-          Download image
+          <Download size={16} aria-hidden="true" />
         </a>
       </figcaption>
     </figure>

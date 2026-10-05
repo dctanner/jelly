@@ -37,6 +37,7 @@ export function workState(events: Activity[], run?: RunRecord) {
 
 export type ConversationEntry =
   | { kind: "event"; key: string; event: Activity }
+  | { kind: "screenshots"; key: string; events: Activity[] }
   | { kind: "work"; key: string; run?: RunRecord; events: Activity[] };
 
 /** One stable disclosure per run, independent of tool/turn/message boundaries.
@@ -78,8 +79,21 @@ export function conversationActivity(
     const group = event.runId ? groups.get(event.runId) : undefined;
     const user = event.type === "message" && event.data.role === "user";
     if (group && !user) insert(group);
-    if (!group || !isWorkDetail(event) || toolImages(event).length > 0)
-      entries.push({ kind: "event", key: `event:${event.id}`, event });
+    if (!group || !isWorkDetail(event) || toolImages(event).length > 0) {
+      const screenshot =
+        event.data.name === "browser_screenshot" && toolImages(event).length > 0;
+      const previous = entries.at(-1);
+      if (screenshot) {
+        if (
+          previous?.kind === "screenshots" &&
+          previous.events[0]!.runId === event.runId &&
+          previous.events[0]!.agentId === event.agentId
+        )
+          previous.events.push(event);
+        else
+          entries.push({ kind: "screenshots", key: `event:${event.id}`, events: [event] });
+      } else entries.push({ kind: "event", key: `event:${event.id}`, event });
+    }
     // Settled disclosures keep their historical position after the prompt.
     // Active disclosures are deferred to the tail; steering stays in order.
     if (group && user) insert(group);

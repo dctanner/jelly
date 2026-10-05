@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Folder,
+  FolderPlus,
   ChevronDown,
   ChevronRight,
   ArrowLeft,
@@ -12,6 +13,7 @@ import {
 import type { ProjectRecord, AgentRecord } from "../shared/types";
 import { projectApi as api } from "./api";
 import { Modal } from "./Modal";
+import "./Projects.css";
 import { belongs, scopeKey, scopeName, type Scope } from "./project-state";
 export function ProjectButton({
   scope,
@@ -176,11 +178,13 @@ interface DirectoryPage {
 }
 export function DirectoryPicker({
   initial,
+  createInitially = false,
   instance,
   onClose,
   onChoose,
 }: {
   initial?: string;
+  createInitially?: boolean;
   instance: string;
   onClose: () => void;
   onChoose: (path: string) => void;
@@ -192,10 +196,18 @@ export function DirectoryPicker({
     [error, setError] = useState(""),
     [retry, setRetry] = useState(0);
   const generation = useRef(0);
+  const [creating, setCreating] = useState(createInitially);
+  const [name, setName] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const creatingRequest = useRef(false);
+  const createButton = useRef<HTMLButtonElement>(null);
   const focusNext = useRef(false);
   const folderList = useRef<HTMLDivElement>(null);
   const useFolder = useRef<HTMLButtonElement>(null);
   const navigate = (next: string | undefined) => {
+    if (creatingRequest.current) return;
+    setCreateError("");
     focusNext.current = true;
     setPath(next);
   };
@@ -247,18 +259,52 @@ export function DirectoryPicker({
       if (token === generation.current) setBusy(false);
     }
   }
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (!data || busy || creatingRequest.current || !name.trim()) return;
+    creatingRequest.current = true;
+    setCreateBusy(true);
+    setCreateError("");
+    try {
+      const result = await api<{ path: string }>("/directories", {
+        method: "POST",
+        body: JSON.stringify({ parent: data.path, name }),
+      });
+      setCreating(false);
+      setName("");
+      setData(null);
+      setBusy(true);
+      focusNext.current = true;
+      setPath(result.path);
+    } catch (error) {
+      setCreateError((error as Error).message);
+    } finally {
+      creatingRequest.current = false;
+      setCreateBusy(false);
+    }
+  }
   return (
-    <Modal title="Choose a folder" onClose={onClose} className="folder-picker">
+    <Modal
+      title="Choose a folder"
+      onClose={onClose}
+      className="folder-picker"
+      dismissible={!createBusy}
+      dirty={creating && !!name.trim()}
+    >
       <p className="subtle">
         Folders on <strong>{instance}</strong> · Jelly server
       </p>
       <div className="folder-navigation">
-        <button aria-label="Home folder" onClick={() => navigate(undefined)}>
+        <button
+          aria-label="Home folder"
+          disabled={createBusy}
+          onClick={() => navigate(undefined)}
+        >
           <Home size={18} />
         </button>
         <button
           aria-label="Parent folder"
-          disabled={!path && !data?.parent}
+          disabled={createBusy || (!path && !data?.parent)}
           onClick={() =>
             navigate(
               data?.parent ?? (path?.slice(0, path.lastIndexOf("/")) || "/"),
@@ -271,6 +317,7 @@ export function DirectoryPicker({
           {(data?.path ?? path ?? "Home").split("/").map((part, i, parts) => (
             <button
               key={i}
+              disabled={createBusy}
               onClick={() => navigate(parts.slice(0, i + 1).join("/") || "/")}
             >
               {part || "/"}
@@ -283,10 +330,69 @@ export function DirectoryPicker({
         <input
           type="checkbox"
           checked={hidden}
+          disabled={createBusy}
           onChange={(e) => setHidden(e.target.checked)}
         />
         Show hidden folders
       </label>
+      {creating ? (
+        <form className="folder-create-form" onSubmit={create}>
+          <label>
+            Directory name
+            <input
+              autoFocus
+              required
+              maxLength={255}
+              value={name}
+              disabled={createBusy}
+              onChange={(event) => {
+                setName(event.target.value);
+                setCreateError("");
+              }}
+              placeholder="e.g. Website"
+              spellCheck={false}
+            />
+          </label>
+          <p className="subtle">
+            Create inside <code>{data?.path ?? path ?? "Home"}</code>
+          </p>
+          {createError && (
+            <p className="error-text" role="alert">
+              {createError}
+            </p>
+          )}
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={createBusy}
+              onClick={() => {
+                setCreating(false);
+                setName("");
+                setCreateError("");
+                requestAnimationFrame(() => createButton.current?.focus());
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className="primary"
+              disabled={busy || createBusy || !!error || !data || !name.trim()}
+            >
+              {createBusy ? "Creating…" : "Create Directory"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button
+          className="secondary"
+          ref={createButton}
+          disabled={busy || !!error || !data}
+          onClick={() => setCreating(true)}
+        >
+          <FolderPlus size={17} aria-hidden="true" /> New Directory
+        </button>
+      )}
       <div className="folder-list" ref={folderList}>
         {busy && !data && <p role="status">Loading folders…</p>}
         {error && (
@@ -299,7 +405,7 @@ export function DirectoryPicker({
           <button
             className="folder-row"
             key={e.name}
-            disabled={!e.available || busy}
+            disabled={!e.available || busy || createBusy}
             onClick={() => navigate(e.path)}
           >
             <Folder size={19} />
@@ -317,7 +423,7 @@ export function DirectoryPicker({
         {data?.cursor && (
           <button
             className="secondary"
-            disabled={busy}
+            disabled={busy || createBusy}
             onClick={() => void more()}
           >
             Load more folders
@@ -330,7 +436,7 @@ export function DirectoryPicker({
         </code>
         <button
           className="primary wide"
-          disabled={busy || !!error || !data}
+          disabled={busy || createBusy || creating || !!error || !data}
           ref={useFolder}
           onClick={() => data && onChoose(data.path)}
         >
@@ -357,7 +463,7 @@ export function ProjectForm({
 }) {
   const [name, setName] = useState(project?.name ?? ""),
     [cwd, setCwd] = useState(project?.defaultCwd ?? ""),
-    [picker, setPicker] = useState(false),
+    [picker, setPicker] = useState<"choose" | "create" | null>(null),
     [deleting, setDeleting] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -397,11 +503,12 @@ export function ProjectForm({
     return (
       <DirectoryPicker
         initial={cwd || undefined}
+        createInitially={picker === "create"}
         instance={instance}
-        onClose={() => setPicker(false)}
+        onClose={() => setPicker(null)}
         onChoose={(p) => {
           setCwd(p);
-          setPicker(false);
+          setPicker(null);
         }}
       />
     );
@@ -463,14 +570,25 @@ export function ProjectForm({
               {cwd || "No folder selected"}
             </code>
           </label>
-          <button
-            className="secondary"
-            type="button"
-            onClick={() => setPicker(true)}
-          >
-            <Folder size={17} />
-            {cwd ? "Change folder…" : "Choose folder…"}
-          </button>
+          <div className="folder-actions">
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => setPicker("choose")}
+            >
+              <Folder size={17} />
+              {cwd ? "Change folder…" : "Choose folder…"}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => setPicker("create")}
+            >
+              <FolderPlus size={17} aria-hidden="true" /> New Directory
+            </button>
+          </div>
           <p className="subtle folder-hint">
             Used by new agents. Existing agents keep their working directories.
             This is a folder on the Jelly server.
@@ -567,7 +685,10 @@ export function MoveAgent({
               onClick={() => void move(a, targetProject ?? null)}
             >
               {a.name}
-              <small>{projects.find((p) => p.id === a.projectId)?.name ?? "Ungrouped"}</small>
+              <small>
+                {projects.find((p) => p.id === a.projectId)?.name ??
+                  "Ungrouped"}
+              </small>
             </button>
           ))
       )}

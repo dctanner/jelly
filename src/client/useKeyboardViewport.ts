@@ -9,7 +9,7 @@ export function useKeyboardViewport(
     const app = ref.current;
     const viewport = window.visualViewport;
     if (!app || !viewport) return;
-    const mobile = window.matchMedia("(max-width: 767px)");
+    const mobile = window.matchMedia("(max-width: 767px), (any-pointer: coarse)");
     let keyboardOpen = false;
     let anchorFrame: number | undefined;
     let anchoredChat: HTMLDivElement | null = null;
@@ -35,7 +35,7 @@ export function useKeyboardViewport(
       const editing =
         !!focused &&
         app.contains(focused) &&
-        focused.matches('input, textarea, [contenteditable="true"]');
+        focused.matches('input, textarea, select, [contenteditable="true"]');
       const layoutHeight = Math.max(
         window.innerHeight,
         document.documentElement.clientHeight,

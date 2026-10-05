@@ -1,0 +1,30 @@
+.browser-screenshots {
+  width: 100%;
+  max-width: 640px;
+  min-width: 0;
+  margin: 12px 0;
+}
+.browser-screenshots-toolbar,
+.browser-screenshots-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.browser-screenshots-toolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.browser-screenshots-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+.browser-screenshots-controls [role="status"] {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

@@ -13,3 +13,11 @@ Only outstanding work belongs here. Keep the original phase numbers; move comple
 Complete the local release before remote access; establish remote connections before native and hosted clients. The macOS and cloud phases can then progress independently, with iOS consuming the same server protocol.
 
 Projects and the Familiar UI are delivered. See [the delivery record](../plans_done/02-projects.md). Original user-run local validation remains separately tracked.
+
+## UI validation
+
+- [Mobile inputs and overlays: device validation](mobile-input-and-overlays.md): implementation complete; real iPhone Safari/PWA acceptance remains.
+
+## Proposed features
+
+- [Apps Home Screen and managed apps](apps.md): a private app launcher, persistent user services, Tailscale access, agent deployment tools, and unobtrusive navigation home.

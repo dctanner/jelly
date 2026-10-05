@@ -2,6 +2,7 @@ import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ComputerSessions } from "./computer-sessions";
 import type { Interventions } from "./interventions";
+import { resolve } from "node:path";
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
   details: {},
@@ -134,6 +135,24 @@ export function interventionTools(
       }),
       execute: async (_id, args, signal) =>
         result(await computer().action("fill", args, signal)),
+    }),
+    define({
+      name: "browser_upload",
+      label: "Upload browser files",
+      description:
+        "Select local files in this agent's browser using a fresh browser_snapshot reference to a file input or the button that opens its file chooser. Call this instead of clicking the upload button first; it handles hidden inputs without an OS dialog. Paths resolve from the agent working directory. Only upload files authorized for this website, never credentials. Maximum 10 files and 50 MiB total per call. Blocked during human control. Selection does not prove the website finished uploading; inspect it before saving or publishing.",
+      parameters: Type.Object({
+        ref: Type.String({ minLength: 1 }),
+        paths: Type.Array(
+          Type.String({ minLength: 1, maxLength: 4096 }),
+          { minItems: 1, maxItems: 10 },
+        ),
+      }),
+      execute: async (_id, args, signal) =>
+        result(await computer().action("upload", {
+          ref: args.ref,
+          paths: args.paths.map(path => resolve(cwd, path)),
+        }, signal)),
     }),
     define({
       name: "browser_tabs",

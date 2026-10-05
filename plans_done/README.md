@@ -16,3 +16,6 @@ Phase 2 implementation is complete; the [manual validation checklist](../plans/0
 ## Projects and Familiar UI
 
 [Delivery record](02-projects.md) · [Design package](../design/README.md) · [Original feature plan](02-projects-plan.md).
+
+[Mobile controls and composer](mobile-input-and-overlays.md): full-width drafts,
+conversation-space reservation, viewport-bounded overlays, and focus-zoom prevention.

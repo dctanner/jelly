@@ -1,0 +1,194 @@
+/* Shared bounds for editable controls, floating UI, and the growing composer.
+   Imported after the component treatments so mobile constraints stay consistent. */
+:root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+}
+
+@media (max-width: 767px), (any-pointer: coarse) {
+  :root
+    :is(
+      input:not([type="checkbox"]):not([type="radio"]),
+      textarea,
+      select,
+      [contenteditable="true"]
+    ) {
+    /* One em retains larger inherited typography (e.g. inline agent names). */
+    font-size: max(16px, 1em);
+  }
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.composer-input,
+.composer textarea {
+  width: 100%;
+  min-width: 0;
+}
+.composer-footer {
+  width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.composer-settings {
+  margin-right: auto;
+}
+.message-mode {
+  min-height: 44px;
+  max-width: 100%;
+  font-size: 16px;
+  width: 90px;
+  padding-inline: 6px;
+}
+.composer-wrap[data-constrained="true"] {
+  /* Normally only the textarea scrolls. In very short viewports, keep the
+     toolbar and notices reachable without covering the conversation reserve. */
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.composer-wrap > :not(.composer) {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.floating-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  z-index: 100;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.composer-settings-fields {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.composer-settings-fields label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+.composer-settings-fields select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  font-size: 16px;
+  padding: 6px 14px;
+  border: 1px solid var(--composer-border);
+  border-radius: 12px;
+  background: var(--composer);
+  color: var(--text);
+}
+.composer-settings-fields p {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-list-menu-panel {
+  font-size: 15px;
+  line-height: 1.4;
+}
+.agent-list-menu-panel > button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 16px;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+.agent-list-menu-panel > button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.agent-list-menu-panel > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+dialog.native-sheet {
+  --sheet-gap-top: max(12px, env(safe-area-inset-top));
+  --sheet-gap-bottom: max(12px, env(safe-area-inset-bottom));
+  position: fixed;
+  top: calc(var(--sheet-viewport-top, 0px) + var(--sheet-gap-top));
+  bottom: calc(var(--sheet-keyboard-inset, 0px) + var(--sheet-gap-bottom));
+  left: calc(
+    var(--sheet-viewport-left, 0px) + max(12px, env(safe-area-inset-left))
+  );
+  right: calc(
+    100% - var(--sheet-viewport-left, 0px) -
+      var(--sheet-viewport-width, 100vw) + max(12px, env(safe-area-inset-right))
+  );
+  margin: auto;
+  max-width: calc(
+    var(--sheet-viewport-width, 100vw) - max(12px, env(safe-area-inset-left)) -
+      max(12px, env(safe-area-inset-right))
+  );
+  max-height: max(
+    0px,
+    calc(
+      var(--sheet-viewport-height, 100dvh) - var(--sheet-gap-top) -
+        var(--sheet-gap-bottom)
+    )
+  );
+  min-width: 0;
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+.native-sheet .modal-body,
+.native-sheet .modal-body > *,
+.chat-form-card,
+.chat-form-body > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.native-sheet :is(input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+}
+.sheet-discard {
+  max-height: 70%;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 767px) {
+  dialog.native-sheet {
+    --sheet-gap-bottom: 0px;
+    top: auto;
+    margin: 0;
+    width: var(--sheet-viewport-width, 100vw);
+    /* Keep the sheet shell inside landscape safe areas too. */
+    left: calc(var(--sheet-viewport-left, 0px) + env(safe-area-inset-left));
+    right: auto;
+    max-width: calc(
+      var(--sheet-viewport-width, 100vw) - env(safe-area-inset-left) -
+        env(safe-area-inset-right)
+    );
+  }
+}
+
+@media (max-height: 500px) {
+  .native-sheet .sheet-handle {
+    display: none;
+  }
+  .native-sheet .modal-heading {
+    min-height: 44px;
+    padding-block: 0;
+  }
+  .native-sheet .modal-body {
+    padding-block: 12px;
+  }
+}

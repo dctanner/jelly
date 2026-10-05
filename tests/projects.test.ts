@@ -7,6 +7,8 @@ import {
   readFileSync,
   symlinkSync,
   existsSync,
+  chmodSync,
+  statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -142,6 +144,42 @@ test("project lifecycle snapshots immutable cwd, running moves, archived deletio
       .map((e) => e.type),
   ).toEqual(["project_created", "project_updated", "project_deleted"]);
 });
+test("new directories require control authorization, validate names and never overwrite existing entries", async () => {
+  const { dir, request, base } = await fixture();
+  const create = (name: unknown, parent: unknown = dir) =>
+    request("/api/directories", "POST", { parent, name });
+  expect((await fetch(`${base}/api/directories`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parent: dir, name: "unauthorized" }),
+  })).status).toBe(401);
+  expect((await request("/api/directories", "POST", { parent: dir, name: "no-csrf" }, { "x-jelly-csrf": "" })).status).toBe(403);
+  expect(existsSync(join(dir, "unauthorized"))).toBe(false);
+  expect(existsSync(join(dir, "no-csrf"))).toBe(false);
+  for (const name of [null, 1, "", " ", ".", "..", "../outside", "nested/child", "nested\\child", "/absolute", "a\0b", "line\nbreak", "a".repeat(256), "🌊".repeat(64)])
+    expect((await create(name)).status).toBe(400);
+  expect((await create("child", "relative")).status).toBe(400);
+  expect((await create("child", join(dir, "missing"))).status).toBe(400);
+  writeFileSync(join(dir, "keep.txt"), "preserved");
+  expect((await create("keep.txt")).status).toBe(409);
+  expect(readFileSync(join(dir, "keep.txt"), "utf8")).toBe("preserved");
+  const response = await create("  New Directory 🌊  ");
+  expect(response.status).toBe(201);
+  const created = (await response.json()) as { path: string };
+  expect(created.path).toBe(join(dir, "New Directory 🌊"));
+  expect(statSync(created.path).mode & 0o777).toBe(0o700);
+  expect((await create("New Directory 🌊")).status).toBe(409);
+  symlinkSync(created.path, join(dir, "alias"));
+  expect((await create("alias")).status).toBe(409);
+  const nested = await create(".hidden", join(dir, "alias"));
+  expect(nested.status).toBe(201);
+  expect((await nested.json() as { path: string }).path).toBe(join(created.path, ".hidden"));
+  const locked = join(dir, "locked");
+  mkdirSync(locked, { mode: 0o500 });
+  try {
+    if (process.getuid?.() !== 0) expect((await create("child", locked)).status).toBe(403);
+  } finally { chmodSync(locked, 0o700); }
+});
+
 test("folder browser canonicalizes symlinks, pages, hides dotfolders, rejects invalid paths and respects access controls", async () => {
   const { dir, request, base } = await fixture();
   const root = join(dir, "folders");

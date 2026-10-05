@@ -94,7 +94,7 @@ small {
 .app {
   display: flex;
   height: 100dvh;
-  min-height: 400px;
+  min-height: 0;
 }
 .sidebar {
   width: 280px;
@@ -2602,25 +2602,9 @@ main > .connection-error + .conversation {
   background: var(--surface);
   color: var(--muted);
 }
-@media (max-width: 600px) {
-  .composer.has-delivery-options {
-    flex-wrap: wrap;
-  }
-  .composer.has-delivery-options .composer-input {
-    flex-basis: 100%;
-  }
-  .composer.has-delivery-options .composer-footer {
-    width: 100%;
-    justify-content: flex-end;
-  }
-  .composer.has-delivery-options .composer-settings {
-    margin-right: auto;
-  }
-}
-
 /* Override both dvh and the installed-iOS 100vh workaround only while the
    keyboard is open. The visual viewport excludes the keyboard/accessory bar. */
-@media (max-width: 767px) {
+@media (max-width: 767px), (any-pointer: coarse) {
   #root > .app[data-keyboard-open="true"] {
     position: fixed;
     top: var(--keyboard-viewport-top, 0px);
@@ -2668,6 +2652,22 @@ main > .connection-error + .conversation {
 }
 .generated-images figcaption { margin-top: 8px; font-size: 12px; }
 .generated-images a { color: var(--accent); }
+.generated-images .image-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.generated-images .image-download:hover {
+  color: var(--text);
+}
+.generated-images .image-download:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .rendered-file { margin: 12px 0; min-width: 0; }
 .rendered-file details { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }

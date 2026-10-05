@@ -5,7 +5,7 @@ import { ComputerViewport } from "./ComputerViewport";
 import { useEffect, useRef, useState } from "react";
 import { X, Monitor, RotateCw } from "lucide-react";
 import type { ComputerState } from "../shared/types";
-import { api, control } from "./api";
+import { api, control, projectApi } from "./api";
 export function ComputerPanel(props: { agentId: string; onClose: () => void; onChange: () => void }) {
   return <SessionComputerPanel key={props.agentId} {...props} />;
 }
@@ -126,8 +126,33 @@ function SessionComputerPanel({
       setError((e as Error).message);
     }
   }
+  async function returnControlBeforeClose() {
+    if (busy) return false;
+    setBusy(true);
+    setError("");
+    try {
+      // Polling state may be stale, especially while the panel is opening.
+      // Only return this session's control; never release another owner's.
+      let next = await projectApi<ComputerState>(scoped("/computer"));
+      if (!alive.current) return false;
+      if (next.control === "human" && next.owned) {
+        next = await control<ComputerState>(scoped("/computer/release"));
+        if (!alive.current) return false;
+        onChange();
+      }
+      setState(next);
+      return true;
+    } catch (error) {
+      if (alive.current)
+        setError(`Could not return browser control. The panel is still open; try closing it again. ${(error as Error).message}`);
+      return false;
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
   return (
-    <Modal title="Agent computer" onClose={onClose} kind="panel" className="computer-panel">
+    <Modal title="Agent computer" onClose={onClose} beforeClose={returnControlBeforeClose}
+      dismissible={!busy} kind="panel" className="computer-panel">
       <div className="computer-toolbar">
         <span>
           {owned
@@ -160,6 +185,7 @@ function SessionComputerPanel({
           <button
             aria-label="Reconnect desktop"
             className="icon"
+            disabled={busy}
             onClick={() => void reconnect()}
           >
             <RotateCw size={16} />
@@ -205,7 +231,7 @@ function SessionComputerPanel({
       )}
       <p className="subtle">
         {owned
-          ? "Sign in directly in the browser. Closing this panel keeps you in control until you explicitly return it."
+          ? "Sign in directly in the browser. Closing this panel automatically returns control to the agent."
           : "Take control to use the browser. Website sessions stay on this Jelly computer."}
       </p>
     </Modal>

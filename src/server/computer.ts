@@ -424,6 +424,8 @@ export class Computer {
       let result: unknown;
       if (action === "snapshot") result = await this.browserTools.snapshot(page, guard);
       if (action === "diagnostics") result = this.browserTools.diagnostics();
+      if (action === "upload")
+        result = await this.browserTools.upload(page, args.ref, args.paths, guard);
       if (action === "fill") {
         if (typeof args.text !== "string" || args.text.length > 24000) throw new Error("Text must be at most 24000 characters.");
         result = await this.browserTools.target(args.ref, args.text, true, guard);

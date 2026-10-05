@@ -1,0 +1,15 @@
+.folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.folder-create-form {
+  flex-shrink: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.folder-create-form code {
+  overflow-wrap: anywhere;
+}

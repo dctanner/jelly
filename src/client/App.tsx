@@ -7,10 +7,12 @@ import { captureAnchor, restoreAnchor, mergeHistory, snapshotHistory, type Scrol
 import { useChatNavigation } from "./useChatNavigation";
 import { useInputModality } from "./useInputModality";
 import { useKeyboardViewport } from "./useKeyboardViewport";
+import { useComposerSize } from "./useComposerSize";
 import { useUnreadMessages } from "./useUnreadMessages";
 import { AgentInbox } from "./AgentInbox";
 import { MessageText } from "./MessageText";
 import { GeneratedImages } from "./GeneratedImages";
+import { BrowserScreenshots } from "./BrowserScreenshots";
 import { toolImages, toolResultForDisplay } from "../shared/tool-images";
 import { RenderedFiles } from "./RenderedFiles";
 import { Modal } from "./Modal";
@@ -1054,6 +1056,9 @@ export function App() {
     if (!chat || !selected || selected !== data?.selectedAgentId || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       if (scrollAgent.current !== selected || nav.current.selected !== selected) return;
+      // An empty agent's expanding avatar picker is a form, not a new reply.
+      // Following its bottom hides the identity pill above the taller composer.
+      if (chat.querySelector(".initial-agent-profile")) return;
       const saved = scrollMemory.current.get(selected);
       if (saved?.bottom && Math.abs(chat.scrollTop - saved.top) < 1) {
         const bottom = Math.max(0, chat.scrollHeight - chat.clientHeight);
@@ -1106,56 +1111,7 @@ export function App() {
     agent && (!mobile || !listOpen) && !scrolledUp ? agent.id : null,
   );
   const draft = agent ? (drafts[agent.id] ?? "") : "";
-  useLayoutEffect(() => {
-    const input = composerInput.current;
-    const main = input?.closest("main");
-    const wrap = input?.closest(".composer-wrap");
-    if (!input || !main || !wrap) return;
-    const syncComposerInset = () => {
-      const height = wrap.getBoundingClientRect().height;
-      main.style.setProperty("--composer-height", `${height}px`);
-      return height;
-    };
-    const resize = () => {
-      const composerHeight = syncComposerInset();
-      // Floating controls are reserved in chat padding. Count the bottom gap
-      // here, then the composer's chrome below, without counting its height twice.
-      const siblings = Array.from(main.children).filter(
-        (child) => child !== wrap,
-      );
-      const reserved = siblings.reduce((height, child) => {
-        if (getComputedStyle(child).position === "absolute") return height;
-        if (child.classList.contains("conversation")) {
-          const style = getComputedStyle(child);
-          return (
-            height +
-            parseFloat(style.paddingTop || "0") +
-            Math.max(0, parseFloat(style.paddingBottom || "0") - composerHeight)
-          );
-        }
-        return height + child.getBoundingClientRect().height;
-      }, 0);
-      const chrome =
-        wrap.getBoundingClientRect().height -
-        input.getBoundingClientRect().height;
-      const available = Math.max(44, main.clientHeight - reserved - chrome);
-      input.style.height = "44px";
-      const height = Math.min(available, Math.max(44, input.scrollHeight));
-      input.style.height = `${height}px`;
-      input.style.overflowY = input.scrollHeight > height ? "auto" : "hidden";
-      syncComposerInset();
-    };
-    resize();
-    const observer =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
-    observer?.observe(main);
-    observer?.observe(wrap);
-    window.addEventListener("resize", resize);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", resize);
-    };
-  }, [draft, agent?.id, actionError, connectionReady]);
+  useComposerSize(composerInput, draft, agent?.id, actionError, connectionReady, !!agent?.archivedAt);
   const running = agent?.status === "running" || agent?.status === "waiting";
   const selectionReady = !!data && (data.selectedAgentId ?? "") === selected;
   const canSend =
@@ -1626,12 +1582,16 @@ export function App() {
                     </div>
                   ) : (
                     <div key={entry.key} data-activity-key={entry.key}>
+                      {entry.kind === "screenshots" ? (
+                        <BrowserScreenshots events={entry.events} />
+                      ) : (
                       <EventItem
                         event={entry.event}
                         events={visibleEvents}
                         runs={visibleRuns}
                         agent={agent}
                       />
+                      )}
                     </div>
                   ),
               )}
@@ -1808,12 +1768,13 @@ export function App() {
                     : "Guide the current run at its next interruption point"
                   : "Enter to send · Shift + Enter for a new line"}
               </span>
-              {agent && (
+              {agent && data && (
                 <ComposerSettings
                   key={agent.id}
                   agentId={agent.id}
-                  model={agent.model}
-                  effort={agent.effort}
+                  model={agent.model ?? data.config.selectedModel}
+                  effort={agent.effort ?? "high"}
+                  readOnly={agent.model == null || agent.effort == null}
                   disabled={!connected || sending || savingModel}
                   refresh={() => refresh.current()}
                   onBusy={setSavingModel}

@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { App } from "../src/client/App";
 import { startApp } from "./fixtures/app";
 import { registerWorkspaceTools } from "../src/client/webmcp";
+import { composerBudget } from "../src/client/useComposerSize";
+import { placePopover } from "../src/client/useAnchoredPopover";
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
 let app: Awaited<ReturnType<typeof startApp>> | undefined;
@@ -670,6 +672,68 @@ test("project create form confirms a server folder and new agent inherits it wit
   expect(a.avatarId).toBe("sea-turtle");
 });
 
+test("new project can create a directory, recover from a conflict, and select it without losing its name", async () => {
+  const app = await setup();
+  const { ProjectForm } = await import("../src/client/Projects");
+  // The default Home listing is redirected to a disposable test directory.
+  const fetchBefore = globalThis.fetch;
+  globalThis.fetch = ((input: any, init: any) => {
+    if (String(input).startsWith("/api/directories?") && !String(input).includes("&path="))
+      input += `&path=${encodeURIComponent(dir!)}`;
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  mkdirSync(join(dir!, "Existing"));
+  let saved: any;
+  render(<ProjectForm instance="Test server" count={0} onClose={() => {}} onDeleted={() => {}} onSaved={p => { saved = p; }} />);
+  fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Coral" } });
+  fireEvent.click(screen.getByRole("button", { name: "New Directory" }));
+  const picker = screen.getByRole("dialog", { name: "Choose a folder" });
+  const name = within(picker).getByRole("textbox", { name: "Directory name" });
+  fireEvent.change(name, { target: { value: "Existing" } });
+  const create = within(picker).getByRole("button", { name: "Create Directory" });
+  await waitFor(() => expect(create.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(create);
+  await within(picker).findByText(/already exists/);
+  expect((name as HTMLInputElement).value).toBe("Existing");
+  fireEvent.change(name, { target: { value: "Coral files" } });
+  fireEvent.click(create);
+  const use = within(picker).getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect(use.hasAttribute("disabled")).toBe(false));
+  expect(within(picker).getAllByText(join(dir!, "Coral files")).length).toBeGreaterThan(0);
+  fireEvent.click(use);
+  expect((screen.getByLabelText("Project name") as HTMLInputElement).value).toBe("Coral");
+  fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+  await waitFor(() => expect(saved?.defaultCwd).toBe(join(dir!, "Coral files")));
+  expect(app.store.project(saved.id)?.name).toBe("Coral");
+});
+
+test("upload New Directory preserves selected files and uploads into the newly chosen directory", async () => {
+  const app = await setup();
+  const { UploadFiles } = await import("../src/client/UploadFiles");
+  const agent = app.store.agents()[0]!;
+  let uploaded = "";
+  render(<UploadFiles agent={agent} instance="Test server" onClose={() => {}} onUploaded={name => { uploaded = name; }} />);
+  const upload = screen.getByRole("dialog", { name: "Upload file" });
+  fireEvent.change(within(upload).getByLabelText("Destination folder"), { target: { value: dir! } });
+  fireEvent.change(within(upload).getByLabelText("Files"), {
+    target: { files: [new File(["kept"], "notes.txt", { type: "text/plain" })] },
+  });
+  fireEvent.click(within(upload).getByRole("button", { name: "New Directory" }));
+  const picker = screen.getByRole("dialog", { name: "Choose a folder" });
+  fireEvent.change(within(picker).getByRole("textbox", { name: "Directory name" }), { target: { value: "Uploads" } });
+  const create = within(picker).getByRole("button", { name: "Create Directory" });
+  await waitFor(() => expect(create.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(create);
+  const use = within(picker).getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect(use.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(use);
+  expect((within(upload).getByLabelText("Destination folder") as HTMLInputElement).value).toBe(join(dir!, "Uploads"));
+  expect(within(upload).getByText("notes.txt")).toBeDefined();
+  fireEvent.click(within(upload).getByRole("button", { name: "Upload" }));
+  await waitFor(() => expect(uploaded).toBe("notes.txt"));
+  expect(readFileSync(join(dir!, "Uploads", "notes.txt"), "utf8")).toBe("kept");
+});
+
 test("late history from a rapid A to B to A switch cannot replace the selected chat or its draft", async () => {
   const app = await setup();
   const b = app.service.createAgent({
@@ -918,6 +982,57 @@ test("chat model menu persists choices without changing connection mode and dism
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
 });
 
+test("older servers default the effort display to High without overwriting saved settings", async () => {
+  const app = await setup();
+  const first = app.store.agents()[0]!;
+  app.service.setConfig({ model: "gpt-6-sol", effort: "low" });
+  app.store.setAgentConfig(first.id, "gpt-6.1-sol", "max");
+  const fetchBefore = globalThis.fetch;
+  let legacy = true;
+  const changes: unknown[] = [];
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (String(input) === "/api/config" && init?.method === "PUT")
+      changes.push(JSON.parse(init.body));
+    const response = await fetchBefore(input, init);
+    if (legacy && String(input).startsWith("/api/state")) {
+      const snapshot = await response.json();
+      snapshot.agents = snapshot.agents.map(({ model, effort, ...agent }: any) => agent);
+      return Response.json(snapshot);
+    }
+    return response;
+  }) as typeof fetch;
+  let ui = render(<App />);
+  await waitForConnectedAgent();
+  const trigger = screen.getByRole("button", { name: "Model and effort" });
+  expect(trigger.getAttribute("title")).toBe("GPT-6 Sol · High");
+  fireEvent.click(trigger);
+  const effort = screen.getByRole("combobox", { name: "Reasoning effort" }) as HTMLSelectElement;
+  const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+  expect(effort.value).toBe("high");
+  expect(model.value).toBe("gpt-6-sol");
+  expect(effort.disabled).toBe(true);
+  expect(model.disabled).toBe(true);
+  expect(screen.getByText(/Server restart pending/)).toBeDefined();
+  fireEvent.change(effort, { target: { value: "low" } });
+  expect(changes).toEqual([]);
+  expect(app.store.instance().effort).toBe("low");
+  ui.unmount();
+  legacy = false;
+  ui = render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Model and effort" }));
+  const upgraded = screen.getByRole("combobox", { name: "Reasoning effort" }) as HTMLSelectElement;
+  expect(upgraded.value).toBe("max");
+  expect(upgraded.disabled).toBe(false);
+  expect(screen.queryByText(/Server restart pending/)).toBeNull();
+  fireEvent.change(upgraded, { target: { value: "xhigh" } });
+  await waitFor(() => {
+    expect(upgraded.value).toBe("xhigh");
+    expect(upgraded.disabled).toBe(false);
+  });
+  expect(changes).toEqual([{ effort: "xhigh", agentId: first.id }]);
+});
+
 test("composer model settings follow the selected agent rather than the latest creation defaults", async () => {
   const app = await setup();
   const first = app.store.agents()[0]!;
@@ -958,7 +1073,54 @@ test("composer model settings follow the selected agent rather than the latest c
   expect((screen.getByRole("combobox", { name: "Reasoning effort" }) as HTMLSelectElement).value).toBe("max");
 });
 
-test("composer expands, caps at the available page height, and shrinks when text is removed", async () => {
+test("mobile model settings use a heading-focused sheet and restore the trigger", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => {
+    const media = originalMatchMedia.call(window, query);
+    if (query.includes("max-width: 767px"))
+      Object.defineProperty(media, "matches", { value: true });
+    return media;
+  }) as typeof window.matchMedia;
+  try {
+    await setup();
+    render(<App />);
+    await waitForConnectedAgent();
+    const trigger = screen.getByRole("button", { name: "Model and effort" });
+    fireEvent.click(trigger);
+    const sheet = screen.getByRole("dialog", { name: "Model and effort" });
+    expect(document.activeElement?.tagName).toBe("H2");
+    expect(sheet.closest("form")).toBeNull();
+    const effort = within(sheet).getByRole("combobox", { name: "Reasoning effort" });
+    fireEvent.change(effort, { target: { value: "high" } });
+    await waitFor(() => expect(effort.hasAttribute("disabled")).toBe(false));
+    expect(screen.getByRole("dialog", { name: "Model and effort" })).toBe(sheet);
+    fireEvent(sheet, new window.Event("cancel", { cancelable: true }));
+    await waitFor(() => expect(!!screen.queryByRole("dialog", { name: "Model and effort" })).toBe(false));
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    cleanup();
+    window.matchMedia = originalMatchMedia;
+  }
+});
+
+test("composer and popup budgets reserve conversation and avoid viewport edges", () => {
+  expect(composerBudget(800, 800, 100)).toBe(500);
+  expect(composerBudget(320, 320, 100)).toBe(140);
+  expect(composerBudget(100, 100, 120)).toBe(0);
+  const bounds = { left: 12, right: 308, top: 12, bottom: 308 };
+  const size = { width: 280, height: 180 };
+  const left = placePopover({ left: 20, right: 64, top: 260, bottom: 304 }, size, bounds, "above");
+  expect(left).toEqual({ left: 12, top: 72, maxHeight: 240 });
+  const flipped = placePopover({ left: 260, right: 304, top: 20, bottom: 64 }, size, bounds, "above");
+  expect(flipped).toEqual({ left: 24, top: 72, maxHeight: 236 });
+  const short = placePopover({ left: 20, right: 64, top: 130, bottom: 174 }, { ...size, height: 800 }, bounds, "below");
+  expect(short.top + short.maxHeight).toBeLessThanOrEqual(bounds.bottom);
+  const offscreen = placePopover({ left: 20, right: 64, top: 1000, bottom: 1044 }, { ...size, height: 800 }, bounds, "above");
+  expect(offscreen.top).toBe(bounds.top);
+  expect(offscreen.top + offscreen.maxHeight).toBe(bounds.bottom);
+});
+
+test("composer expands, reserves a quarter of the viewport, and shrinks when text is removed", async () => {
   await setup();
   render(<App />);
   const input = (await screen.findByRole("textbox", {
@@ -979,7 +1141,7 @@ test("composer expands, caps at the available page height, and shrinks when text
   expect(input.style.overflowY).toBe("hidden");
   contentHeight = 1200;
   fireEvent.change(input, { target: { value: "line\n".repeat(80) } });
-  expect(parseFloat(input.style.height)).toBeLessThanOrEqual(800);
+  expect(parseFloat(input.style.height)).toBeLessThanOrEqual(800 - Math.min(800, window.innerHeight) / 4);
   expect(input.style.overflowY).toBe("auto");
   contentHeight = 44;
   fireEvent.change(input, { target: { value: "" } });
@@ -1368,7 +1530,7 @@ test("mobile chat follows keyboard viewport height and panning, then restores fu
   });
   window.matchMedia = ((query: string) => {
     const media = originalMatchMedia.call(window, query);
-    if (query === "(max-width: 767px)")
+    if (query === "(max-width: 767px)" || query === "(max-width: 767px), (any-pointer: coarse)")
       Object.defineProperty(media, "matches", { value: true });
     return media;
   }) as typeof window.matchMedia;
@@ -1445,6 +1607,21 @@ test("mobile chat follows keyboard viewport height and panning, then restores fu
     });
     expect(root.dataset.keyboardOpen).toBe("true");
     expect(chat.scrollTop).toBe(100);
+    act(() => {
+      input.blur();
+      viewport.height = window.innerHeight;
+      viewport.dispatchEvent(new window.Event("resize"));
+    });
+    expect(root.dataset.keyboardOpen).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Model and effort" }));
+    const effort = screen.getByRole("combobox", { name: "Reasoning effort" });
+    act(() => {
+      effort.focus();
+      viewport.height = 320;
+      viewport.dispatchEvent(new window.Event("resize"));
+    });
+    expect(root.dataset.keyboardOpen).toBe("true");
+    expect(screen.getByRole("dialog", { name: "Model and effort" }).style.getPropertyValue("--sheet-viewport-height")).toBe("320px");
     ui.unmount();
     expect(root.dataset.keyboardOpen).toBeUndefined();
     viewport.dispatchEvent(new window.Event("resize"));
@@ -2153,6 +2330,68 @@ test("read-tool image attachments render outside work disclosures live and after
   expect(screen.getAllByRole("img", { name: "Image from read" })).toHaveLength(1);
 });
 
+test("browser screenshots group across tool activity but not messages, other images, or runs", async () => {
+  const { conversationActivity } = await import("../src/client/conversationActivity");
+  const image = { type: "image", mimeType: "image/png", data: "AAAA" };
+  const event = (id: number, type: string, data: Record<string, unknown> = {}, runId = "one"): import("../src/shared/types").Activity => ({ id, type, data, runId, agentId: "agent", createdAt: "2026-01-01T00:00:00Z" });
+  const shot = (id: number, name = "browser_screenshot", runId = "one") => event(id, "tool_completed", { name, result: { content: [image] } }, runId);
+  const entries = conversationActivity([
+    shot(1), event(2, "tool_started", { name: "browser_click" }),
+    event(3, "turn_completed"), shot(4),
+    event(5, "message", { role: "assistant", text: "Next page" }), shot(6),
+    shot(7, "read"), shot(8), shot(9, "browser_screenshot", "two"),
+  ], []);
+  expect(entries.filter(entry => entry.kind === "screenshots").map(entry => entry.events.map(e => e.id)))
+    .toEqual([[1, 4], [6], [8], [9]]);
+  expect(entries.some(entry => entry.kind === "event" && entry.event.id === 7)).toBe(true);
+});
+
+test("browser screenshot carousel shows latest, navigates all shots, follows live updates and restores history", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  const run = app.store.createRun(agent.id, crypto.randomUUID(), "Browse", "api", "model");
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7L8AAAAASUVORK5CYII=";
+  const shot = () => app.service.emit(agent.id, run.id, "tool_completed", {
+    name: "browser_screenshot", toolCallId: crypto.randomUUID(),
+    result: { content: [{ type: "image", mimeType: "image/png", data: png }] },
+  });
+  app.store.event(agent.id, run.id, "message", { role: "user", text: "Browse the site" });
+  const shots = Array.from({ length: 12 }, shot);
+  let ui = render(<App />);
+  const image = () => screen.getByRole("img", { name: "Image from browser_screenshot" });
+  await screen.findByRole("img", { name: "Image from browser_screenshot" });
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${shots[11]!.id}/0`);
+  expect(screen.getAllByRole("region", { name: "Browser screenshots" })).toHaveLength(1);
+  expect(screen.getAllByRole("img", { name: "Image from browser_screenshot" })).toHaveLength(1);
+  const carousel = screen.getByRole("region", { name: "Browser screenshots" });
+  expect(within(carousel).getByRole("status").textContent).toBe("12 / 12");
+  expect((within(carousel).getByRole("button", { name: "Next screenshot" }) as HTMLButtonElement).disabled).toBe(true);
+  let latest!: ReturnType<typeof shot>;
+  act(() => { latest = shot(); });
+  await waitFor(() => expect(image().getAttribute("src")).toBe(`/api/tool-images/${latest.id}/0`));
+  fireEvent.click(within(carousel).getByRole("button", { name: "Previous screenshot" }));
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${shots[11]!.id}/0`);
+  act(() => { latest = shot(); });
+  await waitFor(() => expect(within(carousel).getByRole("status").textContent).toBe("12 / 14"));
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${shots[11]!.id}/0`);
+  for (let i = 0; i < 11; i++) fireEvent.click(within(carousel).getByRole("button", { name: "Previous screenshot" }));
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${shots[0]!.id}/0`);
+  expect((within(carousel).getByRole("button", { name: "Previous screenshot" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(within(carousel).getByRole("button", { name: "Next screenshot" }));
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${shots[1]!.id}/0`);
+  fireEvent.click(within(carousel).getByRole("button", { name: "Latest" }));
+  const download = within(carousel).getByRole("link", { name: "Download image" });
+  expect(download.getAttribute("href")).toBe(`/api/tool-images/${latest.id}/0`);
+  expect(download.textContent).toBe("");
+  expect(download.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+  expect(download.getAttribute("title")).toBe("Download image");
+  ui.unmount();
+  ui = render(<App />);
+  await screen.findByRole("img", { name: "Image from browser_screenshot" });
+  expect(image().getAttribute("src")).toBe(`/api/tool-images/${latest.id}/0`);
+  expect(screen.getAllByRole("region", { name: "Browser screenshots" })).toHaveLength(1);
+});
+
 test("render_file displays images and expandable inert text with download and history", async () => {
   const app = await setup();
   const agent = app.store.agents()[0]!;
@@ -2715,6 +2954,99 @@ test("switching agent sessions clears private clipboard and discards late paste 
     if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
     else delete (navigator as any).clipboard;
   }
+});
+
+test.each(["button", "escape", "backdrop"])("closing the browser panel via %s returns owned control before dismissing and completes login", async (method) => {
+  const app = await setup();
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  const agentId = app.store.agents()[0]!.id;
+  const run = app.store.createRun(agentId, crypto.randomUUID(), "Sign in", "api", "gpt-6-astra");
+  const login = app.service.interventions.request("browser_login", agentId, run.id, { url: "https://example.com" });
+  let state: import("../src/shared/types").ComputerState = {
+    status: "stopped", control: "human", owned: true, handoffId: login.request.id, error: null,
+  };
+  let releases = 0, closed = 0, changed = 0;
+  let finish!: () => void;
+  const releasing = new Promise<void>(resolve => { finish = resolve; });
+  const computer = app.service.computer.get(agentId);
+  computer.state = () => state;
+  computer.ensure = async () => {};
+  computer.release = async () => {
+    releases++;
+    await releasing;
+    state = { ...state, control: "agent", owned: false, handoffId: null };
+    return login.request.id;
+  };
+  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => { changed++; }} />);
+  await screen.findByRole("button", { name: "Return to agent" });
+  const panel = screen.getByRole("dialog", { name: "Agent computer" });
+  const dismiss = () => {
+    if (method === "button") fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
+    else if (method === "escape") fireEvent(panel, new window.Event("cancel", { cancelable: true }));
+    else fireEvent.click(panel, { clientX: -10, clientY: -10 });
+  };
+  dismiss();
+  await waitFor(() => expect(releases).toBe(1));
+  expect(closed).toBe(0);
+  expect(panel.classList.contains("is-open")).toBe(true);
+  expect(app.store.intervention(login.request.id)?.status).toBe("pending");
+  dismiss();
+  expect(releases).toBe(1);
+  finish();
+  expect(await login.promise).toMatchObject({ completed: true });
+  await waitFor(() => expect(closed).toBe(1));
+  expect(changed).toBe(1);
+  expect(state.control).toBe("agent");
+  expect(app.store.intervention(login.request.id)?.status).toBe("completed");
+});
+
+test("failed automatic browser release keeps the panel visible and retryable", async () => {
+  const app = await setup();
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  const agentId = app.store.agents()[0]!.id;
+  let state: import("../src/shared/types").ComputerState = {
+    status: "stopped", control: "human", owned: true, handoffId: null, error: null,
+  };
+  let releases = 0, closed = 0;
+  const computer = app.service.computer.get(agentId);
+  computer.state = () => state;
+  computer.ensure = async () => {};
+  computer.release = async () => {
+    if (++releases === 1) throw new Error("Fixture release failure");
+    state = { ...state, control: "agent", owned: false };
+    return null;
+  };
+  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => {}} />);
+  await screen.findByRole("button", { name: "Return to agent" });
+  const panel = screen.getByRole("dialog", { name: "Agent computer" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
+  await screen.findByText(/Could not return browser control/);
+  expect(panel.classList.contains("is-open")).toBe(true);
+  expect(closed).toBe(0);
+  expect(state.control).toBe("human");
+  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(closed).toBe(1));
+  expect(releases).toBe(2);
+  expect(state.control).toBe("agent");
+});
+
+test.each(["agent", "human"] as const)("closing a %s-controlled browser not owned by this session does not release or destroy it", async (controlMode) => {
+  const app = await setup();
+  const { ComputerPanel } = await import("../src/client/ComputerPanel");
+  const agentId = app.store.agents()[0]!.id;
+  const state: import("../src/shared/types").ComputerState = {
+    status: "stopped", control: controlMode, owned: false, handoffId: null, error: null,
+  };
+  let closed = 0, releases = 0;
+  const computer = app.service.computer.get(agentId);
+  computer.state = () => state;
+  computer.ensure = async () => {};
+  computer.release = async () => { releases++; return null; };
+  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(closed).toBe(1));
+  expect(releases).toBe(0);
+  expect(state.control).toBe(controlMode);
 });
 
 test("lost browser control recovery requires explicit confirmation and keeps agents paused", async () => {
