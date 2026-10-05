@@ -23,6 +23,21 @@ Real mobile UI with demonstration data and an original soundtrack; sudo executio
 - Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
 - Built with Bun, React, SQLite, and the [Pi agent harness](https://github.com/earendil-works/pi).
 
+## Subagent progress
+
+Delegated work appears in live, expandable cards in the conversation. Open a
+card to inspect its task, activity, available thinking summaries, messages and
+tool calls/results. Completed cards remain in history.
+
+Jelly keeps the parent interactive while async children work and gives its model
+a compact status checkpoint approximately every five minutes. Supervisor requests
+and completion notifications use Pi's native delivery. Explicit foreground calls
+remain supported, but a checkpoint cannot interrupt an open tool.
+
+Transcripts show finalized, provider-exposed content—not hidden reasoning.
+Expired artifacts and forked sessions without a safe inherited-context boundary
+are explicitly unavailable. See [architecture](docs/ARCHITECTURE.md#subagent-observability).
+
 ## Browser and patch tools
 
 Agents can inspect bounded visible browser text and element references, click/fill non-secret fields, manage session-local tabs, scroll, wait for text/readiness, and read redacted error diagnostics. These share the existing per-agent isolation and private-control gate. References expire on new observations/navigation/handoff; snapshots cover the top-level DOM only. Reference actions use synthetic events, and secret-field detection is heuristic—always use private browser sign-in for credentials.

@@ -243,28 +243,49 @@ test("real pi-subagents workflow uses the parent provider and effort and support
   const h = await Harness.create(dir, undefined, join(dir, "config"));
   await h.auth.saveKey("sk-local-test-not-real");
   let slow = false;
+  let holdNext: Promise<void> | undefined;
+  let supervisorNext = false;
   const requests: any[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(req) {
       requests.push(await req.json());
+      const held = holdNext;
+      holdNext = undefined;
+      if (held) await held;
       if (slow) await new Promise((r) => setTimeout(r, 500));
-      const item = {
-        type: "message",
-        id: "msg_test",
-        role: "assistant",
-        status: "completed",
-        content: [
-          { type: "output_text", text: "Child completed", annotations: [] },
-        ],
-      };
+      const item = supervisorNext
+        ? {
+            type: "function_call",
+            id: "fc_supervisor",
+            call_id: "call_supervisor",
+            status: "completed",
+            name: "contact_supervisor",
+            arguments: JSON.stringify({
+              reason: "need_decision",
+              message: "supervisor-decision-fixture-marker",
+            }),
+          }
+        : {
+            type: "message",
+            id: "msg_test",
+            role: "assistant",
+            status: "completed",
+            content: [
+              { type: "output_text", text: "Child completed", annotations: [] },
+            ],
+          };
+      supervisorNext = false;
       const events = [
         { type: "response.created", response: { id: "resp_test" } },
         {
           type: "response.output_item.added",
           output_index: 0,
-          item: { ...item, content: [] },
+          item:
+            item.type === "message"
+              ? { ...item, content: [] }
+              : { ...item, arguments: "" },
         },
         { type: "response.output_item.done", output_index: 0, item },
         {
@@ -288,6 +309,14 @@ test("real pi-subagents workflow uses the parent provider and effort and support
   h.registry.registerProvider("openai", {
     baseUrl: `http://127.0.0.1:${server.port}/v1`,
   });
+  // New async-by-default workflow children resolve provider routing in their
+  // own runtime; persist the same local fixture before any child can launch.
+  writeFileSync(
+    join(dir, "models.json"),
+    JSON.stringify({
+      providers: { openai: { baseUrl: `http://127.0.0.1:${server.port}/v1` } },
+    }),
+  );
   const activities: string[] = [];
   const completions: Record<string, unknown>[] = [];
   const s = await h.create(
@@ -339,8 +368,12 @@ test("real pi-subagents workflow uses the parent provider and effort and support
           .map((r) => r.reasoning.effort)
           .sort(),
       ).toEqual(["high", "low"]);
-      expect(requests.slice(before).map(r => `${r.model}:${r.reasoning.effort}`).sort())
-        .toEqual(["gpt-6-sol:low", "gpt-6.1-sol:high"].sort());
+      expect(
+        requests
+          .slice(before)
+          .map((r) => `${r.model}:${r.reasoning.effort}`)
+          .sort(),
+      ).toEqual(["gpt-6-sol:low", "gpt-6.1-sol:high"].sort());
     } finally {
       await h.dispose(low);
     }
@@ -379,7 +412,12 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     // Start a real persisted child against the local fixture, then resume it.
     await tool.execute(
       "resume-child",
-      { agent: "delegate", task: "Reply Child completed", async: true, acceptance: false },
+      {
+        agent: "delegate",
+        task: "Reply Child completed",
+        async: true,
+        acceptance: false,
+      },
       new AbortController().signal,
     );
     await h.settle(s);
@@ -390,24 +428,200 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     const beforeResume = requests.length;
     const resumed = await tool.execute(
       "direct-resume",
-      { action: "resume", id: childId, message: "Continue and reply Child completed" },
+      {
+        action: "resume",
+        id: childId,
+        message: "Continue and reply Child completed",
+      },
       new AbortController().signal,
     );
-    expect(JSON.stringify(resumed)).not.toContain("does not accept a model override");
+    expect(JSON.stringify(resumed)).not.toContain(
+      "does not accept a model override",
+    );
     expect((resumed as { isError?: boolean }).isError).not.toBe(true);
     await h.settle(s);
     expect(requests.length).toBeGreaterThan(beforeResume);
     expect(requests.at(-1).model).toBe("gpt-6.1-sol");
     expect(requests.at(-1).reasoning.effort).toBe("high");
     expect(completions.at(-1)?.success).toBe(true);
+    // A real package child stays running while the parent produces a reply,
+    // consumes a timed model checkpoint and accepts user steering. Child HTTP
+    // is held deterministically; only the parent model is an in-process fixture.
+    const previousHeartbeat = process.env.JELLY_SUBAGENT_HEARTBEAT_MS;
+    process.env.JELLY_SUBAGENT_HEARTBEAT_MS = "1000";
+    const snapshots: any[] = [];
+    const interactive = await h.create(
+      agent,
+      [],
+      h.config("api"),
+      instance,
+      [],
+      () => {},
+      null,
+      (snapshot) => snapshots.push(snapshot),
+    );
+    if (previousHeartbeat === undefined)
+      delete process.env.JELLY_SUBAGENT_HEARTBEAT_MS;
+    else process.env.JELLY_SUBAGENT_HEARTBEAT_MS = previousHeartbeat;
+    const parentRequests: string[] = [];
+    interactive.agent.streamFunction = (model, context) => {
+      parentRequests.push(JSON.stringify(context.messages));
+      const stream = createAssistantMessageEventStream();
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "Parent remains interactive." }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      };
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end(message);
+      return stream;
+    };
+    let releaseChild!: () => void;
+    holdNext = new Promise<void>((resolve) => {
+      releaseChild = resolve;
+    });
+    try {
+      await interactive.agent.state.tools
+        .find((t) => t.name === "subagent")!
+        .execute(
+          "live-child",
+          {
+            agent: "delegate",
+            task: "Reply Child completed",
+            acceptance: false,
+          },
+          new AbortController().signal,
+        ); // omitted async must dispatch, not block
+      await interactive.prompt("Coordinate the child without blocking.");
+      let finished = false;
+      const settling = h.settle(interactive).then(() => {
+        finished = true;
+      });
+      interactive.agent.steer({
+        role: "user",
+        content: "user-steer-fixture-marker",
+        timestamp: Date.now(),
+      });
+      h.wakeSteering(interactive);
+      const until = Date.now() + 5000;
+      while (
+        (!parentRequests.some((r) =>
+          r.includes("Subagent status checkpoint"),
+        ) ||
+          !parentRequests.some((r) =>
+            r.includes("user-steer-fixture-marker"),
+          )) &&
+        Date.now() < until
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(finished).toBe(false);
+      expect(
+        parentRequests.some((r) => r.includes("user-steer-fixture-marker")),
+      ).toBe(true);
+      expect(
+        parentRequests.some((r) => r.includes("Subagent status checkpoint")),
+      ).toBe(true);
+      expect(
+        snapshots.some((snapshot) =>
+          snapshot.children.some((child: any) => child.state === "running"),
+        ),
+      ).toBe(true);
+      releaseChild();
+      await settling;
+      expect(finished).toBe(true);
+      expect(snapshots.at(-1).children).toHaveLength(1);
+      expect(snapshots.at(-1).children[0].state).toBe("completed");
+      // Native supervisor delivery must wake the yielded model, not merely
+      // append an event to Jelly's browser stream.
+      let replyTo: string | undefined;
+      const unsubscribe = interactive.subscribe((event) => {
+        if (
+          event.type === "message_start" &&
+          event.message.role === "custom" &&
+          String(event.message.content).includes(
+            "supervisor-decision-fixture-marker",
+          )
+        )
+          replyTo = (event.message.details as { requestId?: string })
+            ?.requestId;
+      });
+      supervisorNext = true;
+      await interactive.agent.state.tools
+        .find((t) => t.name === "subagent")!
+        .execute(
+          "supervised-child",
+          {
+            agent: "delegate",
+            task: "Ask the supervisor for a decision, then finish.",
+            acceptance: false,
+          },
+          new AbortController().signal,
+        );
+      const supervised = h.settle(interactive);
+      const decisionDeadline = Date.now() + 5000;
+      while (
+        (!replyTo ||
+          !parentRequests.some((r) =>
+            r.includes("supervisor-decision-fixture-marker"),
+          )) &&
+        Date.now() < decisionDeadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(replyTo).toBeDefined();
+      expect(
+        parentRequests.some((r) =>
+          r.includes("supervisor-decision-fixture-marker"),
+        ),
+      ).toBe(true);
+      await interactive.agent.state.tools
+        .find((t) => t.name === "subagent_supervisor")!
+        .execute(
+          "reply-fixture",
+          {
+            action: "reply",
+            replyTo,
+            message: "Continue and finish.",
+          },
+          new AbortController().signal,
+        );
+      await supervised;
+      unsubscribe();
+      expect(
+        snapshots
+          .at(-1)
+          .children.every((child: any) => child.state === "completed"),
+      ).toBe(true);
+    } finally {
+      releaseChild();
+      await h.dispose(interactive);
+    }
     // Do not silently strip overrides that a caller actually supplies.
-    await expect(tool.execute(
-      "explicit-resume-override",
-      { action: "resume", id: childId, message: "Continue", model: "openai/gpt-6-astra" },
-      new AbortController().signal,
-    )).rejects.toThrow("does not accept a model override");
+    await expect(
+      tool.execute(
+        "explicit-resume-override",
+        {
+          action: "resume",
+          id: childId,
+          message: "Continue",
+          model: "openai/gpt-6-astra",
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("does not accept a model override");
   } finally {
     await h.dispose(s);
     server.stop(true);
   }
-}, 15000);
+}, 30000);

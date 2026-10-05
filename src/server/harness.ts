@@ -7,6 +7,10 @@ import { RenderedFiles, renderFileTool } from "./rendered-files";
 import { applyPatchTool } from "./apply-patch";
 import { webTools, WEB_RESEARCH_INSTRUCTIONS } from "./web-tools";
 import { SessionWork } from "./session-work";
+import { extensionUI } from "./extension-ui";
+import { prepareSubagentLiveness } from "./subagent-liveness";
+import type { SubagentSnapshot } from "../shared/subagents";
+import type { SubagentSources } from "./subagent-projection";
 import { ALL_PI_TOOLS, preparePi } from "./pi-setup";
 import { JellyAuth } from "./auth";
 import {
@@ -63,6 +67,7 @@ export class Harness {
     configDir?: string,
   ) {
     preparePi(dataDir);
+    prepareSubagentLiveness();
     const runtime = await ModelRuntime.create({
       authPath,
       modelsPath: fileURLToPath(new URL("./models.json", import.meta.url)),
@@ -136,6 +141,7 @@ export class Harness {
     extraTools: ToolDefinition[] = [],
     report: (type: string, data: Record<string, unknown>) => void = () => {},
     context: FileEntry[] | null = null,
+    onSubagents?: (snapshot: SubagentSnapshot, sources: SubagentSources) => void,
   ): Promise<AgentSession> {
     this.requireConnection(config);
     const model = this.registry.find(config.provider, config.model);
@@ -156,7 +162,14 @@ export class Harness {
       retry: { enabled: false },
     });
     applySettings();
-    const work = new SessionWork(report);
+    const heartbeatMs = Number(process.env.JELLY_SUBAGENT_HEARTBEAT_MS ?? 300000);
+    if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 1000 || heartbeatMs > 3600000)
+      throw new Error("JELLY_SUBAGENT_HEARTBEAT_MS must be between 1000 and 3600000 milliseconds.");
+    const work = new SessionWork(report, {
+      sessionRoot: join(this.dataDir, "subagent-sessions", agent.id),
+      heartbeatMs,
+      onSnapshot: onSubagents,
+    });
     const loader = new DefaultResourceLoader({
       eventBus: work.bus,
       cwd,
@@ -170,7 +183,7 @@ export class Harness {
       // or the previously supported APPEND_SYSTEM.md instructions.
       systemPrompt: "",
       appendSystemPromptOverride: (prompts) => [
-        `You are ${agent.name}, a persistent agent in Jelly.\n${agent.instructions}\nYou can inspect this Jelly instance with instance_info. All tools and subagent delegation are pre-authorized by the operator. Execute tasks directly without approval prompts. You can browse directories, read/write/edit files, run shell commands, and delegate to subagents. Use the same provider/model and effort as this parent for delegated work unless asked otherwise. Prefer foreground subagent workflows (async:false). Use the installed subagent tool schema; do not ask for delegation approval. Use render_file to show existing images, audio, video, or text files in chat without reading their contents into model context; no prior read call is needed. You may use all Pi tools; the workspace directory is a default working directory, not a sandbox. Use request_sudo for privileged commands; it executes automatically when the OS allows, and requests a password only if authentication is needed. Never ask for passwords in chat. Use request_browser_login when a website requires sign-in; a person will take over the browser privately and explicitly return control. Browser tools are unavailable during human control. Do not put credentials in tool arguments. Be clear about your capabilities.\n${WEB_RESEARCH_INSTRUCTIONS}\n${this.mcps.instructions()}`,
+        `You are ${agent.name}, a persistent agent in Jelly.\n${agent.instructions}\nYou can inspect this Jelly instance with instance_info. All tools and subagent delegation are pre-authorized by the operator. Execute tasks directly without approval prompts. You can browse directories, read/write/edit files, run shell commands, and delegate to subagents. Use the same provider/model and effort as this parent for delegated work unless asked otherwise. Prefer asynchronous subagent workflows (async:true) so you can supervise children and respond to status updates. Yield while children work; native completion notifications and approximately five-minute status checkpoints wake this session. Do not block with bg_wait merely to await ordinary async subagents. Use async:false only for deliberately short blocking work. Use the installed subagent tool schema; do not ask for delegation approval. Use render_file to show existing images, audio, video, or text files in chat without reading their contents into model context; no prior read call is needed. You may use all Pi tools; the workspace directory is a default working directory, not a sandbox. Use request_sudo for privileged commands; it executes automatically when the OS allows, and requests a password only if authentication is needed. Never ask for passwords in chat. Use request_browser_login when a website requires sign-in; a person will take over the browser privately and explicitly return control. Browser tools are unavailable during human control. Do not put credentials in tool arguments. Be clear about your capabilities.\n${WEB_RESEARCH_INSTRUCTIONS}\n${this.mcps.instructions()}`,
         ...prompts,
       ],
     });
@@ -227,7 +240,17 @@ export class Harness {
         },
       ],
     });
-    await session.bindExtensions({ mode: "print" });
+    try {
+      await session.bindExtensions({
+        mode: "rpc",
+        uiContext: extensionUI(session.extensionRunner.getUIContext(), report, (key, lines) => work.widget(key, lines)),
+        onError: () => report("extension_notice", { level: "error", text: "A Pi extension reported a runtime error. Check subagent status before treating work as complete." }),
+      });
+      await work.attach(session);
+    } catch (error) {
+      await work.dispose(session);
+      throw error;
+    }
     session.setActiveToolsByName(session.getAllTools().map((t) => t.name));
     // New-launch defaults travel with the tool call, never through shared .pi files.
     const delegate = session.agent.state.tools.find(
@@ -235,16 +258,26 @@ export class Harness {
     );
     if (delegate) {
       const execute = delegate.execute.bind(delegate);
-      delegate.execute = (id, value, signal, onUpdate) => {
+      delegate.execute = async (id, value, signal, onUpdate) => {
         const input = value as Record<string, unknown>;
         // Management calls own their argument contract. In particular, resume
         // must reuse the persisted child model and rejects any model override.
-        if (input.action !== undefined)
-          return execute(id, value, signal, onUpdate);
-        return execute(
+        const update: typeof onUpdate = (result) => {
+          work.toolResult(result);
+          onUpdate?.(result);
+        };
+        if (input.action !== undefined) {
+          const result = await execute(id, value, signal, update);
+          work.toolResult(result);
+          return result;
+        }
+        const result = await execute(
           id,
           {
             ...input,
+            // Explicit caller choice wins; migrate Jelly's old foreground seed
+            // without overwriting an operator's package config file.
+            async: input.async ?? true,
             model:
               input.model ??
               `${config.provider}/${config.model}:${config.effort}`,
@@ -254,8 +287,10 @@ export class Harness {
             artifacts: input.artifacts ?? false,
           },
           signal,
-          onUpdate,
+          update,
         );
+        work.toolResult(result);
+        return result;
       };
     }
     if (config.selectedModel === "gpt-6-astra-ultrafast") {
@@ -312,6 +347,9 @@ export class Harness {
     const entries = this.checkpoint(session);
     entries[0] = SessionManager.inMemory(session.sessionManager.getCwd()).getHeader()!;
     return { entries, compacted };
+  }
+  wakeSteering(session: AgentSession) {
+    this.sessions.get(session)?.wakeSteering();
   }
   async settle(session: AgentSession) {
     await this.sessions.get(session)?.settle(session);

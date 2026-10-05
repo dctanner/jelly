@@ -171,7 +171,8 @@ export function WorkActivity({
   const notes = events.filter(
     (event) =>
       event.type.startsWith("compaction_") ||
-      event.type.startsWith("subagent_"),
+      event.type.startsWith("subagent_") ||
+      event.type === "extension_notice",
   );
   return (
     <details

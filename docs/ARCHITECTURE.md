@@ -66,6 +66,73 @@ Automatic mode selects ChatGPT when configured, otherwise OpenAI API. With neith
 
 The deterministic model exists only under `tests/fixtures/` and is explicitly injected by tests and the disposable design-preview script. Production has no scripted provider, demo mode, or environment-variable bypass. Tests still execute `instance_info`, emit real lifecycle events, and supply previous conversation context. The mock Responses server tests the actual OpenAI API and ChatGPT adapters separately, including request authentication, every offered model/effort combination, tool schema, and history transmission.
 
+## Subagent observability
+
+`Harness` binds a functional RPC extension UI, making Jelly an interactive Pi
+host rather than a headless print invocation. Notifications/status/widgets are
+bounded; unsupported dialogs cancel explicitly. This avoids the package's
+headless `agent_end` drain. Launches default to `async:true` through Jelly's
+wrapper, including existing installations; explicit `async:false` wins. New
+package configs seed the same default without rewriting existing files.
+
+`SessionWork` observes package lifecycle events, foreground tool updates and the
+versioned session-scoped status RPC. Non-overlapping polling normally runs every
+three seconds, backing off to thirty seconds on errors. Workflow files enrich
+identity/session metadata; canonical snapshot activity overlays materialized
+resumed children. Status reads require bounded regular files, matching run/session
+ownership and stable no-follow descriptors. Missing/failed reads remain unknown,
+not completed, and do not suppress other roots or periodic model checkpoints.
+
+The same bounded projection feeds browser cards and a model-visible custom
+message every `JELLY_SUBAGENT_HEARTBEAT_MS` (default 300000; range 1000–3600000).
+Only one checkpoint can be pending; an idle parent wakes, while a busy one receives
+it at a safe boundary. User steering remains enabled during child settlement.
+Pi owns execution, supervisor delivery, native completion batching and descendant
+liveness through `@agegr/pi-web/session-liveness/v1`. Jelly also accounts for its
+own model continuations before disposing the parent. Notification ownership and
+cancellation ownership are separate: workflow-owned children do not require
+independent completion events, but remain stoppable after their workflow dispatch
+finishes. A missing completion event can be reconciled with canonical terminal
+status and an explicit parent wake, never silent success.
+
+Schema v11 adds `subagent_views`: one compact snapshot plus a private source map
+per Jelly run. Public cards use opaque IDs, capped at 128; raw session/artifact
+paths and metadata errors are not public fields. A lane keeps its card identity
+across attempts; a new concrete child run replaces its transcript source and
+retired-attempt updates cannot reopen it. `subagents_updated` invalidates the
+roster over SSE. Status/widget snapshots stay in bounded replay, not the permanent
+chat timeline; full child transcripts remain package-owned files.
+
+Both APIs require a control-session cookie and exact agent/run/child membership:
+
+- `GET /api/agents/:agentId/runs/:runId/subagents`
+- `GET /api/agents/:agentId/runs/:runId/subagents/:childId/transcript?before=N`
+
+Clients never submit paths. The transcript adapter validates trusted canonical
+roots, regular JSONL files and no-follow/stable descriptors; it reads at most
+256 KiB and returns at most 100 entries/64 KiB with exclusive byte cursors.
+It projects finalized assistant text, provider-exposed thinking and tool
+arguments/results, excluding user/system/custom context, hidden/redacted
+reasoning and signatures. Explicit paths in displayed tool content are retained.
+Forked/headerless transcripts fail closed because the installed format provides
+no authoritative inherited-context boundary. Inspection currently discovers
+sessions under Jelly's configured child-session root; custom external session
+directories, expired files and missing output produce explicit unavailable states.
+
+The client renders one roster per run outside generic work disclosure. Expanded
+transcripts alone poll; collapse/navigation/terminal-parent transitions cancel
+reads. Stable IDs preserve disclosure state, older pages preserve scroll, and
+nonoverlapping live tails reset to a contiguous excerpt with a valid cursor.
+Paging is bounded to five earlier requests and 1000 visible entries. Historical
+unsettled children become unknown after parent interruption, not falsely complete.
+An opaque file/session generation scopes transcript byte IDs and resets excerpts
+when a resumed attempt changes the source, even if byte offsets collide.
+
+`bun run check` includes projection/lifecycle/security/API/UI regression suites,
+an injected-clock five-minute real Pi model-turn test, and local-provider tests
+with real package children covering foreground, concurrency, async/resume,
+cancellation, model checkpoints, user steering and supervisor wake/reply.
+
 ## Runtime boundaries and current limits
 
 Outstanding implementation and validation are tracked in [plans/](../plans/README.md); completed delivery records live in [plans_done/](../plans_done/README.md).

@@ -50,7 +50,7 @@ export function preparePi(dataDir: string) {
       path,
       JSON.stringify(
         {
-          asyncByDefault: false,
+          asyncByDefault: true,
           artifactDir: "project",
           defaultSessionDir: join(dataDir, "subagent-sessions"),
           fleetView: false,

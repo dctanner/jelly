@@ -36,7 +36,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 10)
+    if (version > 11)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -163,6 +163,14 @@ export class Store {
             EFFORT_OPTIONS.some(option => option.id === effort) ? effort : defaults.effort);
         }
         this.db.exec("PRAGMA user_version=10;");
+      })();
+    if (version < 11)
+      this.db.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS subagent_views (
+          runId TEXT PRIMARY KEY REFERENCES runs(id),
+          agentId TEXT NOT NULL REFERENCES agents(id),
+          snapshot TEXT NOT NULL, sources TEXT NOT NULL
+        ); PRAGMA user_version=11;`);
       })();
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
@@ -582,7 +590,9 @@ export class Store {
         )
         .run(agentId, runId, type, JSON.stringify(data), createdAt);
       const id = Number(result.lastInsertRowid);
-      if (agentId)
+      // Live projections have their own durable row. Do not fill chat history
+      // with snapshots every few seconds; SSE still carries replayable updates.
+      if (agentId && !["subagents_updated", "extension_status", "extension_widget"].includes(type))
         this.db
           .query(
             "INSERT INTO timeline(id,agentId,runId,type,data,createdAt) VALUES (?,?,?,?,?,?)",

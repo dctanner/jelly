@@ -1,5 +1,12 @@
 /** Bounded, path-free projections of package-owned child work. */
-export type SubagentState = "queued" | "running" | "completed" | "failed" | "paused" | "stopped" | "unknown";
+export type SubagentState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "paused"
+  | "stopped"
+  | "unknown";
 export interface SubagentCard {
   /** Jelly-owned stable identity, scoped to the enclosing Jelly run. */
   id: string;
@@ -41,6 +48,8 @@ export interface SubagentTranscriptEntry {
   isError?: boolean;
 }
 export interface SubagentTranscript {
+  /** Opaque file/session generation; byte IDs and cursors only belong to it. */
+  generation?: string;
   entries: SubagentTranscriptEntry[];
   /** Opaque byte cursor for the preceding page; null when no older page. */
   before: number | null;
@@ -48,5 +57,10 @@ export interface SubagentTranscript {
   unavailable?: string;
 }
 export function subagentIsActive(state: SubagentState) {
-  return state === "queued" || state === "running" || state === "paused" || state === "unknown";
+  return (
+    state === "queued" ||
+    state === "running" ||
+    state === "paused" ||
+    state === "unknown"
+  );
 }

@@ -12,6 +12,7 @@ import type {
   PendingMessage,
 } from "../shared/types";
 import { Store } from "./store";
+import { SubagentStore } from "./subagent-store";
 import { thinkingPreview } from "./activity-preview";
 import { Harness } from "./harness";
 import { HttpError } from "./errors";
@@ -43,12 +44,14 @@ export class JellyService {
   private closing = false;
   readonly computer: ComputerSessions;
   readonly interventions: Interventions;
+  readonly subagents: SubagentStore;
   constructor(
     readonly store: Store,
     readonly harness: Harness,
     options: { sudoExecutor?: SudoExecutor; interventionTtlMs?: number } = {},
   ) {
     store.recover();
+    this.subagents = new SubagentStore(store.db);
     this.computer = new ComputerSessions(harness.dataDir, id => !!store.agent(id), id =>
       this.emit(id, null, "computer_changed", {}),
     );
@@ -426,6 +429,7 @@ export class JellyService {
     };
     state.steering.set(message, pending);
     state.session.agent.steer(message);
+    this.harness.wakeSteering(state.session);
   }
   private startRun(
     agent: AgentRecord,
@@ -537,6 +541,7 @@ export class JellyService {
           ),
           (type, data) => this.emit(agentId, run.id, type, data),
           context,
+          (snapshot, sources) => this.subagents.save(agentId, run.id, snapshot, sources),
         );
         state.session = session;
         if (state.cancelled || failure) return;
@@ -667,10 +672,12 @@ export class JellyService {
           if (pending.mode === "steer") this.injectSteering(state, pending);
         try {
           await session.prompt(prompt, { expandPromptTemplates: false });
+          // The parent remains interactive while children are running and
+          // native completion/heartbeat turns arrive in this same Pi session.
+          await this.harness.settle(session);
         } finally {
           state.acceptsSteering = false;
         }
-        await this.harness.settle(session);
         failure ??= modelFailure;
         // Pi may recover an overflow internally. Judge the final projected answer,
         // not an earlier failed attempt that compaction removed from context.

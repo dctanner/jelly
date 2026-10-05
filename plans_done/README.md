@@ -10,6 +10,7 @@ Reconciled with the app on 23 September 2026. These records describe shipped wor
 | [Phase 2: Pi tools, subagents and SDK upgrade](02-pi-capabilities.md) | Full native tools/resources, automatic execution, pi-subagents and Pi 0.87.1                                  |
 | [Phase 2: lifecycle and durable history](02-local-lifecycle.md)       | Archiving/restoration, Pi compaction checkpoints, history pagination, replay retention and instance ownership |
 | [Tailscale development access](03-tailscale-dev.md)                   | HTTP access on tailnet addresses with local access, hot reload and streaming transport                        |
+| [Subagent observability](07-subagent-observability.md)               | Live cards, bounded transcripts, five-minute parent model checkpoints and interactive lifecycle ownership     |
 
 Phase 2 implementation is complete; the [manual validation checklist](../plans/02-validation.md) is left to the user. Server-owned execution, stable instance identity and reconnect/replay were delivered with Phase 1 even though they also appeared in the original Phase 3 plan. Their remote extensions are tracked in the remaining Phase 3 plan.
 

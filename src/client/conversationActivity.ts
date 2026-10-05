@@ -1,6 +1,10 @@
 import type { Activity, RunRecord } from "../shared/types";
 import { toolImages } from "../shared/tool-images";
 
+export function isSubagentProgress(event: Activity) {
+  return event.type === "subagents_updated" || event.type.startsWith("subagent_");
+}
+
 function isWorkDetail(event: Activity) {
   return (
     [
@@ -8,12 +12,13 @@ function isWorkDetail(event: Activity) {
       "tool_completed",
       "thinking",
       "turn_completed",
+      "extension_notice",
       "run_started",
       "run_completed",
       "run_cancelled",
     ].includes(event.type) ||
     event.type.startsWith("compaction_") ||
-    event.type.startsWith("subagent_")
+    isSubagentProgress(event)
   );
 }
 
@@ -79,7 +84,7 @@ export function conversationActivity(
     const group = event.runId ? groups.get(event.runId) : undefined;
     const user = event.type === "message" && event.data.role === "user";
     if (group && !user) insert(group);
-    if (!group || !isWorkDetail(event) || toolImages(event).length > 0) {
+    if (!isSubagentProgress(event) && (!group || !isWorkDetail(event) || toolImages(event).length > 0)) {
       const screenshot =
         event.data.name === "browser_screenshot" && toolImages(event).length > 0;
       const previous = entries.at(-1);

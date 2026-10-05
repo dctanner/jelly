@@ -1,6 +1,28 @@
 # Subagent progress, inspection, and parent status updates
 
-Status: researched proposal; not implemented or deployed.
+Status: implemented and verified. Service activation is pending an idle restart.
+
+## Delivery
+
+- Interactive RPC host binding and async launch defaults retain Pi's native
+  scheduling, supervisor channel, completion batching and liveness ownership.
+- Bounded per-run rosters, session-owned transcript APIs, SQLite v11 history
+  snapshots and visible extension notices are integrated.
+- Five-minute model checkpoints, idle-parent steering, terminal reconciliation,
+  attempt correlation and cancellation ownership have regression coverage.
+- Final `bun run check` passed: **338 tests**, TypeScript and production build.
+  Independent lifecycle and security/UI reviews found no remaining blockers
+  after fixes and regression coverage.
+- A real Chromium fixture at 390×844 verified visible cards, expanded thinking
+  and tools, no horizontal overflow and no page errors.
+- Inspection shows finalized provider-exposed content. Forked/headerless
+  transcripts and external/custom session directories remain explicitly
+  unavailable; no hidden reasoning or raw session metadata is exposed.
+
+Implementation details and limits: [architecture](../docs/ARCHITECTURE.md#subagent-observability).
+Final review workflow: `14c7a308-cbf5-4287-b1b6-399565a1edbb`;
+reports are retention-managed under `.pi/subagents/artifacts/outputs/`.
+The research below records the pre-implementation baseline.
 
 Research baseline: installed Pi **0.87.1**, `pi-subagents` **0.71.0**, Jelly working tree on 2 October 2026. Installed source is authoritative here; upstream main may differ.
 

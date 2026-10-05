@@ -393,6 +393,16 @@ export async function startApp(options: AppOptions) {
                 ),
               );
             }
+            const subagentView = url.pathname.match(/^\/api\/agents\/([^/]+)\/runs\/([^/]+)\/subagents(?:\/([^/]+)\/transcript)?$/);
+            if (req.method === "GET" && subagentView) {
+              controls.require(req, false);
+              const [, agentId, runId, childId] = subagentView;
+              if (!childId) return json(service.subagents.snapshot(agentId!, runId!));
+              const rawBefore = url.searchParams.get("before");
+              if (rawBefore !== null && (!/^\d+$/.test(rawBefore) || !Number.isSafeInteger(Number(rawBefore))))
+                throw new HttpError(400, "Invalid transcript cursor.");
+              return json(await service.subagents.transcript(agentId!, runId!, childId, rawBefore === null ? undefined : Number(rawBefore)));
+            }
             if (req.method === "GET" && url.pathname === "/api/events") {
               const cursor =
                 req.headers.get("last-event-id") ??

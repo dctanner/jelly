@@ -1,0 +1,118 @@
+.subagent-roster {
+  min-width: 0;
+  margin: 10px 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--page);
+  font-size: 14px;
+}
+.subagent-roster h3,
+.subagent-roster h4 {
+  margin: 0 0 8px;
+  font-size: inherit;
+  font-weight: 600;
+}
+.subagent-group + .subagent-group {
+  margin-top: 12px;
+}
+.subagent-group > h4 {
+  color: var(--muted);
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.subagent-card {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.subagent-card > summary,
+.subagent-roster .subagent-entry > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 2px;
+  cursor: pointer;
+  list-style: none;
+}
+.subagent-card > summary::-webkit-details-marker,
+.subagent-entry > summary::-webkit-details-marker {
+  display: none;
+}
+.subagent-card > summary > svg,
+.subagent-entry > summary > svg {
+  flex-shrink: 0;
+}
+.subagent-card > summary > .work-chevron {
+  transition: transform 150ms ease;
+}
+.subagent-card[open] > summary > .work-chevron {
+  transform: rotate(90deg);
+}
+.subagent-card-content {
+  display: block;
+  min-width: 0;
+}
+.subagent-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.subagent-meta {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.subagent-meta svg {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.subagent-attention {
+  display: block;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+.subagent-details {
+  min-width: 0;
+  padding: 4px 8px 12px;
+  overflow-wrap: anywhere;
+}
+.subagent-transcript {
+  max-height: 32rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  margin-top: 12px;
+  padding: 4px;
+}
+.subagent-transcript button {
+  min-height: 44px;
+}
+.subagent-transcript pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.subagent-entry > summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.subagent-entry > summary > .work-chevron {
+  margin-left: auto;
+}
+@media (max-width: 767px) {
+  .subagent-roster {
+    padding: 8px;
+  }
+  .subagent-details {
+    padding-inline: 2px;
+  }
+  .subagent-transcript button {
+    font-size: 16px;
+  }
+}

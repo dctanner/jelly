@@ -31,8 +31,13 @@ import {
 } from "./project-state";
 import { AVATARS } from "../shared/avatars";
 import { isToolActivity } from "./activityGroups";
-import { conversationActivity } from "./conversationActivity";
+import {
+  conversationActivity,
+  isSubagentProgress,
+  workState,
+} from "./conversationActivity";
 import { WorkActivity } from "./WorkActivity";
+import { SubagentRoster } from "./SubagentRoster";
 import { copyText } from "./clipboard";
 import type { ProjectRecord } from "../shared/types";
 import { Folder, ChevronLeft } from "lucide-react";
@@ -691,6 +696,15 @@ function EventItem({
               : `Context summary failed: ${String(event.data.error ?? "Please try again.")}`}
       </div>
     );
+  if (event.type === "extension_notice")
+    return (
+      <div
+        className={`run-note${event.data.level === "warning" || event.data.level === "error" ? " error-text" : ""}`}
+        role={event.data.level === "warning" || event.data.level === "error" ? "alert" : "status"}
+      >
+        <MessageText text={String(event.data.text ?? "Extension notice")} />
+      </div>
+    );
   if (event.type.startsWith("subagent_"))
     return (
       <div className="run-note">
@@ -871,6 +885,8 @@ export function App() {
     if (previous && chat.scrollTop < previous.top && chat.scrollTop <= 160 && !historyError)
       void olderHistory();
   };
+  const [subagentRevision, setSubagentRevision] = useState(0);
+  const [subagentRunRevisions, setSubagentRunRevisions] = useState<Record<string, number>>({});
   const pending = useRef<{ id: string; agentId: string; text: string } | null>(
     null,
   );
@@ -997,8 +1013,27 @@ export function App() {
             setConnected(false);
             void load();
           });
-          source.addEventListener("activity", () => {
+          source.addEventListener("subagents_updated", () => {
             if (dead || source !== connection) return;
+            // SSE is an invalidation only; each run reloads its authoritative roster.
+            setSubagentRevision((revision) => revision + 1);
+          });
+          source.addEventListener("activity", (event) => {
+            if (dead || source !== connection) return;
+            try {
+              const update = JSON.parse(event.data);
+              if (update.type === "subagents_updated") {
+                if (typeof update.runId === "string")
+                  setSubagentRunRevisions((revisions) => ({
+                    ...revisions,
+                    [update.runId]: (revisions[update.runId] ?? 0) + 1,
+                  }));
+                else setSubagentRevision((revision) => revision + 1);
+                return;
+              }
+            } catch {
+              // Normal snapshot refresh also recovers malformed event envelopes.
+            }
             clearTimeout(timer);
             timer = setTimeout(() => void load(), 25);
           });
@@ -1045,7 +1080,7 @@ export function App() {
     scrollAgent.current = selected;
     rememberScroll();
   }, [
-    data?.events.at(-1)?.id,
+    data?.events.filter((event) => !isSubagentProgress(event)).at(-1)?.id,
     data?.pendingMessages?.length,
     data?.selectedAgentId,
     selected,
@@ -1578,6 +1613,13 @@ export function App() {
                           agent={agent}
                         />
                       )}
+                    />
+                    <SubagentRoster
+                      agentId={agent.id}
+                      runId={entry.run?.id ?? entry.events[0]!.runId!}
+                      active={workState(entry.events, entry.run).active}
+                      endedAt={entry.run?.endedAt ?? workState(entry.events, entry.run).terminal?.createdAt}
+                      revision={subagentRevision + (subagentRunRevisions[entry.run?.id ?? entry.events[0]!.runId!] ?? 0) + (entry.events.filter((event) => event.type === "subagents_updated").at(-1)?.id ?? 0)}
                     />
                     </div>
                   ) : (
