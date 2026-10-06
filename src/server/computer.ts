@@ -223,7 +223,11 @@ export class Computer {
         auth,
         "-rfbport",
         "0",
+        // LibVNCServer has a separate IPv6 port; -no6 alone leaves it at 5900.
+        "-rfbportv6",
+        "0",
         "-no6",
+        "-noipv6",
         "-unixsock",
         socket,
         "-forever",
