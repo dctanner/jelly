@@ -20,7 +20,9 @@ function recoverableDisconnect(event: TerminalEvent): boolean {
   return (
     event.type === "error" &&
     event.reason === "error" &&
-    /^WebSocket (?:closed (?:1001|1005|1006|1011|1012|1013)\b|idle timeout\b|error\b|stream closed before response\.completed)/i.test(
+    // Even a normal (1000) socket close is premature when Pi reports it as
+    // an error instead of receiving response.completed.
+    /^WebSocket (?:closed (?:1000|1001|1005|1006|1011|1012|1013)\b|idle timeout\b|error\b|stream closed before response\.completed)/i.test(
       event.error.errorMessage ?? "",
     )
   );

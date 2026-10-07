@@ -1601,6 +1601,7 @@ export function App() {
                       events={entry.events}
                       run={entry.run}
                       agent={agent}
+                      activity={data.agentActivity?.[agent.id]}
                       stopping={
                         stopping === agent.id && entry.run?.status === "running"
                       }

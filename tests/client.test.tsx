@@ -124,10 +124,8 @@ test("React client connects, creates an agent, sends through Pi, renders tool co
   fireEvent.change(textarea, { target: { value: "Check the workspace" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => {
-    const status = screen
-      .getByText("Scout is Working")
-      .closest('[role="status"]')!;
-    expect(status.textContent).toBe("Scout is Working");
+    const status = document.querySelector('.work-activity > summary [role="status"]');
+    expect(status?.textContent).toBe("Thinking…");
     expect(
       screen
         .getByTitle("Scout · running")
@@ -2226,6 +2224,8 @@ test("work disclosure shows thinking before tools, keeps results collapsed, and 
   expect(work.open).toBe(false);
   expect(screen.getByText(`${agent.name} is Working`).classList.contains("work-status-sheen")).toBe(true);
   expect(work.hasAttribute("open")).toBe(false);
+  ui.rerender(<WorkActivity {...props} activity="Checking the layout before editing." />);
+  expect(work.querySelector('summary [role="status"]')?.textContent).toBe("Checking the layout before editing.");
   fireEvent.click(work.querySelector("summary")!);
   await waitFor(() => expect(work.open).toBe(true));
   const thinking = screen.getByRole("region", { name: "Thinking" });
@@ -2234,7 +2234,10 @@ test("work disclosure shows thinking before tools, keeps results collapsed, and 
   expect(screen.queryByText(/Raw tool output/)).toBeNull();
   const tool = work.querySelector<HTMLDetailsElement>(".work-step")!;
   expect(tool.open).toBe(false);
-  ui.rerender(<WorkActivity {...props} run={{ ...run, status: "completed", endedAt: "2026-01-01T12:00:30Z" }} />);
+  ui.rerender(<WorkActivity {...props} activity="Now tightening the spacing." />);
+  expect(work.open).toBe(true);
+  expect(work.querySelector('summary [role="status"]')?.textContent).toBe("Now tightening the spacing.");
+  ui.rerender(<WorkActivity {...props} activity="Stale live preview" run={{ ...run, status: "completed", endedAt: "2026-01-01T12:00:30Z" }} />);
   expect(screen.getByText("Worked for 30s").classList.contains("work-status-sheen")).toBe(false);
   expect(work.open).toBe(true);
   expect(tool.open).toBe(false);
@@ -2242,9 +2245,9 @@ test("work disclosure shows thinking before tools, keeps results collapsed, and 
   await waitFor(() => expect(!!screen.queryByText(/Raw tool output/)).toBe(true));
   expect(screen.getByText("Input")).toBeDefined();
   expect(screen.getByText("Result")).toBeDefined();
-  ui.rerender(<WorkActivity {...props} agent={{ ...agent, status: "waiting" }} />);
+  ui.rerender(<WorkActivity {...props} activity="Stale live preview" agent={{ ...agent, status: "waiting" }} />);
   expect(screen.getByText(`${agent.name} is Waiting for you`).classList.contains("work-status-sheen")).toBe(false);
-  ui.rerender(<WorkActivity {...props} stopping />);
+  ui.rerender(<WorkActivity {...props} activity="Stale live preview" stopping />);
   expect(screen.getByText(`${agent.name} is Stopping`).classList.contains("work-status-sheen")).toBe(false);
 });
 
@@ -3588,4 +3591,20 @@ test("ComputerPanel disconnects old VNC and never attaches a late ticket to anot
     finish();
     globalThis.fetch = fetchBefore;
   }
+});
+
+
+test("global browser controller choices default to AgentBrowser and save Playwright", async () => {
+  const app = await setup();
+  render(<App />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Agent list menu" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Browser controller" }));
+  expect((screen.getByRole("radio", { name: "AgentBrowser" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByText(/Existing sessions keep their controller/)).toBeDefined();
+  fireEvent.click(screen.getByRole("radio", { name: "Playwright" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+  expect(app.service.snapshot().config.browserBackend).toBe("playwright");
 });

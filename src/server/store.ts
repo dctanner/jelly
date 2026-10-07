@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type {
+  BrowserBackend,
   ProjectRecord,
   AgentInput,
   Activity,
@@ -36,7 +37,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 11)
+    if (version > 12)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -172,6 +173,9 @@ export class Store {
           snapshot TEXT NOT NULL, sources TEXT NOT NULL
         ); PRAGMA user_version=11;`);
       })();
+    if (version < 12 && !(this.db.query("PRAGMA table_info(instance)").all() as { name: string }[]).some(column => column.name === "browserBackend"))
+      this.db.exec("ALTER TABLE instance ADD COLUMN browserBackend TEXT NOT NULL DEFAULT 'agent-browser' CHECK(browserBackend IN ('playwright','agent-browser'));");
+    if (version < 12) this.db.exec("PRAGMA user_version=12;");
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
     this.db.exec(`
@@ -285,9 +289,13 @@ export class Store {
       id: string;
       name: string;
       mode: Mode;
+      browserBackend: BrowserBackend;
       model: ModelId;
       effort: Effort;
     };
+  }
+  setBrowserBackend(backend: BrowserBackend) {
+    this.db.query("UPDATE instance SET browserBackend=?").run(backend);
   }
   setMode(mode: Mode) {
     this.db.query("UPDATE instance SET mode=?").run(mode);

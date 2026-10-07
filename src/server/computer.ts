@@ -10,12 +10,23 @@ import {
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type BrowserContext, type Page, type Response } from "playwright-core";
 import { HttpError } from "./errors";
 import { desktopClipboard, MAX_CLIPBOARD_CHARS } from "./desktop-clipboard";
 import type { ComputerState } from "../shared/types";
+import { BrowserEgress, reserveControllerPort } from "./browser-egress";
+import { AgentBrowser } from "./agent-browser";
+import type { BrowserBackend } from "../shared/types";
 import { BrowserTools, type StructuredAction } from "./browser-tools";
+// Control endpoints are private to Jelly, not merely to the owning browser.
+// Share this registry across all sessions (including Playwright sessions).
+const controllerPortOwners = new Map<number, number>();
+const browserEgresses = new Set<BrowserEgress>();
+
 export class Computer {
+  private agentBrowser?: AgentBrowser;
+  private egress?: BrowserEgress;
+  private controllerPorts = new Set<number>();
   private browserTools = new BrowserTools(() => !this.human && !this.closing && this.status === "ready");
   private status: ComputerState["status"] = "stopped";
   private error: string | null = null;
@@ -47,11 +58,17 @@ export class Computer {
     for (const origin of origins)
       this.protectedOrigins.add(new URL(origin).origin);
   }
+  private protectControllerPort(port: number) {
+    if (this.controllerPorts.has(port)) return;
+    this.controllerPorts.add(port);
+    controllerPortOwners.set(port, (controllerPortOwners.get(port) ?? 0) + 1);
+    for (const egress of browserEgresses) egress.revoke(port);
+  }
   private protectedUrl(value: string) {
     const url = new URL(value);
     if (url.protocol === "ws:") url.protocol = "http:";
     if (url.protocol === "wss:") url.protocol = "https:";
-    return this.protectedOrigins.has(url.origin);
+    return this.protectedOrigins.has(url.origin) || controllerPortOwners.has(Number(url.port));
   }
   private connections = new Set<() => void>();
   private tail: Promise<unknown> = Promise.resolve();
@@ -59,6 +76,7 @@ export class Computer {
     readonly dataDir: string,
     private changed: () => void = () => {},
     private runtimeDataDir = dataDir,
+    readonly backend: BrowserBackend = "playwright",
   ) {}
   state(session?: string): ComputerState {
     return {
@@ -264,6 +282,16 @@ export class Computer {
       home = join(this.dataDir, "browser-home");
     mkdirSync(profile, { recursive: true, mode: 0o700 });
     mkdirSync(home, { recursive: true, mode: 0o700 });
+    // Unlike context.route(), a browser proxy sees every redirect destination.
+    // It also covers restored tabs, new tabs and workers before page observers.
+    this.egress = new BrowserEgress((host, port) => {
+      const authority = `${host.includes(":") ? `[${host}]` : host}:${port}`;
+      return this.protectedUrl(`http://${authority}`) || this.protectedUrl(`https://${authority}`);
+    });
+    browserEgresses.add(this.egress);
+    const proxy = await this.egress.listen(port => this.protectControllerPort(port), port => controllerPortOwners.has(port));
+    const cdpPort = this.backend === "agent-browser"
+      ? await reserveControllerPort(port => this.protectControllerPort(port), port => controllerPortOwners.has(port)) : undefined;
     this.context = await chromium.launchPersistentContext(profile, {
       executablePath: browser,
       headless: false,
@@ -271,7 +299,10 @@ export class Computer {
       serviceWorkers: "block",
       extraHTTPHeaders: { "X-Jelly-Managed-Browser": "1" },
       viewport: null,
+      proxy: { server: proxy, bypass: "<-loopback>" },
       args: [
+        ...(cdpPort ? [`--remote-debugging-port=${cdpPort}`, "--remote-debugging-address=127.0.0.1"] : []),
+        "--disable-quic",
         "--window-size=1280,800",
         "--window-position=0,0",
         "--no-first-run",
@@ -288,6 +319,7 @@ export class Computer {
         LANG: "C.UTF-8",
       },
     });
+    const endpoint = cdpPort ? `http://127.0.0.1:${cdpPort}` : undefined;
     // The managed browser cannot act as a human client to approve its own tools.
     await this.context.route("**/*", (route) =>
       this.protectedUrl(route.request().url())
@@ -317,6 +349,11 @@ export class Computer {
     for (const page of this.context.pages()) this.trackPage(page);
     this.context.on("page", (page) => this.trackPage(page));
     await this.activePage();
+    if (endpoint) {
+      const streamPort = await reserveControllerPort(port => this.protectControllerPort(port), port => controllerPortOwners.has(port));
+      this.agentBrowser = new AgentBrowser(this.runtime);
+      await this.agentBrowser.start(endpoint, port => this.protectControllerPort(port), streamPort);
+    }
   }
   private trackPage(page: Page) {
     this.browserTools.invalidate();
@@ -343,8 +380,21 @@ export class Computer {
   }
   private async cleanup() {
     this.browserTools.dispose();
+    await this.agentBrowser?.close();
+    this.agentBrowser = undefined;
     await this.context?.close().catch(() => {});
     this.context = undefined;
+    if (this.egress) {
+      await this.egress.close();
+      browserEgresses.delete(this.egress);
+      this.egress = undefined;
+    }
+    for (const port of this.controllerPorts) {
+      const remaining = (controllerPortOwners.get(port) ?? 1) - 1;
+      if (remaining > 0) controllerPortOwners.set(port, remaining);
+      else controllerPortOwners.delete(port);
+    }
+    this.controllerPorts.clear();
     this.page = undefined;
     for (const p of this.processes) p.kill("SIGTERM");
     await Promise.all(
@@ -455,7 +505,8 @@ export class Computer {
       if (action === "scroll") {
         const x = Number(args.x ?? 0), y = Number(args.y);
         if (![x, y].every(n => Number.isFinite(n) && Math.abs(n) <= 10000)) throw new Error("Scroll deltas must be within 10000 pixels.");
-        await page.evaluate(({ x, y }) => window.scrollBy(x, y), { x, y });
+        if (this.agentBrowser) await this.agentBrowser.act(page, "scroll", { x, y }, guard);
+        else await page.evaluate(({ x, y }) => window.scrollBy(x, y), { x, y });
         result = { ok: true };
       }
       if (action === "wait_for") {
@@ -476,11 +527,23 @@ export class Computer {
         }
       }
       if (action === "open") {
-        const response = await page.goto(this.url(String(args.url)), {
-          waitUntil: "domcontentloaded",
-          timeout: 30000,
-        });
-        result = { url: page.url(), status: response?.status() };
+        const url = this.url(String(args.url));
+        if (this.agentBrowser) {
+          // Native navigate returns no HTTP status. Observe the main-frame
+          // response through the existing bridge without replacing navigation.
+          let status: number | undefined;
+          const response = (value: Response) => {
+            if (value.request().isNavigationRequest() && value.frame() === page.mainFrame()) status = value.status();
+          };
+          page.on("response", response);
+          try {
+            await this.agentBrowser.act(page, "navigate", { url, waitUntil: "domcontentloaded" }, guard);
+            result = { url: page.url(), status };
+          } finally { page.off("response", response); }
+        } else {
+          const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+          result = { url: page.url(), status: response?.status() };
+        }
       }
       if (action === "screenshot") {
         // Chromium can reject capture before the first compositor frame of a
@@ -514,15 +577,18 @@ export class Computer {
           y > 800
         )
           throw new Error("Invalid coordinates.");
-        await page.mouse.click(x, y);
+        if (this.agentBrowser) await this.agentBrowser.act(page, "coordinateClick", { x, y }, guard);
+        else await page.mouse.click(x, y);
         result = { ok: true };
       }
       if (action === "type") {
-        await page.keyboard.insertText(String(args.text));
+        if (this.agentBrowser) await this.agentBrowser.act(page, "keyboard", { subaction: "insertText", text: String(args.text) }, guard);
+        else await page.keyboard.insertText(String(args.text));
         result = { ok: true };
       }
       if (action === "key") {
-        await page.keyboard.press(String(args.key));
+        if (this.agentBrowser) await this.agentBrowser.act(page, "press", { key: String(args.key) }, guard);
+        else await page.keyboard.press(String(args.key));
         result = { ok: true };
       }
       if (this.human || generation !== this.generation)

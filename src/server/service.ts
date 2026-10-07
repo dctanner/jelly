@@ -1,3 +1,4 @@
+import type { BrowserBackend } from "../shared/types";
 import type { ModelId, Effort } from "../shared/models";
 import type { AgentSession, FileEntry } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
@@ -54,6 +55,7 @@ export class JellyService {
     this.subagents = new SubagentStore(store.db);
     this.computer = new ComputerSessions(harness.dataDir, id => !!store.agent(id), id =>
       this.emit(id, null, "computer_changed", {}),
+      () => store.instance().browserBackend,
     );
     this.interventions = new Interventions(
       store,
@@ -133,7 +135,7 @@ export class JellyService {
       runs: page.runs,
       historyBefore: page.before,
       cursor: this.store.cursor(),
-      config: this.harness.config(instance.mode, instance),
+      config: { ...this.harness.config(instance.mode, instance), browserBackend: instance.browserBackend },
       interventions: page.interventions,
       computer: this.computer.state(selected?.id ?? null, sessionId),
     };
@@ -278,9 +280,13 @@ export class JellyService {
   setMode(mode: Mode) {
     return this.setConfig({ mode });
   }
-  setConfig(input: { agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort }) {
+  setConfig(input: { browserBackend?: BrowserBackend; agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort }) {
     if (input.mode !== undefined && !["auto", "chatgpt", "api"].includes(input.mode))
       throw new HttpError(400, "Unknown connection mode.");
+    if (input.browserBackend !== undefined && !["playwright", "agent-browser"].includes(input.browserBackend))
+      throw new HttpError(400, "Unknown browser controller.");
+    if (input.browserBackend !== undefined && input.agentId !== undefined)
+      throw new HttpError(400, "Browser controller is a global setting.");
     const current = this.store.instance();
     const agent = input.agentId !== undefined ? this.store.agent(input.agentId) : null;
     if (input.agentId !== undefined && !agent)
@@ -288,17 +294,19 @@ export class JellyService {
     const switching = input.model !== undefined || input.effort !== undefined;
     const baseline = agent && switching ? agent : current;
     const next = {
+      browserBackend: input.browserBackend ?? current.browserBackend,
       mode: input.mode ?? current.mode,
       model: input.model ?? baseline.model,
       effort: input.effort ?? baseline.effort,
     };
     const event = this.store.db.transaction(() => {
       this.store.setConfig(next.mode, next.model, next.effort);
+      this.store.setBrowserBackend(next.browserBackend);
       if (agent && switching) this.store.setAgentConfig(agent.id, next.model, next.effort);
       return this.store.event(null, null, "config_changed", { ...next, agentId: agent?.id ?? null });
     })();
     this.notify(event);
-    return this.harness.config(next.mode, next);
+    return { ...this.harness.config(next.mode, next), browserBackend: next.browserBackend };
   }
   freshSession(agentId: string, requestId: string) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");

@@ -589,6 +589,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.work-summary-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .work-step-details {
   margin: 4px 0 8px 24px;
   padding: 12px;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Computer } from "./computer";
+import type { BrowserBackend } from "../shared/types";
 import { HttpError } from "./errors";
 
 /** Each entry owns its display, Chromium context, profile, clipboard and tickets. */
@@ -9,7 +10,8 @@ export class ComputerSessions {
   private origins: string[] = [];
   private closing = false;
   constructor(private dataDir: string, private validAgent: (id: string) => boolean,
-    private changed: (id: string) => void = () => {}) {}
+    private changed: (id: string) => void = () => {},
+    private backend: () => BrowserBackend = () => "agent-browser") {}
   get(agentId: string): Computer {
     if (!agentId || !this.validAgent(agentId)) throw new HttpError(404, "Agent not found.");
     if (this.closing) throw new HttpError(503, "Browser sessions are closing.");
@@ -18,7 +20,7 @@ export class ComputerSessions {
       // Bound resource use without evicting a private handoff or active operation.
       if (this.sessions.size >= 8) throw new HttpError(409, "Close another agent browser session first (limit 8).");
       const directory = createHash("sha256").update(agentId).digest("hex");
-      computer = new Computer(join(this.dataDir, "browser-sessions", directory), () => this.changed(agentId), this.dataDir);
+      computer = new Computer(join(this.dataDir, "browser-sessions", directory), () => this.changed(agentId), this.dataDir, this.backend());
       computer.protectOrigins(this.origins);
       this.sessions.set(agentId, computer);
     }

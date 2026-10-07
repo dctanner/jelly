@@ -40,6 +40,11 @@ are explicitly unavailable. See [architecture](docs/ARCHITECTURE.md#subagent-obs
 
 ## Browser and patch tools
 
+Settings → **Browser controller** offers **Playwright** and **AgentBrowser** (default).
+Existing sessions keep their controller until closed and reopened. Both reuse each
+agent's isolated persistent profile, retaining sign-ins without copying credentials.
+See [controller architecture and lifecycle](docs/BROWSER-CONTROLLERS.md).
+
 Agents can inspect bounded visible browser text and element references, click/fill non-secret fields, manage session-local tabs, scroll, wait for text/readiness, and read redacted error diagnostics. These share the existing per-agent isolation and private-control gate. References expire on new observations/navigation/handoff; snapshots cover the top-level DOM only. Reference actions use synthetic events, and secret-field detection is heuristic—always use private browser sign-in for credentials.
 
 `apply_patch` adds Codex-style multi-file add/update/delete/move patches on both OpenAI API and ChatGPT, alongside unchanged Pi `edit`/`write`. It requires exact unique context and rejects symlinks, hardlinked sources and unsupported text. Paths are not sandboxed. Preflight checks the whole patch, but filesystem writes are **not transactional**: failures can leave partial changes, reported in a mutation ledger. Limits are 1 MiB per patch/file, 64 operations and 16 MiB combined working set.

@@ -113,12 +113,14 @@ export function WorkActivity({
   events,
   run,
   agent,
+  activity,
   stopping,
   renderEvent,
 }: {
   events: Activity[];
   run?: RunRecord;
   agent: AgentRecord;
+  activity?: string;
   stopping: boolean;
   renderEvent: (event: Activity) => ReactNode;
 }) {
@@ -137,7 +139,11 @@ export function WorkActivity({
           ? "Interrupted after"
           : "Worked for";
   const label = active
-    ? `${agent.name} is ${stopping ? "Stopping" : agent.status === "waiting" ? "Waiting for you" : "Working"}`
+    ? stopping
+      ? `${agent.name} is Stopping`
+      : agent.status === "waiting"
+        ? `${agent.name} is Waiting for you`
+        : activity?.trim() || `${agent.name} is Working`
     : duration
       ? `${settledLabel} ${duration}`
       : status === "failed"
@@ -182,10 +188,11 @@ export function WorkActivity({
       <summary>
         <span
           role="status"
+          title={label}
           className={
             active && !stopping && agent.status !== "waiting"
-              ? "work-status-sheen"
-              : undefined
+              ? "work-summary-label work-status-sheen"
+              : "work-summary-label"
           }
         >
           {label}

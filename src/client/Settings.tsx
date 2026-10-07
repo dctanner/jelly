@@ -11,7 +11,7 @@ import {
   type ModelId,
   type Effort,
 } from "../shared/models";
-import type { Mode, Snapshot } from "../shared/types";
+import type { BrowserBackend, Mode, Snapshot } from "../shared/types";
 import type { Theme } from "./theme";
 
 export function SettingsRow({
@@ -94,6 +94,7 @@ export function Settings({
   onClose: () => void;
   refresh: () => Promise<void>;
 }) {
+  const [browserBackend, setBrowserBackend] = useState<BrowserBackend>(data.config.browserBackend ?? "agent-browser");
   const [mode, setMode] = useState<Mode>(data.config.mode);
   const [model, setModel] = useState<ModelId>(data.config.selectedModel);
   const [effort, setEffort] = useState<Effort>(data.config.effort);
@@ -102,6 +103,7 @@ export function Settings({
   const [error, setError] = useState("");
   const [detailDirty, setDetailDirty] = useState(false);
   const dirty =
+    browserBackend !== (data.config.browserBackend ?? "agent-browser") ||
     mode !== data.config.mode ||
     model !== data.config.selectedModel ||
     effort !== data.config.effort;
@@ -132,7 +134,7 @@ export function Settings({
     try {
       await api("/config", {
         method: "PUT",
-        body: JSON.stringify({ mode, model, effort }),
+        body: JSON.stringify({ mode, model, effort, browserBackend }),
       });
       await refresh();
       onClose();
@@ -172,8 +174,36 @@ export function Settings({
         </button>
       }
     >
+      {page === "Browser controller" && (
+        <>
+          <Choices
+            label="Browser controller"
+            value={browserBackend}
+            onChange={setBrowserBackend}
+            options={[
+              { id: "playwright", label: "Playwright" },
+              { id: "agent-browser", label: "AgentBrowser" },
+            ]}
+          />
+          <p className="settings-footnote">
+            Applies to newly opened browser sessions for all agents. Existing
+            sessions keep their controller until closed and reopened. Sign-ins
+            stay in each agent’s isolated profile, shared by both controllers.
+          </p>
+        </>
+      )}
       {page === "Settings" && (
         <>
+          <section className="settings-section">
+            <h3>Browser</h3>
+            <div className="settings-group">
+              <SettingsRow
+                label="Browser controller"
+                value={browserBackend === "playwright" ? "Playwright" : "AgentBrowser"}
+                onClick={() => setPage("Browser controller")}
+              />
+            </div>
+          </section>
           <section className="settings-section">
             <h3>Appearance</h3>
             <div className="settings-group">

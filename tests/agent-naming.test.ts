@@ -216,7 +216,7 @@ test("naming eligibility persists across reopen; migrations never opt old agents
     expect(store.claimAgentName(pending.id)).toBe(false);
     expect(store.claimAgentName(manual.id)).toBe(false);
     expect(store.db.query("PRAGMA user_version").get()).toEqual({
-      user_version: 11,
+      user_version: 12,
     });
   } finally {
     store.close();

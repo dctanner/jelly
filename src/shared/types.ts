@@ -53,7 +53,9 @@ export interface Activity {
   data: Record<string, unknown>;
   createdAt: string;
 }
+export type BrowserBackend = "playwright" | "agent-browser";
 export interface ConnectionConfig {
+  browserBackend?: BrowserBackend;
   selectedModel: ModelId;
   effort: Effort;
   mode: Mode;

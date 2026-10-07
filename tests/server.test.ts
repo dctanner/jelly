@@ -489,7 +489,7 @@ test("schema v9 pins historical agent settings once, preserving Ultrafast and ar
       expect(store.agent(ultra.id)).toMatchObject({ model: "gpt-6-astra-ultrafast", effort: "max" });
       expect(store.agent(unused.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "low" });
       expect(store.historyPage(ultra.id)).toEqual(history);
-      expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 11 });
+      expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 12 });
       expect(store.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
       // Later default changes and reopening must not rerun the backfill.
       store.setConfig("api", "gpt-6-astra", "medium");
@@ -569,7 +569,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 11,
+        user_version: 12,
       });
     } finally {
       store.close();
@@ -920,7 +920,7 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
   store = new Store(path);
   try {
     expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
-    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 11 });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 12 });
     expect(store.agent(agent.id)).toEqual(agent);
     expect(store.run(run.id)?.mode).toBe("demo");
     expect(store.historyPage(agent.id).events).toContainEqual(event);
@@ -1037,3 +1037,23 @@ for (const authenticated of [false, true]) {
     expect(() => app.service.computer.get(overflow.id)).toThrow("limit 8");
   });
 }
+
+
+test("global browser controller defaults, validates, persists, and does not switch open sessions", async () => {
+  const { app, request, id } = await fixture();
+  expect(app.store.instance().browserBackend).toBe("agent-browser");
+  expect((await (await request("/api/state")).json()).config.browserBackend).toBe("agent-browser");
+  const original = app.service.computer.get(id);
+  expect(original.backend).toBe("agent-browser");
+  for (const browserBackend of [null, "other", 5, {}, ["playwright"]])
+    expect((await request("/api/config", "PUT", { browserBackend })).status).toBe(400);
+  expect((await request("/api/config", "PUT", { agentId: id, browserBackend: "playwright" })).status).toBe(400);
+  const response = await request("/api/config", "PUT", { browserBackend: "playwright" });
+  expect(response.status).toBe(200);
+  expect((await response.json()).browserBackend).toBe("playwright");
+  expect(app.service.computer.get(id)).toBe(original);
+  expect(original.backend).toBe("agent-browser");
+  await app.service.computer.closeSession(id);
+  expect(app.service.computer.get(id).backend).toBe("playwright");
+  expect(app.store.instance().browserBackend).toBe("playwright");
+});
