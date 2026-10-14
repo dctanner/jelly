@@ -146,6 +146,7 @@ export async function startApp(options: AppOptions) {
       options,
     );
     cleanup = () => service.close();
+    service.schedules.start();
     const controls = new ControlSessions(options.allowedOrigins);
     const connections = new Connections(
       service.harness.auth,
@@ -794,8 +795,17 @@ export async function startApp(options: AppOptions) {
                 }),
               );
             }
+            const scheduleMatch = url.pathname.match(/^\/api\/schedules\/([^/]+)$/);
+            if (scheduleMatch) {
+              if (req.method === "PATCH")
+                return json(service.schedules.update(scheduleMatch[1]!, await body(req)));
+              if (req.method === "DELETE") {
+                service.schedules.remove(scheduleMatch[1]!);
+                return json({ ok: true });
+              }
+            }
             const match = url.pathname.match(
-              /^\/api\/agents\/([^/]+)(?:\/(messages|stop|archive|restore|history|project|steer|fresh-session))?$/,
+              /^\/api\/agents\/([^/]+)(?:\/(messages|stop|archive|restore|history|project|steer|fresh-session|schedules|schedules\/parse))?$/,
             );
             if (match) {
               const [, id, action] = match;
@@ -836,6 +846,15 @@ export async function startApp(options: AppOptions) {
                 const existing = store.agent(id!);
                 if (!existing) throw new HttpError(404, "Agent not found.");
                 return json(service.updateAgent(id!, profile({ ...existing, ...input })));
+              }
+              if (req.method === "POST" && action === "schedules/parse")
+                return json(await service.parseSchedule(id!, await body(req)));
+              if (action === "schedules") {
+                if (!store.agent(id!)) throw new HttpError(404, "Agent not found.");
+                if (req.method === "GET")
+                  return json({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, schedules: service.schedules.list(id!) });
+                if (req.method === "POST")
+                  return json(service.schedules.create(id!, await body(req)), 201);
               }
               if (req.method === "POST" && action === "messages") {
                 const input = await body(req);

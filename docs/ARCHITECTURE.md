@@ -44,6 +44,11 @@ All API responses use JSON except the event stream and VNC WebSocket. Errors hav
 | POST   | `/api/agents/:id/messages` | Accept `{text, requestId, mode?: "queue" \| "steer"}`; return run metadata for immediate sends or pending message metadata |
 | POST   | `/api/agents/:id/steer`    | Promote a pending message with `{messageId}` |
 | POST   | `/api/agents/:id/stop`     | Stop the active run                                                                           |
+| GET    | `/api/agents/:id/schedules` | `{timeZone, schedules}` for the agent                                                       |
+| POST   | `/api/agents/:id/schedules` | Create `{cron, prompt, enabled?, once?}`                                                           |
+| POST   | `/api/agents/:id/schedules/parse` | Preview `{cron}`, or suggest one from `{text}`; returns `{cron, once, prompt, summary, nextRuns}`; saves nothing |
+| PATCH  | `/api/schedules/:id`       | Update `{cron?, prompt?, enabled?, once?}`                                                           |
+| DELETE | `/api/schedules/:id`       | Delete a schedule                                                                             |
 | PUT    | `/api/config`              | Persist access mode, model and reasoning effort                                               |
 
 Event frames have `id`, `event: activity`, and a JSON payload with `id`, `agentId`, `runId`, `type`, `data`, and `createdAt`. The `Last-Event-ID` header takes precedence over the `after` query on reconnect. Heartbeats keep idle connections open. Slow clients are disconnected and can replay from their last event ID.
@@ -132,6 +137,12 @@ when a resumed attempt changes the source, even if byte offsets collide.
 an injected-clock five-minute real Pi model-turn test, and local-provider tests
 with real package children covering foreground, concurrency, async/resume,
 cancellation, model checkpoints, user steering and supervisor wake/reply.
+
+## Scheduled messages
+
+`schedules` (created idempotently alongside the versioned schema, like Apps; `once` is added to older tables in place) stores per-agent cron rules: `cron`, `prompt`, `enabled`, `once`, `nextRunAt`, `lastRunAt` and `lastError`. A one-time schedule (`once`) fires at its next matching time (within a year, since cron has no year field), then pauses itself and keeps that time as its record; re-enabling it targets the next match. Expressions use five POSIX fields (names, ranges, lists and steps; day-of-month and day-of-week OR when both are restricted) or `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly`, evaluated in the server's local time zone. A wall-clock time skipped by a DST change does not fire that day. An agent may have up to 20 schedules.
+
+A 15-second in-process timer sends each due prompt through `JellyService.start` with request ID `schedule:<id>:<nextRunAt>`, so it is persisted, queued behind active work, deduplicated and displayed exactly like a typed message (the client labels it **Scheduled**). Jelly has no integration-specific triggers: an agent polls Gmail, GitHub or anything else through its own tools and MCP servers. At most one copy of a schedule waits in an agent's queue; later due times are skipped and recorded in `lastError`, as are start failures such as a missing model connection. Archived agents and disabled schedules do not fire. Schedules run only while Jelly runs: on startup, times missed while stopped are skipped rather than replayed (a missed one-time schedule pauses with `lastError` "Missed while Jelly was stopped."), and pending scheduled messages follow the normal restart cancellation rules. The schedule form also accepts natural language ("every weekday at 9am, check my inbox"). `/schedules/parse` first tries the text as cron; otherwise Harness makes one isolated, tool-free `completeSimple` call with the agent's model and credentials (minimal reasoning, no retries, ten-second timeout, as for first-message naming), sending the text, the server's local time and time zone. It never enters the agent's queue, session or history, so it answers while the agent is busy. One-off requests ("tomorrow at 3pm") come back with `once: true` and a cron for that exact date. The model's JSON is validated by the same cron parser and returned with the next three run times for the user to confirm; nothing is saved until they do. Typed expressions use the same endpoint with `{cron}` for a model-free preview. This is a stop-gap until MCP triggers/events can wake agents directly.
 
 ## Runtime boundaries and current limits
 

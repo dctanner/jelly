@@ -32,6 +32,7 @@ import { DesktopSessions } from "./desktop-sessions";
 import { desktopTools } from "./desktop-tools";
 import type { DesktopUIStatus } from "../shared/desktop";
 import type { BrowserPort } from "./browser-sessions";
+import { parseCron, previewRuns, scheduleInput, Schedules, suggestionFromModel, type ScheduleSuggestion } from "./schedules";
 
 const MAX_RUN_TURNS = 1_000;
 const MAX_RUN_DURATION_MS = 5 * 60 * 60 * 1_000;
@@ -59,6 +60,7 @@ export class JellyService {
   readonly subagents: SubagentStore;
   readonly apps: AppsService;
   readonly desktop: DesktopSessions;
+  readonly schedules: Schedules;
   private desktopPrivate = false;
   private privateBoundaries = new Set<string>();
   private desktopHandoff: DesktopUIStatus["handoff"] = null;
@@ -74,6 +76,7 @@ export class JellyService {
   ) {
     store.recover();
     this.subagents = new SubagentStore(store.db);
+    this.schedules = new Schedules(store.db, (agentId, requestId, prompt) => this.start(agentId, requestId, prompt));
     this.apps = new AppsService(store, {
       dataDir: harness.dataDir,
       allowedOrigins: options.allowedOrigins,
@@ -512,6 +515,42 @@ export class JellyService {
     })();
     this.notify(event);
     return { ...this.harness.config(next.mode, next), browserBackend: next.browserBackend, ...selection };
+  }
+  /**
+   * Preview a typed cron expression, or turn natural language into one with an
+   * isolated model call. This never enters the agent's queue or conversation,
+   * so it answers immediately even while the agent is busy. Nothing is saved.
+   */
+  async parseSchedule(agentId: string, input: Record<string, unknown>): Promise<ScheduleSuggestion> {
+    const agent = this.store.agent(agentId);
+    if (!agent) throw new HttpError(404, "Agent not found.");
+    const now = new Date();
+    const preview = (cron: string) => ({ cron, once: false, prompt: null, summary: null, nextRuns: previewRuns(cron, now) });
+    if (input.cron !== undefined) return preview(scheduleInput({ cron: input.cron }, true).cron!);
+    if (typeof input.text !== "string" || !input.text.trim() || input.text.length > 1000)
+      throw new HttpError(400, "Describe the schedule in 1 to 1000 characters.");
+    const text = input.text.trim();
+    try {
+      parseCron(text);
+      return preview(scheduleInput({ cron: text }, true).cron!);
+    } catch {
+      // Not a cron expression: ask the model.
+    }
+    const config = this.harness.config(this.store.instance().mode, agent);
+    this.harness.requireConnection(config);
+    let raw: string | null;
+    try {
+      raw = await this.harness.parseSchedule(
+        text,
+        now.toString(),
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+        config,
+        new AbortController().signal,
+      );
+    } catch {
+      throw new HttpError(502, "Couldn't reach the model to understand that schedule. Pick a preset or enter a cron expression.");
+    }
+    return suggestionFromModel(raw, now);
   }
   freshSession(agentId: string, requestId: string) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
@@ -1015,6 +1054,7 @@ export class JellyService {
   }
   async close() {
     this.closing = true;
+    this.schedules.stop();
     const states = [...this.active.values()];
     for (const state of states) { state.cancelled = true; state.naming?.abort(); }
     const outcomes = await Promise.allSettled([

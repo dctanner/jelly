@@ -37,6 +37,20 @@ export interface AgentRecord {
   createdAt: string;
   archivedAt: string | null;
 }
+export interface ScheduleRecord {
+  id: string;
+  agentId: string;
+  /** Five-field cron expression or macro, evaluated in the server's local time zone. */
+  cron: string;
+  prompt: string;
+  enabled: boolean;
+  /** Fire at the next matching time, then pause. */
+  once: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
 export interface RunRecord {
   id: string;
   agentId: string;

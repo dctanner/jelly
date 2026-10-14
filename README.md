@@ -29,6 +29,10 @@ Apps is an iframe-only launcher for independently hosted apps. Choose **Apps →
 
 **Only add apps you trust.** Same-host app servers may receive or interfere with Jelly cookies, including HttpOnly cookies; Tailscale protects network access, not app isolation. Jelly keeps session/CSRF and exact control-origin checks and stays unframeable. Registration does not verify embedding or availability, and removal never stops the app. See [Apps](docs/APPS.md).
 
+## Scheduled messages
+
+Open an agent → **Schedules** to send it a message on a schedule. Describe it in plain words ("every weekday at 9am, check my inbox") and Jelly fills in the cron expression and message for you to confirm, or enter cron directly, e.g. `*/15 * * * *` "Check my inbox MCP for new bug reports" or `0 17 * * fri` "Write the weekly report". Tick **Run once** (or say "tomorrow at 3pm …") for a one-time task that pauses after it fires. The message runs like one you typed, with the agent's full tools and memory; busy agents queue it. Times use the server's time zone, and schedules only run while Jelly is running (missed times are skipped). See [architecture](docs/ARCHITECTURE.md#scheduled-messages).
+
 ## Subagent progress
 
 Delegated work appears in live, expandable cards in the conversation. Open a

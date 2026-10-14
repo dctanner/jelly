@@ -38,10 +38,11 @@ import {
   workState,
 } from "./conversationActivity";
 import { WorkActivity } from "./WorkActivity";
+import { AgentSchedules } from "./AgentSchedules";
 import { SubagentRoster } from "./SubagentRoster";
 import { copyText } from "./clipboard";
 import type { ProjectRecord } from "../shared/types";
-import { Folder, ChevronLeft } from "lucide-react";
+import { Folder, ChevronLeft, Clock } from "lucide-react";
 import { requestId } from "./request-id";
 import { InterventionCard } from "./InterventionCard";
 import { ComputerPanel } from "./ComputerPanel";
@@ -392,7 +393,7 @@ function AgentDetails({
   onArchive: () => void;
   onSaved: () => void;
 }) {
-  const [page, setPage] = useState<"details" | "profile" | "workspace">(
+  const [page, setPage] = useState<"details" | "profile" | "workspace" | "schedules">(
     "details",
   );
   const [dirty, setDirty] = useState(false);
@@ -407,14 +408,16 @@ function AgentDetails({
           ? agent.name
           : page === "profile"
             ? "Agent profile"
-            : "Workspace"
+            : page === "schedules"
+              ? "Schedules"
+              : "Workspace"
       }
       className="agent-sheet"
       detent={page === "details" ? "medium" : "large"}
       dirty={dirty}
       dismissible={!busy}
       onClose={onClose}
-      backDiscards={page === "profile"}
+      backDiscards={page === "profile" || page === "schedules"}
       onBack={
         page === "details"
           ? undefined
@@ -472,6 +475,12 @@ function AgentDetails({
               icon={<Folder size={19} />}
               onClick={() => setPage("workspace")}
             />
+            <SettingsRow
+              label="Schedules"
+              icon={<Clock size={19} />}
+              disabled={!connected}
+              onClick={() => setPage("schedules")}
+            />
           </div>
           <div className="settings-group archive-group">
             <button
@@ -504,6 +513,14 @@ function AgentDetails({
           <p role="status">{copyStatus}</p>
           <p className="subtle">Moving projects keeps this directory.</p>
         </div>
+      )}
+      {page === "schedules" && (
+        <AgentSchedules
+          agentId={agent.id}
+          archived={!!agent.archivedAt}
+          disabled={!connected}
+          onDirty={setDirty}
+        />
       )}
       {page === "profile" && (
         <Profile
@@ -570,6 +587,11 @@ function EventItem({
             {String(event.data.reason)}
           </small>
         )}
+        {event.data.role === "user" &&
+          String(event.data.messageId ?? "").startsWith("schedule:") &&
+          event.data.deliveryStatus !== "cancelled" && (
+            <small className="message-delivery">Scheduled</small>
+          )}
         {event.data.role === "user" &&
           event.data.mode === "steer" &&
           event.data.deliveryStatus !== "cancelled" && (
