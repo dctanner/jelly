@@ -5,6 +5,7 @@ import { Connections } from "./Connections";
 import { ChromeConnection } from "./ChromeConnection";
 import { DesktopConnection } from "./DesktopConnection";
 import { McpConnections } from "./McpConnections";
+import { BrowserNotifications } from "./BrowserNotifications";
 import { api } from "./api";
 import {
   MODEL_OPTIONS,
@@ -179,6 +180,7 @@ export function Settings({
     >
       {page === "Browser target" && <ChromeConnection data={data} refresh={refresh} />}
       {page === "Native Mac desktop" && <DesktopConnection data={data} refresh={refresh} onDirty={setDetailDirty} onBusy={setBusy} />}
+      {page === "Browser notifications" && <BrowserNotifications instance={data.instance.id} />}
       {page === "Browser controller" && (
         <>
           <Choices
@@ -218,6 +220,12 @@ export function Settings({
                 value={theme[0]!.toUpperCase() + theme.slice(1)}
                 onClick={() => setPage("Appearance")}
               />
+            </div>
+          </section>
+          <section className="settings-section">
+            <h3>Notifications</h3>
+            <div className="settings-group">
+              <SettingsRow label="Browser notifications" value="This browser" onClick={() => setPage("Browser notifications")} />
             </div>
           </section>
           <section className="settings-section">

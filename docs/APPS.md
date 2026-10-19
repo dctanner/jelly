@@ -18,7 +18,7 @@ HTTP and HTTPS URLs are accepted, including same-host different-port, Tailscale 
 
 Stable IDs/slugs, names, descriptions, raster icons, project/builder/source attribution, explicit stars, paginated history and viewer-corner preferences remain useful. Name/URL-only registration always creates a new app with a bounded, unique slug; it never replaces a similarly named app. An explicit ID or slug identifies an update, retaining stars, history and attribution unless explicitly changed. Names support up to 100 characters and descriptions support ordinary line breaks. New apps are never automatically starred. Only owner-requested stars use `apps_set_starred`.
 
-**Build an app** and **Edit with agent** prepare an unsent draft in a normal agent conversation. Adding an existing app must not trigger service adoption, rebuilding or hosting changes. Ask separately before changing independently operated services.
+New apps are requested in ordinary agent conversations; Apps has no separate build button or creation wizard. **Edit with agent** prepares an unsent draft for an existing registered app in a normal agent conversation. Adding an existing app must not trigger service adoption, rebuilding or hosting changes. Ask separately before changing independently operated services.
 
 **Remove from Apps** only unregisters metadata, stars and visit history. It never stops/uninstalls the independently hosted service, deletes its source/data, or affects other apps. Service cleanup remains the owner's separate responsibility.
 
@@ -35,7 +35,7 @@ Embedding is not universally compatible:
 - Framed login, third-party-cookie restrictions and OAuth flows requiring popups/top-level navigation may be incompatible. Configure the app's authentication, not Jelly's control policy. Some apps will remain unsupported.
 - The browser must reach the URL. Check app uptime, Tailscale connection/ACLs and device-specific hostname access. Local server health does not prove remote-device availability.
 
-Load events can fire for blank/denied frames and do not prove rendering. Jelly cannot diagnose every cross-origin error. Viewer help offers these checks, retry and registration editing; it never claims successful rendering, auto-launches a new tab or substitutes a proxy.
+Load events can fire for blank/denied frames and do not prove rendering. Jelly cannot diagnose every cross-origin error. The viewer does not show a timed embedding-help overlay or help menu item. Registration and mixed-content errors still offer recovery guidance; Jelly never claims successful rendering, auto-launches a new tab or substitutes a proxy.
 
 ## Tools and HTTP API
 

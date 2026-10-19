@@ -79,7 +79,14 @@ export interface HistoryPage {
   interventions: Intervention[];
   before: number | null;
 }
+/** Small, content-free notification markers for every active agent. */
+export interface AgentNotification {
+  id: number;
+  agentId: string;
+  type: "run_completed" | "run_failed" | "run_interrupted" | "intervention_requested";
+}
 export interface Snapshot {
+  agentNotifications?: AgentNotification[];
   latestAssistantMessages: Record<string, number>;
   agentPreviews?: Record<string, { text: string; createdAt: string }>;
   agentActivity?: Record<string, string>;

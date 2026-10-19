@@ -11,6 +11,33 @@ import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { Snapshot } from "../src/shared/types";
+
+for (const transport of ["tcp", "tls"]) {
+  test(`server startup prevents Bun's fatal multi-address ${transport} timer`, async () => {
+    const child = Bun.spawn(
+      [process.execPath, "tests/fixtures/runtime-network.ts", transport],
+      {
+        cwd: resolve(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 15000);
+    try {
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(stdout).toContain("Handled connect failure; process survived; loopback connection passed.");
+    } finally {
+      clearTimeout(timeout);
+      child.kill();
+    }
+  }, 20000);
+}
+
 async function launch(dir: string) {
   const child = Bun.spawn(["bun", "tests/fixtures/server.ts"], {
     cwd: resolve(import.meta.dir, ".."),

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 export const ALL_PI_TOOLS = [
   "read",
@@ -10,6 +10,11 @@ export const ALL_PI_TOOLS = [
   "find",
   "ls",
 ];
+function settingsObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Expected an object in Pi subagent settings; refusing to overwrite settings.");
+  return value as Record<string, unknown>;
+}
 export function preparePi(dataDir: string) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const settings = join(dataDir, "settings.json");
@@ -41,6 +46,24 @@ export function preparePi(dataDir: string) {
         null,
         2,
       ),
+      { mode: 0o600 },
+    );
+  // Persist in Jelly's Pi agent directory so discovery and detached children
+  // share this policy, including instances whose settings already exist.
+  const current = settingsObject(JSON.parse(readFileSync(settings, "utf8")));
+  const subagents = settingsObject(current.subagents ?? {});
+  const overrides = settingsObject(subagents.agentOverrides ?? {});
+  let changed = false;
+  for (const name of ["claude-code", "claude-code-writer"]) {
+    const override = settingsObject(overrides[name] ?? {});
+    if (override.disabled === true) continue;
+    overrides[name] = { ...override, disabled: true };
+    changed = true;
+  }
+  if (changed)
+    writeFileSync(
+      settings,
+      JSON.stringify({ ...current, subagents: { ...subagents, agentOverrides: overrides } }, null, 2),
       { mode: 0o600 },
     );
   const path = join(dataDir, "extensions", "subagent", "config.json");

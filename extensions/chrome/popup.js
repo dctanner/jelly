@@ -41,7 +41,7 @@ async function action(action) {
     if (request !== revision) return;
     document.querySelector("#status").textContent =
       (result?.error ? "Unavailable—do not enter credentials" : null) ??
-      `${result?.connected ? "Connected" : "Disconnected"} · Profile ${result?.profile ?? ""} · Instance ${result?.instance ?? "none"}`;
+      `${result?.pending ? "Connection pending—return control in Jelly web desktop to publish" : result?.connected ? "Connected" : "Disconnected"} · Profile ${result?.profile ?? ""} · Instance ${result?.instance ?? "none"}`;
     if (result?.unresolvedDebuggerCleanup)
       document.querySelector("#status").textContent +=
         " · Debugger cleanup unresolved—retry Connect or close affected tabs; do not enter credentials.";
@@ -80,5 +80,11 @@ async function action(action) {
 }
 for (const id of ["connect", "pause", "disconnect", "grant"])
   document.getElementById(id).onclick = () => void action(id);
-void action("status");
+// An explicit operator launch may request a one-shot connection. Consume the
+// fragment before messaging so sender.url remains the canonical packaged page.
+// Ordinary popup opens and later reloads never reconnect automatically.
+const connectOnce = window.location.hash === "#connect";
+if (connectOnce)
+  window.history.replaceState(null, "", chrome.runtime.getURL("popup.html"));
+void action(connectOnce ? "connect" : "status");
 setInterval(() => void action("status"), 3000);

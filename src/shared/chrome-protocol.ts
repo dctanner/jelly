@@ -1,7 +1,9 @@
 /** Private native bridge protocol. No raw CDP or model-supplied identities. */
-export const CHROME_PROTOCOL = 4;
+export const CHROME_PROTOCOL = 6;
 export const CHROME_MAX_FRAME = 768 * 1024;
 export const CHROME_METHODS = [
+  "freeze",
+  "unfreeze",
   "begin",
   "name",
   "end",
@@ -35,6 +37,7 @@ export interface ChromeProfile {
   id: string;
   generation: string;
   connected: boolean;
+  desktopAvailable?: boolean;
 }
 export interface ChromeSelection {
   browserTarget: "managed" | "chrome";
@@ -161,6 +164,8 @@ export function chromeParams(
   p: Record<string, unknown>,
 ): boolean {
   const keys: Record<ChromeMethod, string[]> = {
+    freeze: [],
+    unfreeze: [],
     begin: ["name", "agent", "origins", "protected", "siteScope"],
     name: ["name", "tab"],
     end: ["discard"],

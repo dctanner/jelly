@@ -219,7 +219,7 @@ test("Chrome target UI saves unrestricted internet without an origin list", asyn
     }),
   );
 });
-test("Connected Chrome private handoff uses ChatFormCard and actual-Chrome controls, never VNC/password state", async () => {
+test("Connected Chrome private handoff retains local controls without automatically opening VNC or storing passwords", async () => {
   const calls = transport(readyTask());
   let vnc = false;
   const item = {
@@ -319,7 +319,7 @@ test("Connected Chrome handoff disables private controls until the reserved tab 
     <InterventionCard
       item={chromeLogin}
       onComputer={() => {
-        throw new Error("No VNC");
+        throw new Error("Must not automatically open a viewer");
       }}
       onChange={() => {}}
     />,

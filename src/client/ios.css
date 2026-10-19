@@ -348,6 +348,45 @@
 .agent-row .agent-indicator {
   margin-left: 0;
 }
+.agent-row-archive {
+  display: none;
+}
+@media (min-width: 768px) {
+  .agent-row-item {
+    position: relative;
+    margin-bottom: 5px;
+  }
+  .agent-row-item > .agent-row {
+    margin-bottom: 0;
+  }
+  .agent-row-item:is(:hover, :focus-within) > .agent-row {
+    padding-right: 48px;
+  }
+  .agent-row-item:is(:hover, :focus-within) > .agent-row:not(.selected) {
+    background: var(--hover);
+  }
+  .app .agent-row-item > .agent-row-archive {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    border-radius: 8px;
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+  .agent-row-item:is(:hover, :focus-within) > .agent-row-archive {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .agent-row-item:is(:hover, :focus-within) > .agent-row-archive:disabled {
+    opacity: 0.4;
+  }
+}
 
 @media (max-width: 767px) {
   .app.t-page-slide > .t-page {
@@ -397,7 +436,8 @@
     padding: 14px 20px;
     position: relative;
   }
-  .app .agent-row + .agent-row::before {
+  .app :is(.agent-row, .agent-row-item) + .agent-row::before,
+  .app :is(.agent-row, .agent-row-item) + .agent-row-item > .agent-row::before {
     content: "";
     position: absolute;
     top: 0;
@@ -409,26 +449,6 @@
   .app .agent-row:active,
   .app[data-page="2"] .sidebar .agent-row.selected {
     background: var(--hover);
-  }
-  /* Touch and automatic focus transfers don't need desktop-style outlines.
-     Tab/arrow navigation restores them, including with an external keyboard. */
-  .app[data-input-modality="pointer"]
-    :is(
-      button,
-      a,
-      summary,
-      select,
-      nav,
-      input[type="radio"],
-      input[type="checkbox"]
-    ):focus {
-    outline: none;
-  }
-  .app[data-input-modality="pointer"] .settings-choice:focus-within {
-    outline: none;
-  }
-  .app :is(button, a, summary) {
-    -webkit-tap-highlight-color: transparent;
   }
   .agent-row strong {
     max-width: none;
@@ -1028,6 +1048,32 @@ main[inert] .conversation-header .agent-avatar::after {
 .markdown-table-scroll:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Include Apps/viewer chrome and body-portaled menus, not just the agent
+   workspace. Coarse pointers also cover landscape phones/tablets. Keyboard
+   navigation keeps its focus indicators, even on touch devices. */
+@media (max-width: 767px), (pointer: coarse) {
+  :root:has(.jelly-destinations[data-input-modality="pointer"])
+    :is(
+      button,
+      a,
+      summary,
+      select,
+      nav,
+      input[type="radio"],
+      input[type="checkbox"]
+    ):focus,
+  :root:has(.jelly-destinations[data-input-modality="pointer"])
+    .apps-add:focus > span,
+  :root:has(.jelly-destinations[data-input-modality="pointer"])
+    .settings-choice:focus-within {
+    outline: none;
+  }
+  :is(.jelly-destinations, .apps-menu, .agent-list-menu-panel, .composer-settings-menu)
+    :is(button, a, summary) {
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 .markdown-table-scroll table {
   width: 100%;

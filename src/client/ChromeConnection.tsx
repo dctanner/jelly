@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { api, control } from "./api";
 import type { Snapshot } from "../shared/types";
 import type { ChromeProfile } from "../shared/chrome-protocol";
+import { ChromeSharePanel } from "./ChromeSharePanel";
 export interface ChromeStatus {
+  browserTarget?: "managed" | "chrome";
+  selectedProfile?: string;
+  desktopShared?: boolean;
   profiles: ChromeProfile[];
   task: {
     profile: string;
@@ -43,6 +47,8 @@ export function ChromeConnection({
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const shareAgent = agentId || data.agents?.[0]?.id;
   async function load(scope: Scope, afterControl = false) {
     if (scopeRef.current !== scope || (scope.controlling && !afterControl))
       return;
@@ -241,6 +247,8 @@ export function ChromeConnection({
           Reset pinned target (when idle)
         </button>
       )}
+      {shareAgent && <button disabled={busy} onClick={() => setShareOpen(true)}>Connected Chrome web VNC…</button>}
+      {shareOpen && shareAgent && <ChromeSharePanel agentId={shareAgent} onClose={() => setShareOpen(false)} onChange={() => { if (scopeRef.current) void load(scopeRef.current); void refresh(); }} />}
       {status.task && (
         <div className="chat-form-group">
           <h4>This agent’s pinned Chrome session</h4>
@@ -269,6 +277,7 @@ export function ChromeConnection({
               key={op}
               disabled={
                 busy ||
+                !!status.desktopShared ||
                 (op === "resume" &&
                   (!status.task?.connected || !status.task.paused))
               }

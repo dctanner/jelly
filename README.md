@@ -29,6 +29,13 @@ Apps is an iframe-only launcher for independently hosted apps. Choose **Apps →
 
 **Only add apps you trust.** Same-host app servers may receive or interfere with Jelly cookies, including HttpOnly cookies; Tailscale protects network access, not app isolation. Jelly keeps session/CSRF and exact control-origin checks and stays unframeable. Registration does not verify embedding or availability, and removal never stops the app. See [Apps](docs/APPS.md).
 
+## Browser notifications
+
+Opt in at **Settings → Browser notifications** for alerts when an agent finishes
+or needs attention. Clicking an alert opens its conversation; no message contents
+are exposed. Keep Jelly open, using HTTPS or localhost (plain HTTP Tailscale
+addresses cannot notify). See [setup and limitations](docs/NOTIFICATIONS.md).
+
 ## Subagent progress
 
 Delegated work appears in live, expandable cards in the conversation. Open a

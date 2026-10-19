@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import {
   isRenderedFile,
   isHtmlFile,
+  isMarkdownFile,
   type RenderedFile,
 } from "../shared/rendered-files";
 import { GeneratedImages } from "./GeneratedImages";
+import { MessageText } from "./MessageText";
 import { api } from "./api";
 
 function HtmlFile({ file }: { file: RenderedFile }) {
@@ -123,6 +125,7 @@ function MediaFile({ file }: { file: RenderedFile }) {
 }
 
 function TextFile({ file }: { file: RenderedFile }) {
+  const markdown = isMarkdownFile(file);
   const [expanded, setExpanded] = useState(false);
   const [preview, setPreview] = useState<{
     text: string;
@@ -156,7 +159,9 @@ function TextFile({ file }: { file: RenderedFile }) {
       <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
         <summary>
           {file.name}{" "}
-          <small>Text file · {file.size.toLocaleString()} bytes</small>
+          <small>
+            {markdown ? "Markdown" : "Text file"} · {file.size.toLocaleString()} bytes
+          </small>
         </summary>
         {error ? (
           <p role="alert">
@@ -167,7 +172,18 @@ function TextFile({ file }: { file: RenderedFile }) {
           </p>
         ) : preview ? (
           <>
-            <pre>{preview.text}</pre>
+            {markdown ? (
+              <div
+                className="rendered-markdown"
+                tabIndex={0}
+                role="region"
+                aria-label={`Markdown preview: ${file.name}`}
+              >
+                <MessageText text={preview.text} />
+              </div>
+            ) : (
+              <pre>{preview.text}</pre>
+            )}
             {preview.truncated && (
               <p>
                 Preview shortened. Download the file for its complete contents.

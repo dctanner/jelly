@@ -2,11 +2,12 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import "./ComputerViewport.css";
 
 /** Enlarge only the viewer, not the remote desktop or the website's zoom. */
-export function ComputerViewport({ displayRef, interactive, hidden, onPan }: {
+export function ComputerViewport({ displayRef, interactive, hidden, onPan, fitOnly = false }: {
   displayRef: RefObject<HTMLDivElement | null>;
   interactive: boolean;
   hidden: boolean;
   onPan: () => void;
+  fitOnly?: boolean;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0, portrait: false });
@@ -25,7 +26,7 @@ export function ComputerViewport({ displayRef, interactive, hidden, onPan }: {
   // The managed Xvfb desktop is fixed at 1280x800 (resizeSession is disabled).
   // Give noVNC a height-fitted target and clip it, so its own scaling and
   // pointer-coordinate conversion remain authoritative at every pan position.
-  const width = interactive && size.portrait ? Math.max(size.width, size.height * 1280 / 800) : size.width;
+  const width = !fitOnly && interactive && size.portrait ? Math.max(size.width, size.height * 1280 / 800) : size.width;
   const overflow = Math.max(0, width - size.width);
   const panning = !hidden && overflow > 1;
   return <div className="computer-viewer" hidden={hidden}>

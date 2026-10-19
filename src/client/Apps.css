@@ -38,7 +38,7 @@
   box-shadow: inset 0 6px 10px -8px rgb(0 0 0 / 38%);
 }
 /* One rounded track; the current destination sits on a raised thumb. */
-.destination-navigation a {
+.destination-navigation :is(a, .viewer-back) {
   position: relative;
   isolation: isolate;
   display: flex;
@@ -65,7 +65,7 @@
 .destination-navigation a:last-child {
   border-radius: 0 12px 12px 0;
 }
-.destination-navigation a::before {
+.destination-navigation :is(a, .viewer-back)::before {
   content: "";
   position: absolute;
   inset: 4px;
@@ -88,17 +88,17 @@
   opacity: 1;
   transform: none;
 }
-.destination-navigation a:not([aria-current]):active::before {
+.destination-navigation :is(a, .viewer-back):not([aria-current]):active::before {
   opacity: 0.6;
   transform: none;
 }
 @media (hover: hover) {
-  .destination-navigation a:not([aria-current]):hover::before {
+  .destination-navigation :is(a, .viewer-back):not([aria-current]):hover::before {
     opacity: 0.5;
     transform: none;
   }
 }
-.destination-navigation a:focus-visible,
+.destination-navigation :is(a, .viewer-back):focus-visible,
 .app-details a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -253,7 +253,7 @@
   outline: none;
 }
 /* A tinted capsule inside a full 44px target. */
-.apps-home .apps-build {
+.apps-home .apps-add {
   display: inline-flex;
   align-items: center;
   padding: 0;
@@ -262,7 +262,7 @@
   color: var(--apps-tint-text);
   -webkit-tap-highlight-color: transparent;
 }
-.apps-build > span {
+.apps-add > span {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -278,18 +278,18 @@
     background var(--duration-quick, 120ms) ease,
     opacity var(--duration-quick, 120ms) ease;
 }
-.apps-home .apps-build:focus-visible {
+.apps-home .apps-add:focus-visible {
   outline: none;
 }
-.apps-home .apps-build:focus-visible > span {
+.apps-home .apps-add:focus-visible > span {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
-.apps-build:active:not(:disabled) > span {
+.apps-add:active:not(:disabled) > span {
   opacity: 0.7;
 }
 @media (hover: hover) {
-  .apps-build:hover > span {
+  .apps-add:hover > span {
     background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
 }
@@ -757,98 +757,98 @@
   font-size: 13px;
 }
 
-/* Viewer: the app owns the screen; Jelly keeps one small floating pill. */
+/* Viewer: reserve the shared bottom navigation surface, never cover the app. */
 .app-viewer {
+  --destination-nav-height: calc(64px + env(safe-area-inset-bottom));
   position: absolute;
   inset: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--page);
   overflow: hidden;
 }
-.app-viewer > iframe {
+.viewer-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.viewer-content > iframe {
   width: 100%;
   height: 100%;
   display: block;
   border: 0;
   background: white;
 }
-.viewer-home-controls {
-  position: absolute;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  border: 1px solid var(--border);
-  border-radius: 23px;
-  background: color-mix(in srgb, var(--floating, var(--page)) 88%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6);
-  backdrop-filter: blur(16px) saturate(1.6);
-  box-shadow:
-    0 6px 20px rgb(0 0 0 / 14%),
-    0 1px 3px rgb(0 0 0 / 10%);
-  color: var(--text);
+.viewer-footer {
+  flex: none;
 }
-.viewer-home-controls[data-corner^="top"] {
-  top: max(12px, calc(env(safe-area-inset-top) + 6px));
+.viewer-navigation {
+  min-width: 0;
 }
-.viewer-home-controls[data-corner^="bottom"] {
-  bottom: max(12px, calc(env(safe-area-inset-bottom) + 6px));
-}
-.viewer-home-controls[data-corner$="left"] {
-  left: max(12px, calc(env(safe-area-inset-left) + 6px));
-}
-.viewer-home-controls[data-corner$="right"] {
-  right: max(12px, calc(env(safe-area-inset-right) + 6px));
-}
-.viewer-home-pill {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 14px 0 10px;
+.destination-navigation .viewer-back {
+  flex: 0 0 44px;
+  min-width: 44px;
+  padding: 0;
   border: 0;
-  border-radius: 22px;
-  background: transparent;
-  color: inherit;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  border-radius: 12px 0 0 12px;
+}
+.viewer-app-tabs {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  border-radius: 0 12px 12px 0;
+}
+.viewer-app-tabs::-webkit-scrollbar {
+  display: none;
+}
+.viewer-app-tabs a {
+  flex: 0 0 auto;
+  max-width: 200px;
+}
+.viewer-app-tabs a:first-child {
+  border-radius: 0;
+}
+.viewer-app-tabs a:last-child {
+  border-radius: 0 12px 12px 0;
+}
+.viewer-app-tabs a span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  -webkit-tap-highlight-color: transparent;
 }
-.viewer-home-pill img {
-  width: 24px;
-  height: 24px;
+.viewer-app-tabs a:focus-visible {
+  outline-offset: -3px;
 }
-.viewer-home-pill:active:not(:disabled) {
-  background: var(--hover);
+.viewer-navigation > .app-action {
+  margin-left: 8px;
 }
-@media (hover: hover) {
-  .viewer-home-pill:hover {
-    background: var(--hover);
-  }
+.viewer-tabs-error {
+  margin: 0;
+  padding: 8px max(16px, env(safe-area-inset-right)) 0
+    max(16px, env(safe-area-inset-left));
+  color: var(--error);
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
-.viewer-home-controls .app-action {
-  position: relative;
-  border-radius: 22px;
-  color: inherit;
-}
-.viewer-home-controls .app-action::before {
-  content: "";
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 1px;
-  background: var(--border);
+.viewer-tabs-error button {
+  min-height: 44px;
+  margin-left: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
 }
 .viewer-recovery {
   display: flex;
   width: 100%;
   height: 100%;
   overflow-y: auto;
-  padding: max(84px, calc(env(safe-area-inset-top) + 72px))
+  padding: max(24px, env(safe-area-inset-top))
     max(24px, env(safe-area-inset-right))
-    max(84px, calc(env(safe-area-inset-bottom) + 72px))
+    24px
     max(24px, env(safe-area-inset-left));
   background: var(--page);
 }
@@ -916,7 +916,6 @@
   max-width: 320px;
   margin-top: 28px;
 }
-.viewer-guidance,
 .viewer-launch-error,
 .apps-operation-error {
   position: absolute;
@@ -939,17 +938,6 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.viewer-guidance {
-  bottom: calc(76px + env(safe-area-inset-bottom));
-}
-.viewer-guidance p {
-  margin: 0 0 12px;
-}
-.viewer-banner-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .viewer-launch-error,
 .apps-operation-error {
   top: calc(76px + env(safe-area-inset-top));
@@ -960,7 +948,7 @@
   top: auto;
   bottom: calc(var(--destination-nav-height) + 12px);
 }
-:is(.viewer-guidance, .viewer-launch-error, .apps-operation-error) button {
+:is(.viewer-launch-error, .apps-operation-error) button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -976,10 +964,6 @@
 }
 :is(.viewer-launch-error, .apps-operation-error) button {
   margin: 10px 8px 0 0;
-}
-.viewer-guidance .primary {
-  background: var(--button);
-  color: var(--button-text);
 }
 
 /* Large stacked actions for sheets and recovery: primary first, like native
@@ -1050,11 +1034,11 @@ dialog.apps-sheet .settings-footnote {
   margin: 8px 16px 0;
 }
 
-/* Builder: native pop-up rows inside grouped lists. */
-.apps-sheet .apps-builder-group {
+/* App editor: native pop-up rows inside grouped lists. */
+.apps-sheet .apps-editor-group {
   margin-top: 16px;
 }
-.apps-builder-group > * + *::before {
+.apps-editor-group > * + *::before {
   content: "";
   position: absolute;
   top: 0;
@@ -1421,18 +1405,4 @@ dialog .app-text-button {
   box-sizing: border-box;
   font-size: 16px;
   min-height: 44px;
-}
-.apps-add {
-  margin-bottom: 16px;
-  min-height: 44px;
-}
-.viewer-guidance {
-  max-height: min(65dvh, 480px);
-  overflow-y: auto;
-}
-.viewer-guidance summary {
-  cursor: pointer;
-  min-height: 44px;
-  display: flex;
-  align-items: center;
 }

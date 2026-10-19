@@ -5,7 +5,7 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
 } from "@earendil-works/pi-ai";
-import { ALL_PI_TOOLS } from "../src/server/pi-setup";
+import { ALL_PI_TOOLS, preparePi } from "../src/server/pi-setup";
 import {
   mkdirSync,
   mkdtempSync,
@@ -47,7 +47,55 @@ const agent = {
   archivedAt: null,
 };
 const instance = { id: "test", name: "Test" };
+test("preparePi disables only the two Claude profiles for new and existing settings", () => {
+  for (const existing of [undefined, {
+    theme: "custom",
+    defaultTools: ["read"],
+    subagents: {
+      defaultModel: "preserved",
+      agentOverrides: {
+        "claude-code": { disabled: false, machine: "preserved" },
+        "claude-code-writer": { description: "preserved" },
+        worker: { thinking: "high" },
+        "scenemix": { model: "preserved" },
+      },
+    },
+  }]) {
+    const dataDir = mkdtempSync(join(dir, "settings-"));
+    const path = join(dataDir, "settings.json");
+    if (existing) writeFileSync(path, JSON.stringify(existing));
+    preparePi(dataDir);
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    for (const name of ["claude-code", "claude-code-writer"])
+      expect(settings.subagents.agentOverrides[name].disabled).toBe(true);
+    if (existing) {
+      const expected = structuredClone(existing);
+      Object.assign(expected.subagents.agentOverrides["claude-code"], { disabled: true });
+      Object.assign(expected.subagents.agentOverrides["claude-code-writer"], { disabled: true });
+      expect(settings).toEqual(expected);
+    } else {
+      expect(settings.defaultTools).toEqual(ALL_PI_TOOLS);
+      expect(settings.subagents.agentOverrides.worker.disabled).toBeUndefined();
+    }
+    const first = readFileSync(path, "utf8");
+    preparePi(dataDir);
+    expect(readFileSync(path, "utf8")).toBe(first);
+  }
+});
+test("preparePi refuses malformed settings without overwriting them", () => {
+  for (const contents of ["{", "[]", '{"subagents":[]}', '{"subagents":{"agentOverrides":{"claude-code":false}}}']) {
+    const dataDir = mkdtempSync(join(dir, "invalid-settings-"));
+    const path = join(dataDir, "settings.json");
+    writeFileSync(path, contents);
+    expect(() => preparePi(dataDir)).toThrow();
+    expect(readFileSync(path, "utf8")).toBe(contents);
+  }
+});
 test("all Pi tools and the subagent package load; filesystem and shell execute without approval", async () => {
+  const customAgentPath = join(dir, "agents", "scenemix.md");
+  const customAgent = "---\nname: scenemix\ndescription: SceneMix preservation fixture\n---\nCustom agent instructions.\n";
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  writeFileSync(customAgentPath, customAgent);
   const h = await Harness.create(dir, undefined, join(dir, "config"));
   useTestModel(h);
   const s = await h.create(agent, [], h.config("api"), instance);
@@ -69,6 +117,11 @@ test("all Pi tools and the subagent package load; filesystem and shell execute w
     expect(s.systemPrompt).toContain(
       "Use web_search and web_fetch, powered by Firecrawl, instead of the browser",
     );
+    const listed = JSON.stringify(await call("subagent", { action: "list" }));
+    expect(listed).not.toContain("claude-code");
+    for (const name of ["worker", "reviewer", "codex-exec", "cursor-agent", "scenemix"])
+      expect(listed).toContain(name);
+    expect(readFileSync(customAgentPath, "utf8")).toBe(customAgent);
     await call("write", { path: "test.txt", content: "before\n" });
     await call("read", { path: "test.txt" });
     await call("edit", {
@@ -129,6 +182,15 @@ test("Harness composes Pi guidance with Jelly policy, append instructions, proje
       profile.instructions,
       "All tools and subagent delegation are pre-authorized by the operator.",
       "Use the same provider/model and effort as this parent for delegated work unless asked otherwise.",
+      "Exception for Claude subagents:",
+      "Use the Bash tool to run claude -p directly instead",
+      "command -v claude",
+      "/home/dctanner/.local/bin/claude",
+      "Use Claude CLI's own authentication, not Jelly/Pi credentials",
+      "native --model option",
+      "never use permission-bypass flags",
+      "Check the process exit status and actual output",
+      "Direct CLI work is not a Pi-managed subagent",
       "Use request_sudo for privileged commands",
       "Never ask for passwords in chat.",
       "Use request_browser_login when a website requires sign-in",

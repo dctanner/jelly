@@ -5,18 +5,16 @@ import type { Snapshot, ProjectRecord } from "../shared/types";
 import { Modal } from "./Modal";
 import { ProjectForm } from "./Projects";
 
-export interface AppIntent {
-  app: AppRecord | null;
+export interface AppEditIntent {
+  app: AppRecord;
   id: string;
 }
-export function appIntentDraft(app: AppRecord | null) {
-  return app
-    ? `I'd like to edit the app “${app.name}” (app ID: ${app.id}). Inspect its project and registered URL. Jelly does not own its hosting. Ask before changing its service or registration.\n\nMy changes: `
-    : "I'd like to build a persistent app in Jelly. Inspect the Apps capabilities, build and test it in this project, and ask before registering its browser-reachable URL or changing hosting. Jelly displays trusted apps in an iframe; no app SDK or home link is required.\n\nMy idea: ";
+export function appEditDraft(app: AppRecord) {
+  return `I'd like to edit the app “${app.name}” (app ID: ${app.id}). Inspect its project and registered URL. Jelly does not own its hosting. Ask before changing its service or registration.\n\nMy changes: `;
 }
 
 /** Choosing a normal workspace prepares a draft; it never submits a model request. */
-export function AppBuilder({
+export function AppEditor({
   intent,
   data,
   connected,
@@ -25,7 +23,7 @@ export function AppBuilder({
   onCreate,
   onProject,
 }: {
-  intent: AppIntent;
+  intent: AppEditIntent;
   data: Snapshot;
   connected: boolean;
   onClose: () => void;
@@ -34,9 +32,9 @@ export function AppBuilder({
   onProject: (project: ProjectRecord) => void;
 }) {
   const builder = data.agents.find(
-    (agent) => agent.id === intent.app?.builderAgentId && !agent.archivedAt,
+    (agent) => agent.id === intent.app.builderAgentId && !agent.archivedAt,
   );
-  const initialProject = builder?.projectId ?? intent.app?.projectId;
+  const initialProject = builder?.projectId ?? intent.app.projectId;
   const [projectId, setProjectId] = useState(
     initialProject &&
       data.projects.some((project) => project.id === initialProject)
@@ -84,16 +82,16 @@ export function AppBuilder({
     );
   return (
     <Modal
-      title={intent.app ? `Edit ${intent.app.name} with agent` : "Build an app"}
+      title={`Edit ${intent.app.name} with agent`}
       className="apps-sheet"
       onClose={onClose}
       dismissible={!busy}
     >
       <p className="apps-sheet-message">
         Choose a conversation or create a normal agent. Jelly will prepare an
-        unsent draft for you to describe the app. Nothing is sent automatically.
+        unsent draft for you to describe your changes. Nothing is sent automatically.
       </p>
-      <div className="settings-group apps-builder-group">
+      <div className="settings-group apps-editor-group">
         <label className="apps-select-row">
           <span>Project</span>
           <select
@@ -123,7 +121,7 @@ export function AppBuilder({
           Create a project
         </button>
       </div>
-      <div className="settings-group apps-builder-group">
+      <div className="settings-group apps-editor-group">
         <label className="apps-select-row">
           <span>Agent</span>
           <select

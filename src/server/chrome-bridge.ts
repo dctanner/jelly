@@ -19,11 +19,14 @@ import {
   type ChromeProfile,
 } from "../shared/chrome-protocol";
 import { ChromeWriter } from "./chrome-writer";
+import { validChromeDesktop, type ChromeDesktop } from "./chrome-desktop";
 interface Peer {
   socket: Socket;
   writer: ChromeWriter;
   profile: string;
   generation: string;
+  desktop: ChromeDesktop;
+  ready?: boolean;
   pending: Map<
     string,
     {
@@ -38,9 +41,45 @@ export class ChromeBridge {
   readonly ready: Promise<void>;
   private server: Server;
   private peers = new Map<string, Peer>();
+  private deferred = new Map<string, Peer>();
+  private admissionRevision = 0;
+  private failureRevision = 0;
+  get desktopEpoch() { return `${this.admissionRevision}:${this.failureRevision}`; }
+  deferDesktop: (desktop: ChromeDesktop, parent: unknown, ownedDesktop: ChromeDesktop) => ChromeDesktop | null = () => null;
+  async waitDeferredReady() {
+    const snapshot = [...this.deferred.values()];
+    const deadline = Date.now() + 5000;
+    while (snapshot.some(p => !p.ready)) {
+      if (snapshot.some(p => this.deferred.get(p.profile) !== p) || Date.now() > deadline)
+        throw new Error("Pending Chrome did not acknowledge private cleanup.");
+      await Bun.sleep(20);
+    }
+    if (snapshot.length !== this.deferred.size || snapshot.some(p => this.deferred.get(p.profile) !== p))
+      throw new Error("Pending Chrome changed during handback.");
+  }
+  deferredProfiles() { return [...this.deferred.values()].map(p => ({ id: p.profile, generation: p.generation })); }
+  publishDeferred(expectedEpoch = this.desktopEpoch) {
+    if (expectedEpoch !== this.desktopEpoch || [...this.deferred.values()].some(p => !p.ready || p.socket.destroyed)) throw new Error("Pending Chrome is not ready.");
+    for (const p of this.deferred.values()) {
+      this.peers.set(p.profile, p);
+      p.writer.write(chromeFrame({ type: "paired", version: CHROME_PROTOCOL, capabilities: CHROME_METHODS,
+        instance: this.instance, generation: p.generation }));
+    }
+    this.deferred.clear();
+  }
   private sockets = new Set<Socket>();
   private grant: string;
   private extensionId: string | null = null;
+  private privateDesktop = false;
+  private closing = false;
+  onDesktopLoss: () => void = () => {};
+  setDesktopPrivate(value: boolean) { this.privateDesktop = value; }
+  desktop(profile: string, generation: string) {
+    const p = this.peers.get(profile);
+    if (!p || p.generation !== generation || !p.desktop.available)
+      throw new Error("Web desktop unavailable. Requires the native host's local Linux X11 session and private XAUTHORITY.");
+    return validChromeDesktop(p.desktop);
+  }
   onLoss: (profile: string) => void = () => {};
   onPauseState: (
     profile: string,
@@ -126,6 +165,7 @@ export class ChromeBridge {
       id: p.profile,
       generation: p.generation,
       connected: true,
+      desktopAvailable: p.desktop.available,
     }));
   }
   private accept(socket: Socket) {
@@ -144,8 +184,14 @@ export class ChromeBridge {
     socket.on("close", () => {
       clearTimeout(timer);
       this.sockets.delete(socket);
+      if (peer && this.deferred.get(peer.profile) === peer) {
+        this.deferred.delete(peer.profile);
+        ++this.admissionRevision;
+        if (this.privateDesktop && !this.closing) { ++this.failureRevision; this.onDesktopLoss(); }
+      }
       if (peer && this.peers.get(peer.profile) === peer) {
         this.peers.delete(peer.profile);
+        ++this.admissionRevision;
         for (const p of peer.pending.values()) {
           clearTimeout(p.timer);
           p.reject(
@@ -155,10 +201,14 @@ export class ChromeBridge {
           );
         }
         peer.pending.clear();
-        this.onLoss(peer.profile);
+        if (!this.closing) {
+          this.onLoss(peer.profile);
+          if (this.privateDesktop) { ++this.failureRevision; this.onDesktopLoss(); }
+        }
       }
     });
     socket.on("data", (chunk) => {
+      if (this.closing) { socket.destroy(); return; }
       try {
         for (const value of frames.push(
           typeof chunk === "string" ? Buffer.from(chunk) : chunk,
@@ -195,7 +245,7 @@ export class ChromeBridge {
               !/^[a-f0-9-]{36}$/.test(v.profile) ||
               typeof v.generation !== "string" ||
               !/^[a-f0-9-]{36}$/.test(v.generation) ||
-              this.peers.has(v.profile)
+              this.peers.has(v.profile) || this.deferred.has(v.profile)
             )
               throw new Error();
             peer = {
@@ -203,19 +253,31 @@ export class ChromeBridge {
               writer,
               profile: v.profile,
               generation: v.generation,
+              desktop: validChromeDesktop(v.desktop),
               pending: new Map(),
             };
-            this.peers.set(peer.profile, peer);
+            const deferred = this.deferDesktop(peer.desktop, v.ownedParent, validChromeDesktop(v.ownedDesktop));
+            if (deferred) peer.desktop = deferred;
+            if (this.privateDesktop && !deferred) throw new Error();
+            (deferred ? this.deferred : this.peers).set(peer.profile, peer);
+            ++this.admissionRevision;
             clearTimeout(timer);
+            if (deferred) {
+              const readyDeadline = setTimeout(() => { if (!peer?.ready) socket.destroy(); }, 5000);
+              socket.once("close", () => clearTimeout(readyDeadline));
+            }
             writer.write(
               chromeFrame({
-                type: "paired",
+                type: deferred ? "pending" : "paired",
                 version: CHROME_PROTOCOL,
                 capabilities: CHROME_METHODS,
                 instance: this.instance,
                 generation: peer.generation,
               }),
             );
+          } else if (this.deferred.get(peer.profile) === peer) {
+            if (v.type !== "pendingReady" || v.generation !== peer.generation || peer.ready) throw new Error();
+            peer.ready = true;
           } else if (v.type === "pauseState") {
             if (
               v.generation !== peer.generation ||
@@ -329,6 +391,7 @@ export class ChromeBridge {
     this.peers.get(profile)?.socket.destroy();
   }
   async close() {
+    this.closing = true;
     for (const s of this.sockets) s.destroy();
     await this.ready.catch(() => {});
     await new Promise<void>((resolve) => this.server.close(() => resolve()));

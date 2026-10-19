@@ -92,7 +92,7 @@ async function saveAgentProfile(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
 }
-test("Connected Chrome hides managed Computer controls in chat and agent options", async () => {
+test("Connected Chrome Computer controls open direct Take control, never the managed desktop", async () => {
   const a = await setup();
   a.service.store.setBrowserSelection({
     browserTarget: "chrome",
@@ -101,11 +101,17 @@ test("Connected Chrome hides managed Computer controls in chat and agent options
   });
   render(<App />);
   await waitForConnectedAgent();
-  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
+  expect(!!screen.queryByRole("button", { name: /^Computer$/ })).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /^Computer$/ }));
+  await screen.findByRole("heading", { name: "Take control of Connected Chrome" });
+  expect(a.service.computer.state(a.store.agents()[0]!.id).status).toBe("stopped");
+  expect(a.service.chromeShare.state().status).toBe("idle");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog", { name: "Connected Chrome desktop" })).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   await screen.findByRole("button", { name: "Fresh Session" });
-  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
-  expect(document.querySelector("dialog.computer-panel")).toBeNull();
+  expect(screen.getAllByRole("button", { name: /^Computer$/ }).length > 0).toBe(true);
+  expect(!!document.querySelector("dialog.computer-panel")).toBe(false);
 });
 
 test("React client connects, creates an agent, sends through Pi, renders tool completion and restores history on remount", async () => {
@@ -484,7 +490,7 @@ test("grouped settings use checkmarked model and effort choices and persist on D
     expect(screen.queryByText(/Ultrafast requires/)).toBeNull();
   }
   expect(screen.queryByRole("radio", { name: "GPT-6 Sol Ultrafast" })).toBeNull();
-  expect(screen.queryByRole("radio", { name: "GPT-6.1 Sol Ultrafast" })).toBeNull();
+  expect(screen.getByRole("radio", { name: "GPT-6.1 Sol Ultrafast" })).toBeDefined();
   fireEvent.click(screen.getByRole("radio", { name: "GPT-6 Astra Ultrafast" }));
   expect(screen.getByText(/Higher API pricing/)).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -1021,7 +1027,7 @@ test("chat model menu persists choices without changing connection mode and dism
     expect(screen.queryByText(/Ultrafast requires/)).toBeNull();
   }
   expect(within(model).queryByRole("option", { name: "GPT-6 Sol Ultrafast" })).toBeNull();
-  expect(within(model).queryByRole("option", { name: "GPT-6.1 Sol Ultrafast" })).toBeNull();
+  expect(within(model).getByRole("option", { name: "GPT-6.1 Sol Ultrafast" })).toBeDefined();
   fireEvent.change(model, { target: { value: "gpt-6-astra-ultrafast" } });
   await waitFor(() => {
     expect(model.value).toBe("gpt-6-astra-ultrafast");
@@ -2500,6 +2506,102 @@ test("render_file displays images and expandable inert text with download and hi
   expect(screen.getByRole("region", { name: "File: preview.txt" }).textContent).not.toContain("hello from the file");
 });
 
+test("render_file formats Markdown previews safely, including saved attachments and full downloads", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  const text = [
+    "# Project notes",
+    "",
+    "**Important** and `inline code` with [documentation](https://example.com/docs).",
+    "",
+    "- First task",
+    "- Second task",
+    "",
+    "```ts",
+    'const example = "<script>not executed</script>";',
+    "```",
+    "",
+    "| Name | Status |",
+    "| --- | --- |",
+    "| Preview | Ready |",
+    "",
+    '<script>window.stolen=true</script>',
+    '<img src="https://evil.example/tracker" onerror="window.stolen=true">',
+    "[unsafe](javascript:alert(1))",
+    "",
+    ...Array.from({ length: 220 }, (_, i) => `Note ${i}`),
+  ].join("\n");
+  const files = [];
+  for (const name of ["notes.md", "NOTES.MD", "notes.markdown"]) {
+    const source = join(dir!, name);
+    writeFileSync(source, text);
+    files.push(await app.service.harness.files.save(source, dir!));
+  }
+  app.store.event(agent.id, null, "message", { role: "user", text: "Show Markdown files" });
+  app.store.event(agent.id, null, "file_rendered", { files });
+  let ui = render(<App />);
+  for (const saved of files) {
+    const file = await screen.findByRole("region", { name: `File: ${saved.name}` });
+    expect(file.textContent).toContain("Markdown ·");
+    expect(file.querySelector(".message-text")).toBeNull();
+    const details = file.querySelector("details")!;
+    await act(async () => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+    await within(file).findByRole("heading", { name: "Project notes" });
+    const preview = within(file).getByRole("region", { name: `Markdown preview: ${saved.name}` });
+    expect(preview.getAttribute("tabindex")).toBe("0");
+    expect(preview.querySelector("strong")?.textContent).toBe("Important");
+    expect(preview.querySelector("code")?.textContent).toBe("inline code");
+    expect(within(preview).getAllByRole("listitem").map(item => item.textContent)).toEqual(["First task", "Second task"]);
+    expect(preview.querySelector(".code-block pre code")?.textContent).toBe('const example = "<script>not executed</script>";');
+    expect(within(preview).getByRole("cell", { name: "Ready" })).toBeDefined();
+    const link = within(preview).getByRole("link", { name: "documentation" });
+    expect(link.getAttribute("href")).toBe("https://example.com/docs");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(preview.textContent).toContain("<script>window.stolen=true</script>");
+    expect(preview.querySelector("script, img, iframe, a[href^='javascript:']")).toBeNull();
+    expect(file.textContent).toContain("Preview shortened");
+    const download = within(file).getByRole("link", { name: "Download file" });
+    expect(download.getAttribute("href")).toBe(saved.url);
+    expect(download.getAttribute("download")).toBe(saved.name);
+    expect(await (await fetch(saved.url)).text()).toBe(text);
+  }
+  ui.unmount();
+  ui = render(<App />);
+  const file = await screen.findByRole("region", { name: "File: notes.md" });
+  const details = file.querySelector("details")!;
+  await act(async () => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+  await within(file).findByRole("heading", { name: "Project notes" });
+});
+
+test("Markdown previews retain on-demand loading and retry after a failed fetch", async () => {
+  const { RenderedFiles } = await import("../src/client/RenderedFiles");
+  const app = await setup();
+  const source = join(dir!, "retry.md");
+  writeFileSync(source, "# Loaded after retry");
+  const saved = await app.service.harness.files.save(source, dir!);
+  const fetchBefore = globalThis.fetch;
+  let fail = true, requests = 0;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (input === `${saved.url}?preview=1`) {
+      requests++;
+      if (fail) return new Response(JSON.stringify({ error: "Fixture offline" }), { status: 503 });
+    }
+    return fetchBefore(input, init);
+  }) as typeof fetch;
+  render(<RenderedFiles files={[saved]} />);
+  expect(requests).toBe(0);
+  const file = screen.getByRole("region", { name: "File: retry.md" });
+  const details = file.querySelector("details")!;
+  await act(async () => { details.open = true; fireEvent(details, new window.Event("toggle")); });
+  await within(file).findByRole("alert");
+  expect(requests).toBe(1);
+  expect(within(file).getByRole("link", { name: "Download file" })).toBeDefined();
+  fail = false;
+  fireEvent.click(within(file).getByRole("button", { name: "Retry" }));
+  await within(file).findByRole("heading", { name: "Loaded after retry" });
+  expect(requests).toBe(2);
+});
+
 test("active work stays after mid-turn replies, steering and attachments, then returns to history on settlement", async () => {
   const { conversationActivity, workState } = await import("../src/client/conversationActivity");
   const app = await setup();
@@ -3361,6 +3463,87 @@ test("response ordering uses timestamps before IDs, breaks ties, and leaves the 
   expect(agents.map(agent => agent.id)).toEqual(["empty-1", "older", "tie-1", "tie-2", "empty-2"]);
   expect(sortAgentsByResponse(agents, undefined, {}).map(agent => agent.id)).toEqual(agents.map(agent => agent.id));
   expect(sortAgentsByResponse(agents, { older: { text: "Invalid date", createdAt: "invalid" } }, {}).map(agent => agent.id)).toEqual(agents.map(agent => agent.id));
+});
+
+test("sidebar archive targets an unselected agent without opening it or losing the current draft", async () => {
+  const app = await setup();
+  const selected = app.store.agents()[0]!;
+  const other = app.service.createAgent({ name: "Archive from sidebar", instructions: "Test", color: "#abc" });
+  render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByTitle(`${selected.name} · idle`));
+  const input = await screen.findByRole("textbox", { name: `Message ${selected.name}` });
+  fireEvent.change(input, { target: { value: "Keep this draft" } });
+  const archive = screen.getByRole("button", { name: `Archive ${other.name}` });
+  expect(archive.closest(".agent-row-item")?.querySelector(".agent-row")?.contains(archive)).toBe(false);
+  fireEvent.click(archive);
+  await waitFor(() => expect(app.store.agent(other.id)?.archivedAt).toBeTruthy());
+  await waitFor(() => expect(screen.queryByTitle(`${other.name} · idle`)).toBeNull());
+  expect((screen.getByRole("textbox", { name: `Message ${selected.name}` }) as HTMLTextAreaElement).value).toBe("Keep this draft");
+  expect(app.store.agent(selected.id)?.archivedAt).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: `Archive ${selected.name}` }));
+  await screen.findByText("This agent is archived. Its profile and history are preserved.");
+  expect(screen.queryByTitle(`${selected.name} · idle`)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Restore agent" }));
+  await screen.findByTitle(`${selected.name} · idle`);
+  expect((screen.getByRole("textbox", { name: `Message ${selected.name}` }) as HTMLTextAreaElement).value).toBe("Keep this draft");
+});
+
+test("sidebar archive works within projects and disables active agents", async () => {
+  const app = await setup();
+  const project = app.service.saveProject(null, { name: "Archive project", defaultCwd: dir! });
+  const member = app.service.createAgent({ name: "Idle member", instructions: "Test", color: "#abc", projectId: project.id });
+  const running = app.service.createAgent({ name: "Running member", instructions: "Test", color: "#abc", projectId: project.id });
+  const waiting = app.service.createAgent({ name: "Waiting member", instructions: "Test", color: "#abc", projectId: project.id });
+  app.store.setStatus(running.id, "running");
+  app.store.setStatus(waiting.id, "waiting");
+  render(<App />);
+  await waitForConnectedAgent();
+  await openInboxProject(project.name);
+  await waitForConnectedAgent();
+  const pane = screen.getByRole("navigation", { name: `${project.name} agents` });
+  for (const agent of [running, waiting]) {
+    const button = within(pane).getByRole("button", { name: `Archive ${agent.name}` });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(button);
+    expect(app.store.agent(agent.id)?.archivedAt).toBeNull();
+  }
+  fireEvent.click(within(pane).getByRole("button", { name: `Archive ${member.name}` }));
+  await waitFor(() => expect(!!within(pane).queryByTitle(`${member.name} · idle`)).toBe(false));
+  expect(app.store.agent(member.id)?.archivedAt).toBeTruthy();
+});
+
+test("sidebar archive disables pending actions and keeps failures retryable in the sidebar", async () => {
+  const app = await setup();
+  const selected = app.store.agents()[0]!;
+  const other = app.service.createAgent({ name: "Retry archive", instructions: "Test", color: "#abc" });
+  render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByTitle(`${selected.name} · idle`));
+  await screen.findByRole("textbox", { name: `Message ${selected.name}` });
+  const fetch = globalThis.fetch;
+  let fail!: () => void;
+  globalThis.fetch = ((input: any, init: any) => {
+    if (input === `/api/agents/${other.id}/archive`)
+      return new Promise<Response>((resolve) => {
+        fail = () => resolve(new Response(JSON.stringify({ error: "Archive unavailable" }), { status: 503 }));
+      });
+    return fetch(input, init);
+  }) as typeof fetch;
+  fireEvent.click(screen.getByRole("button", { name: `Archive ${other.name}` }));
+  await waitFor(() => expect(typeof fail).toBe("function"));
+  for (const agent of [selected, other])
+    expect(screen.getByRole("button", { name: `Archive ${agent.name}` }).hasAttribute("disabled")).toBe(true);
+  fail();
+  const sidebar = screen.getByRole("complementary", { name: "Agents" });
+  await within(sidebar).findByText(`Could not archive ${other.name}: Archive unavailable`);
+  expect(app.store.agent(other.id)?.archivedAt).toBeNull();
+  expect(screen.getByRole("button", { name: `Archive ${other.name}` }).hasAttribute("disabled")).toBe(false);
+  globalThis.fetch = fetch;
+  fireEvent.click(screen.getByRole("button", { name: `Archive ${other.name}` }));
+  await waitFor(() => expect(app.store.agent(other.id)?.archivedAt).toBeTruthy());
+  expect(within(sidebar).queryByRole("alert")).toBeNull();
 });
 
 test("inbox menu contains archive, settings and theme, supports keyboard dismissal and survives live updates", async () => {

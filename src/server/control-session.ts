@@ -48,6 +48,10 @@ export class ControlSessions {
     if (!session || session.expires < Date.now()) return null;
     return session;
   }
+  valid(id: string) {
+    const session = this.sessions.get(id);
+    return !!session && session.expires >= Date.now();
+  }
   create(req: Request) {
     for (const [id, session] of this.sessions)
       if (session.expires < Date.now()) this.sessions.delete(id);

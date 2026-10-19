@@ -10,6 +10,10 @@ export interface RenderedFile {
 export function isHtmlFile(file: RenderedFile): boolean {
   return file.kind === "text" && /\.html?$/i.test(file.name);
 }
+/** Detect by filename so previously saved text attachments render as Markdown too. */
+export function isMarkdownFile(file: RenderedFile): boolean {
+  return file.kind === "text" && /\.(md|markdown)$/i.test(file.name);
+}
 export function isRenderedFileUrl(value: unknown): value is string {
   return (
     typeof value === "string" &&

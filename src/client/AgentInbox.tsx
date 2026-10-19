@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { Archive, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { Avatar } from "./Avatar";
 import { AgentListMenu } from "./AgentListMenu";
 import { Modal } from "./Modal";
@@ -18,11 +18,13 @@ export function AgentInbox({
   selectedId,
   unread,
   connected,
+  archiving,
   visible,
   dark,
   onProject,
   onBack,
   onAgent,
+  onArchive,
   onArchived,
   onSettings,
   onToggleTheme,
@@ -37,11 +39,13 @@ export function AgentInbox({
   selectedId?: string;
   unread: Set<string>;
   connected: boolean;
+  archiving: boolean;
   visible: boolean;
   dark: boolean;
   onProject: (id: string) => void;
   onBack: () => void;
   onAgent: (id: string) => void;
+  onArchive: (id: string) => void;
   onArchived: () => void;
   onSettings: () => void;
   onToggleTheme: () => void;
@@ -154,9 +158,9 @@ export function AgentInbox({
     setSearching(false);
     onProject(id);
   };
-  function agentRow(a: AgentRecord) {
+  function agentRow(a: AgentRecord, archiveAction = false) {
     const preview = data?.agentPreviews?.[a.id];
-    return (
+    const button = (
       <button
         key={a.id}
         className={`agent-row ${a.id === selectedId ? "selected" : ""}`}
@@ -198,10 +202,26 @@ export function AgentInbox({
         <Indicator needsAttention={attention(a)} unread={unread.has(a.id)} />
       </button>
     );
+    if (!archiveAction) return button;
+    return (
+      <div key={a.id} className="agent-row-item">
+        {button}
+        <button
+          type="button"
+          className="icon agent-row-archive"
+          aria-label={`Archive ${a.name}`}
+          title={`Archive ${a.name}`}
+          disabled={!connected || archiving || a.status === "running" || a.status === "waiting"}
+          onClick={() => onArchive(a.id)}
+        >
+          <Archive size={16} aria-hidden="true" />
+        </button>
+      </div>
+    );
   }
-  function row(entry: Entry) {
+  function row(entry: Entry, archiveAction = false) {
     return "agent" in entry ? (
-      agentRow(entry.agent)
+      agentRow(entry.agent, archiveAction)
     ) : (
       <ProjectRow
         key={entry.project.id}
@@ -259,7 +279,7 @@ export function AgentInbox({
           inert={inProject}
           aria-hidden={inProject}
         >
-          {entries.map(row)}
+          {entries.map((entry) => row(entry, true))}
           {data && !entries.length && (
             <p className="subtle empty-agents">
               No agents here yet. Create one to get started.
@@ -273,7 +293,7 @@ export function AgentInbox({
           inert={!inProject}
           aria-hidden={!inProject}
         >
-          {members.map(agentRow)}
+          {members.map((member) => agentRow(member, true))}
           {!members.length && (
             <div className="subtle empty-agents">
               <p>No agents here yet. Create one to get started.</p>
@@ -301,7 +321,7 @@ export function AgentInbox({
             />
           </div>
           <div className="inbox-search-results">
-            {results.map(row)}
+            {results.map((entry) => row(entry))}
             {!results.length && (
               <p className="subtle">No matching agents or projects.</p>
             )}

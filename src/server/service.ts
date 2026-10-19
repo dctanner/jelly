@@ -21,6 +21,7 @@ export { HttpError } from "./errors";
 import { ComputerSessions } from "./computer-sessions";
 import { BrowserSessions } from "./browser-sessions";
 import { ChromeSessions } from "./chrome-sessions";
+import { ChromeShare } from "./chrome-share";
 import type { ChromeSelection } from "../shared/chrome-protocol";
 import { Interventions } from "./interventions";
 import { interventionTools } from "./agent-tools";
@@ -55,6 +56,7 @@ export class JellyService {
   readonly computer: ComputerSessions;
   readonly browsers: BrowserSessions;
   readonly chrome: ChromeSessions;
+  readonly chromeShare: ChromeShare;
   readonly interventions: Interventions;
   readonly subagents: SubagentStore;
   readonly apps: AppsService;
@@ -86,9 +88,13 @@ export class JellyService {
     this.chrome = new ChromeSessions(harness.dataDir, store.instance().id, id => {
       this.emit(id, null, "computer_changed", {});
       const task = this.chrome.state(id).task;
-      if (this.desktop && task && (task.handoff || (task.pauseState === "paused" && task.tabs.length > 0)))
+      if (this.desktop && !this.desktop.status().privateSafe && task && (task.handoff || (task.pauseState === "paused" && task.tabs.length > 0)))
         void this.pauseDesktopForPrivacy(`browser:${id}`).catch(() => {});
     });
+    this.chromeShare = new ChromeShare(this.chrome, harness.dataDir, async () => {
+      if (this.desktopHandoff) throw new HttpError(409, "Return the existing desktop handoff first.");
+      await this.pauseDesktopForPrivacy("chrome-share");
+    }, () => this.emit(null, null, "computer_changed", {}));
     this.browsers = new BrowserSessions(this.computer, this.chrome);
     this.desktop = new DesktopSessions(harness.dataDir, {
       ...options.desktopOptions,
@@ -96,9 +102,10 @@ export class JellyService {
         const state = this.active.get(runId);
         return !this.closing && state?.agentId === agentId && !state.cancelled;
       },
-      canAdmit: () => !this.desktopPrivate && !this.desktopHandoff && !this.browserPrivate(),
-      notify: () => this.emit(null, null, "desktop_changed", {}),
+      canAdmit: () => !this.chrome.sharingDesktop && !this.desktopPrivate && !this.desktopHandoff && !this.browserPrivate(),
+      notify: () => { this.chromeShare.checkPrivacy(); this.emit(null, null, "desktop_changed", {}); },
     });
+    this.chromeShare.privacyValid = () => this.desktop.status().privateSafe;
     this.interventions = new Interventions(
       store,
       (agentId, runId, type, data) => {
@@ -121,6 +128,7 @@ export class JellyService {
       });
   }
   private browserPrivate(agentId?: string) {
+    if (this.chrome.sharingDesktop) return true;
     return this.store.agents().filter(agent => !agentId || agent.id === agentId).some(agent => {
       const chrome = this.chrome.state(agent.id).task;
       return (chrome && (chrome.pauseState !== "active" || !!chrome.handoff)) ||
@@ -129,7 +137,14 @@ export class JellyService {
     });
   }
   chromeStatus(agentId?: string) {
-    const state = this.chrome.state(agentId);
+    const state = { ...this.chrome.state(agentId),
+      browserTarget: (agentId && this.browsers.target(agentId)) || this.store.browserSelection().browserTarget,
+      selectedProfile: this.store.browserSelection().chromeProfile,
+      desktopShared: this.chrome.sharingDesktop };
+    const share = this.chromeShare.state();
+    if (state.task && this.chrome.sharingDesktop && !["sharing", "disconnected"].includes(share.status))
+      return { ...state, task: { ...state.task, paused: false,
+        pauseState: ["failed", "orphaned"].includes(share.status) ? "failed" as const : "pausing" as const } };
     const desktop = this.desktop.status();
     if (state.task?.paused && !desktop.privateSafe)
       return { ...state, task: { ...state.task, paused: false,
@@ -163,6 +178,7 @@ export class JellyService {
         if (port && id === agentId) return port;
         const browser = scoped.get(id);
         const guard = () => {
+          if (scoped.target === "chrome") this.chrome.assertAutomationAllowed();
           if (this.desktopHandoff) throw new Error("Browser automation is paused for private desktop control. Explicit desktop handback is required.");
         };
         port = {
@@ -211,6 +227,7 @@ export class JellyService {
     }
   }
   async resumeDesktop(agentId: string, runId: string, handoffId?: string) {
+    this.chrome.assertAutomationAllowed();
     const active = this.active.get(runId);
     if (active?.agentId !== agentId || active.cancelled)
       throw new HttpError(409, "Start a current desktop run before explicitly resuming.");
@@ -252,6 +269,7 @@ export class JellyService {
     return this.desktopStatus();
   }
   assertBrowserHandbackAllowed() {
+    this.chrome.assertAutomationAllowed();
     if (this.desktopHandoff && this.store.intervention(this.desktopHandoff.id)?.status === "pending")
       throw new HttpError(409, "Private desktop control is reserved. Return desktop control first.");
   }
@@ -266,6 +284,7 @@ export class JellyService {
   async finishDesktopPrivacy() {
     if (this.desktopHandoff && this.store.intervention(this.desktopHandoff.id)?.status === "pending")
       throw new HttpError(409, "Return the matching desktop handoff card first.");
+    if (!this.chrome.sharingDesktop) this.privateBoundaries.delete("chrome-share");
     this.privateBoundaries.delete("desktop-manual");
     for (const boundary of this.privateBoundaries)
       if (boundary.startsWith("desktop-handoff:") &&
@@ -324,6 +343,7 @@ export class JellyService {
         agentActivity[state.agentId] = state.thinkingPreview;
     }
     return {
+      agentNotifications: this.store.agentNotifications(),
       latestAssistantMessages: this.store.latestAssistantMessages(),
       agentPreviews: this.store.agentPreviews(),
       agentActivity,
@@ -1027,7 +1047,10 @@ export class JellyService {
     const settled = await Promise.allSettled([this.settled()]);
     const cleanup = await Promise.allSettled([
       Promise.resolve().then(() => this.desktop.close()),
-      Promise.resolve().then(() => this.chrome.close()),
+      Promise.resolve().then(async () => {
+        try { await this.chromeShare.close(); }
+        finally { await this.chrome.close(); }
+      }),
       Promise.resolve().then(() => this.computer.close()),
     ]);
     this.harness.chatgptTransport.close();

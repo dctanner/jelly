@@ -1,4 +1,6 @@
 import { connect } from "node:net";
+import { localX11Desktop, nativeChromeDesktop } from "../src/server/chrome-desktop";
+import { ownedProcess } from "../src/server/owned-chrome-desktop";
 import { ChromeWriter } from "../src/server/chrome-writer";
 import { readFileSync, lstatSync } from "node:fs";
 import {
@@ -60,6 +62,11 @@ try {
               extensionId: config.extensionId,
               instance: config.instance,
               grant: config.grant,
+              desktop: nativeChromeDesktop(),
+              // Only the private owned launcher record can authorize this exact
+              // direct Chrome parent; legacy/unowned X11 attestation is unchanged.
+              ownedParent: (() => { try { return ownedProcess(process.ppid); } catch { return null; } })(),
+              ownedDesktop: localX11Desktop(process.env),
             }),
           );
         } else toSocket.write(chromeFrame(value));

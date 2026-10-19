@@ -2,6 +2,7 @@ import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 import { Modal } from "./Modal";
 import { RemoteClipboard } from "./RemoteClipboard";
 import { ComputerViewport } from "./ComputerViewport";
+import { useVncViewer } from "./useVncViewer";
 import { useEffect, useRef, useState } from "react";
 import { X, Monitor, RotateCw } from "lucide-react";
 import type { ComputerState } from "../shared/types";
@@ -23,13 +24,10 @@ function SessionComputerPanel({
   const scoped = (path: string) => `${path}?agentId=${encodeURIComponent(agentId)}`;
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const screen = useRef<HTMLDivElement>(null);
-  const connection = useRef<import("@novnc/novnc/lib/rfb").default | null>(null);
   const [state, setState] = useState<ComputerState | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [revision, setRevision] = useState(0),
-    [connected, setConnected] = useState(false),
     [confirmRecovery, setConfirmRecovery] = useState(false);
   useEffect(() => {
     let dead = false;
@@ -55,50 +53,11 @@ function SessionComputerPanel({
   const ready = state?.status === "ready",
     owned = state?.owned ?? false,
     privateScreen = state?.control === "human" && !owned;
-  useEffect(() => {
-    if (!ready || privateScreen || !screen.current) return;
-    let dead = false,
-      rfb: import("@novnc/novnc/lib/rfb").default | undefined;
-    setConnected(false);
-    setError("");
-    void (async () => {
-      try {
-        const [{ default: RFB }, { ticket }] = await Promise.all([
-          import("@novnc/novnc"),
-          control<{ ticket: string }>(scoped("/computer/ticket"), {
-            mode: owned ? "control" : "view",
-          }),
-        ]);
-        if (dead) return;
-        const url = new URL(scoped("/api/computer/socket"), window.location.href);
-        url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        url.searchParams.set("ticket", ticket);
-        rfb = new RFB(screen.current!, url.href);
-        connection.current = rfb;
-        rfb.viewOnly = !owned;
-        rfb.scaleViewport = true;
-        rfb.resizeSession = false;
-        rfb.addEventListener("connect", () => {
-          if (!dead) setConnected(true);
-        });
-        rfb.addEventListener("disconnect", () => {
-          if (!dead) setConnected(false);
-        });
-        rfb.addEventListener("securityfailure", () => {
-          if (!dead)
-            setError("Desktop connection was refused. Reconnect to try again.");
-        });
-      } catch (e) {
-        if (!dead) setError((e as Error).message);
-      }
-    })();
-    return () => {
-      dead = true;
-      if (connection.current === rfb) connection.current = null;
-      rfb?.disconnect();
-      screen.current?.replaceChildren();
-    };
-  }, [ready, owned, privateScreen, revision]);
+  const { screen, connection, connected, connectionError } = useVncViewer({
+    enabled: ready && !privateScreen, interactive: owned, revision,
+    socketPath: scoped("/api/computer/socket"),
+    requestTicket: async () => (await control<{ ticket: string }>(scoped("/computer/ticket"), { mode: owned ? "control" : "view" })).ticket,
+  });
   async function action(name: "take" | "release" | "close" | "recover") {
     setBusy(true);
     setError("");
@@ -205,9 +164,9 @@ function SessionComputerPanel({
           finally { rfb.sendKey(0xffe3, "ControlLeft", false); }
         }} />
       )}
-      {(error || state?.error) && (
+      {(error || connectionError || state?.error) && (
         <p role="alert" className="error-text">
-          {error || state?.error}
+          {error || connectionError || state?.error}
         </p>
       )}
       <ComputerViewport displayRef={screen} interactive={owned && connected}

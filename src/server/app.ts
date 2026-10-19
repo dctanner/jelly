@@ -1,3 +1,4 @@
+import "./runtime-network";
 import { tailnetAddresses } from "../shared/network";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { AVATARS } from "../shared/avatars";
@@ -147,6 +148,7 @@ export async function startApp(options: AppOptions) {
     );
     cleanup = () => service.close();
     const controls = new ControlSessions(options.allowedOrigins);
+    service.chromeShare.ownerValid = id => controls.valid(id);
     const connections = new Connections(
       service.harness.auth,
       (mode) => service.setMode(mode),
@@ -158,7 +160,7 @@ export async function startApp(options: AppOptions) {
       options.staticDir ?? join(import.meta.dir, "../../dist"),
     );
     interface VncData {
-      computer: import("./computer").Computer;
+      computer: import("./vnc-endpoint").VncEndpoint;
       path: string;
       generation: number;
       session: string;
@@ -189,12 +191,16 @@ export async function startApp(options: AppOptions) {
           };
           ws.data.detach = ws.data.computer.attach(close);
           socket.on("data", (chunk) => {
+            if (!ws.data.computer.validConnection(ws.data.generation, ws.data.session)) { close(); return; }
             if (ws.send(chunk, true) === -1) socket.pause();
           });
           socket.on("error", close);
           socket.on("close", close);
         },
         message(ws, message) {
+          if (!ws.data.computer.validConnection(ws.data.generation, ws.data.session)) {
+            ws.data.socket?.destroy(); ws.close(1008); return;
+          }
           if (typeof message === "string" || message.byteLength > 1024 * 1024) {
             ws.close(1008);
             return;
@@ -301,6 +307,52 @@ export async function startApp(options: AppOptions) {
               if (server.upgrade(req, { data: { ...connection, computer } })) return;
               throw new HttpError(400, "WebSocket upgrade required.");
             }
+            if (req.method === "GET" && url.pathname === "/api/chrome/share/socket") {
+              if (!origin || !allowed.has(origin)) throw new HttpError(403, "A same-origin browser is required.");
+              const session = controls.require(req, false);
+              const connection = service.chromeShare.consume(url.searchParams.get("ticket") ?? "", session.id);
+              if (server.upgrade(req, { data: { ...connection, computer: service.chromeShare } })) return;
+              throw new HttpError(400, "WebSocket upgrade required.");
+            }
+            if (req.method === "GET" && url.pathname === "/api/chrome/share")
+              return json(service.chromeShare.state(controls.require(req, false).id));
+            if (req.method === "POST" && url.pathname.startsWith("/api/chrome/share/")) {
+              const session = controls.require(req);
+              const operation = url.pathname.slice("/api/chrome/share/".length);
+              const input = await body(req);
+              if (operation === "take-owned") {
+                if (Object.keys(input).some(k => k !== "agentId")) throw new HttpError(400, "Only the installed owned desktop may be selected.");
+                const agentId = text(input.agentId, "Agent ID", 100);
+                if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
+                return json(await service.chromeShare.takeOwned(session.id, agentId));
+              }
+              if (operation === "take") {
+                const agentId = text(input.agentId, "Agent ID", 100);
+                if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
+                const task = service.chrome.state(agentId).task;
+                const profile = task?.profile ?? store.browserSelection().chromeProfile;
+                if (!task && store.browserSelection().browserTarget !== "chrome") throw new HttpError(409, "Choose Connected Chrome first.");
+                const live = service.chrome.bridge.profiles().find(p => p.id === profile);
+                if (!live || input.profile !== profile || input.profileGeneration !== live.generation)
+                  throw new HttpError(409, "Selected Chrome profile changed. Refresh before consenting.");
+                return json(await service.chromeShare.take(session.id, agentId, live.id, live.generation));
+              }
+              if (operation === "ticket") return json(service.chromeShare.ticket(session.id, input.generation));
+              if (operation === "reconnect") return json(await service.chromeShare.reconnect(session.id, input.generation));
+              if (operation === "release") {
+                const previous = service.chromeShare.state(session.id);
+                const cleanupOnly = input.cleanupOnly === true;
+                const next = await service.chromeShare.release(session.id, input.generation, cleanupOnly);
+                if (!cleanupOnly && previous.owned && previous.agentId && input.resume === true) {
+                  const handoff = await service.chrome.resumeAfterShare(previous.agentId);
+                  if (handoff && store.intervention(handoff)?.status === "pending") service.interventions.completeLogin(handoff);
+                  await service.finishBrowserPrivacy(previous.agentId);
+                }
+                await service.finishDesktopPrivacy();
+                return json(next);
+              }
+              throw new HttpError(404, "Chrome share route not found.");
+            }
             if (url.pathname === "/api/apps" || url.pathname.startsWith("/api/apps/")) {
               controls.require(req, req.method !== "GET");
               if (req.method === "GET" && url.pathname === "/api/apps") {
@@ -342,6 +394,7 @@ export async function startApp(options: AppOptions) {
             if (url.pathname.startsWith("/api/desktop/") && req.method === "POST") {
               const operation = url.pathname.slice("/api/desktop/".length);
               const input = await body(req);
+              if (operation !== "pause" && operation !== "stop") service.chrome.assertAutomationAllowed();
               if (operation === "settings") return json(await service.desktop.configure(input));
               if (operation === "connect") { await service.desktop.connect(); return json(service.desktopStatus()); }
               if (operation === "pause") { await service.pauseDesktopForPrivacy(); return json(service.desktopStatus()); }

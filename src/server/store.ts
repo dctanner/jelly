@@ -14,6 +14,7 @@ import type {
   Activity,
   Intervention,
   AgentRecord,
+  AgentNotification,
   Mode,
   RunRecord,
   Status,
@@ -190,6 +191,8 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timeline_assistant_message
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
     this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_timeline_notifications ON timeline(agentId, id)
+        WHERE type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested');
       CREATE INDEX IF NOT EXISTS idx_timeline_thinking ON timeline(runId, id) WHERE type='thinking';
       CREATE INDEX IF NOT EXISTS idx_timeline_tool_starts
         ON timeline(runId, id) WHERE type='tool_started';
@@ -337,6 +340,21 @@ export class Store {
         .filter((row) => row.messageId !== null)
         .map((row) => [row.agentId, row.messageId!]),
     );
+  }
+  agentNotifications(): AgentNotification[] {
+    // Use the durable timeline, not the bounded SSE replay log. A reconnect
+    // recovers work finished while disconnected, including unselected agents.
+    return this.db.query(`
+      SELECT t.id, t.agentId, t.type FROM agents a JOIN timeline t ON t.id = (
+        SELECT id FROM timeline WHERE agentId=a.id
+          AND type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested')
+        ORDER BY id DESC LIMIT 1
+      )
+      WHERE a.archivedAt IS NULL AND (
+        t.type='run_completed' OR a.status IN ('waiting', 'error', 'interrupted')
+      )
+      ORDER BY t.id
+    `).all() as AgentNotification[];
   }
   agentPreviews(): Record<string, { text: string; createdAt: string }> {
     const rows = this.db

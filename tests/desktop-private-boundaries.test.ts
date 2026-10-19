@@ -11,6 +11,9 @@ test("desktop-card handback retains another browser boundary's cross-instance ex
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
+    // Exercise Mac cross-instance exclusion on every CI host. Unsupported
+    // platforms deliberately have no native desktop lease to reserve.
+    desktopOptions: { platform: "darwin" },
   });
   const agentId = app.store.agents()[0]!.id;
   const run = app.store.createRun(

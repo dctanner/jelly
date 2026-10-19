@@ -2676,6 +2676,8 @@ main > .connection-error + .conversation {
 .rendered-file small { display: block; opacity: .7; margin-top: 4px; }
 .rendered-file pre { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .rendered-file a { color: var(--accent); }
+.rendered-markdown { max-height: 420px; overflow: auto; overflow-wrap: anywhere; margin: 12px 0; }
+.rendered-markdown:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Remains over the chat, centered just above the floating composer. */
 .jump-to-bottom {

@@ -69,7 +69,6 @@ export function AppsHome({
   onLaunch,
   onDetails,
   onEdit,
-  onBuild,
   onAdd,
   onRemove,
 }: {
@@ -80,7 +79,6 @@ export function AppsHome({
   onLaunch: (app: AppRecord) => void;
   onDetails: (app: AppRecord) => void;
   onEdit: (app: AppRecord) => void;
-  onBuild: () => void;
   onAdd: () => void;
   onRemove: (app: AppRecord) => void;
 }) {
@@ -375,14 +373,13 @@ export function AppsHome({
           <h1 id="apps-home-title" className="destination-title" tabIndex={-1}>
             Apps
           </h1>
-          <button type="button" className="apps-build" onClick={onBuild}>
+          <button type="button" className="apps-add" onClick={onAdd}>
             <span>
               <Plus size={17} strokeWidth={2.4} aria-hidden="true" />
-              Build an app
+              Add app
             </span>
           </button>
         </header>
-        <button type="button" className="secondary apps-add" onClick={onAdd}>Add app</button>
         <label className="apps-search">
           <Search size={17} aria-hidden="true" />
           <span className="sr-only">Search apps</span>
@@ -418,10 +415,7 @@ export function AppsHome({
           <section className="apps-empty">
             <img src="/brand/jelly-mark.png" alt="" />
             <h2>Your apps live here.</h2>
-            <p>Ask Jelly to build something.</p>
-            <button className="primary" onClick={onBuild}>
-              Build an app
-            </button>
+            <p>Add a trusted app to get started.</p>
           </section>
         )}
         {loaded && (apps.length > 0 || !!search) && (

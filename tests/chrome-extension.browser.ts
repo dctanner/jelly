@@ -206,10 +206,8 @@ try {
   ]);
   console.log("Chrome fixture: host installed, connecting popup");
   let popup = await context.newPage();
-  await popup.goto(`chrome-extension://${id}/popup.html`);
-  await popup
-    .getByRole("button", { name: "Connect to installed Jelly instance" })
-    .click();
+  await popup.goto(`chrome-extension://${id}/popup.html#connect`);
+  await popup.waitForURL(`chrome-extension://${id}/popup.html`);
   for (let i = 0; i < 100 && !bridge.profiles().length; i++) await delay();
   if (!bridge.profiles().length) {
     const diagnostic = await worker.evaluate(
@@ -255,6 +253,12 @@ try {
   });
   await call("name", { name: "Fixture comparison" });
   const opened = await call("open", { url: fixture.url.href });
+  // Check background creation before later explicit-human focus/close tests can
+  // cause Chrome itself to select this tab as their active-tab replacement.
+  const initiallyBackground = await worker.evaluate(async (url) =>
+    (await (globalThis as any).chrome.tabs.query({})).find((t: any) => t.url === url || t.pendingUrl === url)?.active,
+    fixture.url.href);
+  expect(initiallyBackground).toBe(false);
   const tab = opened.pageId;
   let snapshot: any;
   for (let i = 0; i < 40; i++) {
@@ -330,6 +334,8 @@ try {
     );
     const humanTab = await call("open", { url }, takeover);
     await call("focus", { tab: humanTab.pageId }, takeover);
+    // Native tab-update acknowledgement can precede Playwright's page/URL event.
+    for (let i = 0; i < 100 && !context.pages().some(p => p.url() === url); i++) await delay(25);
     const humanPage = context.pages().find((p) => p.url() === url)!;
     await humanPage.getByRole("heading", { name: "Local fixture" }).waitFor();
     if (mode === "server") await call("pause", {}, takeover);
@@ -685,7 +691,6 @@ try {
     (globalThis as any).chrome.tabs.query({}),
   );
   const taskTab = browserTabs.find((t: any) => t.url === fixture.url.href);
-  expect(taskTab.active).toBe(false);
   expect(taskTab.groupId).toBeGreaterThanOrEqual(0);
   const group = await worker.evaluate(
     (groupId: number) => (globalThis as any).chrome.tabGroups.get(groupId),
@@ -1544,6 +1549,9 @@ try {
   await popup.getByRole("button", { name: "Disconnect", exact: true }).click();
   await delay();
   expect(bridge.profiles()).toHaveLength(0);
+  await popup.reload();
+  await delay(250);
+  expect(bridge.profiles()).toHaveLength(0); // The one-shot launch fragment was consumed.
   console.log(
     "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, exclusive user-tab grant/release with original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by local pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
   );

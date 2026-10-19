@@ -60,7 +60,7 @@ test("Connected Chrome settings require private control and persist separately f
     expect(app.store.instance().browserBackend).toBe("agent-browser");
     expect(app.service.snapshot().config.browserTarget).toBe("chrome");
     const status = await fetch(`${origin}/api/chrome`, { headers });
-    expect(await status.json()).toEqual({ profiles: [], task: null });
+    expect(await status.json()).toEqual({ profiles: [], task: null, browserTarget: "chrome", selectedProfile: settings.chromeProfile, desktopShared: false });
     const agent = app.store.agents()[0]!;
     expect(() =>
       app.service.browsers

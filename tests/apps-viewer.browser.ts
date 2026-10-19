@@ -82,6 +82,10 @@ const registered = jelly.service.apps.register({
   url: appServer.url.origin + "/dashboard",
 });
 jelly.service.apps.setStarred(registered.id, true);
+const second = jelly.service.apps.register({
+  name: "Second fixture",
+  url: appServer.url.origin + "/second",
+});
 const blocked = ["denied-xfo", "denied-csp", "auth"].map((path) =>
   jelly.service.apps.register({
     name: path,
@@ -113,6 +117,15 @@ try {
       exact: true,
     });
     await launch.waitFor();
+    assert(await page.getByRole("button", { name: /build an app/i }).count() === 0, "Removed build action is still visible");
+    const addApp = page.getByRole("button", { name: "Add app", exact: true });
+    assert(await addApp.count() === 1, "App registration action is missing or duplicated");
+    const addBox = await addApp.boundingBox();
+    assert(addBox && addBox.height >= 44 && addBox.x >= 0 && addBox.x + addBox.width <= width, "Add app control is clipped or too small");
+    await addApp.click();
+    await page.getByRole("dialog", { name: "Add trusted app" }).waitFor();
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await page.getByRole("dialog", { name: "Add trusted app" }).waitFor({ state: "hidden" });
     const scroller = page.locator(".apps-home");
     await scroller.evaluate((element) => {
       element.scrollTop = 240;
@@ -124,6 +137,38 @@ try {
     await frame.getByText("WebSocket echo").waitFor();
     await frame.getByText("Streaming first last").waitFor();
     await frame.getByText("Control API blocked").waitFor();
+    const navigation = page.getByRole("navigation", { name: "App navigation" });
+    await navigation.getByRole("link", { name: "History 0", exact: true }).waitFor();
+    const navigationBox = await navigation.boundingBox();
+    const iframeBox = await page.locator("iframe").boundingBox();
+    const backBox = await navigation.getByRole("button", { name: "Back to Apps" }).boundingBox();
+    assert(navigationBox && iframeBox && backBox, "Viewer navigation geometry missing");
+    assert(
+      Math.abs(navigationBox.y + navigationBox.height - 780) <= 1 &&
+      iframeBox.y + iframeBox.height <= navigationBox.y + 1,
+      "Bottom navigation overlays the app or does not sit at the bottom",
+    );
+    assert(backBox.width >= 44 && backBox.height >= 44 && backBox.x >= 0, "Back target is clipped or undersized");
+    assert(await page.locator(".viewer-home-pill").count() === 0, "Floating Back pill remains");
+    assert(await page.getByRole("navigation", { name: "Jelly destinations" }).count() === 0, "Viewer has duplicate destination navigation");
+    const selected = navigation.getByRole("link", { name: "Trusted fixture", exact: true });
+    assert(await selected.getAttribute("aria-current") === "page", "Current app tab is not indicated");
+    await page.frameLocator("iframe").locator("#script").evaluate(element => element.textContent = "Frame retained");
+    await selected.click();
+    await page.frameLocator("iframe").getByText("Frame retained").waitFor();
+    const tabNames = await navigation.getByRole("link").allTextContents();
+    await navigation.getByRole("link", { name: "Second fixture", exact: true }).click();
+    await page.waitForURL(origin + "/apps/" + second.id);
+    await page.frameLocator("iframe").getByText("Scripts work").waitFor();
+    assert(await navigation.getByRole("link", { name: "Second fixture", exact: true }).getAttribute("aria-current") === "page", "Switch did not select new app");
+    assert(JSON.stringify(await navigation.getByRole("link").allTextContents()) === JSON.stringify(tabNames), "Tabs moved when an app was opened");
+    await navigation.getByRole("link", { name: "Trusted fixture", exact: true }).click();
+    await page.waitForURL(origin + "/apps/" + registered.id);
+    await page.frameLocator("iframe").getByText("Scripts work").waitFor();
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "App tabs overflow the document");
+    if (width === 390) {
+      await page.screenshot({ path: "/tmp/jelly-app-tabs-mobile.png" });
+    }
     assert(
       sameHostCookieSeen,
       "Disposable HttpOnly Jelly cookie was not observed at the same-host app port",
@@ -162,9 +207,13 @@ try {
       registered.id,
     );
     // Reload recreates Home; re-enter without reload to prove retained scroll.
-    await scroller.evaluate((element) => {
-      element.scrollTop = 220;
-    });
+    await scroller.evaluate((element, id) => {
+      // Keep the launch target visible so Playwright's automatic scroll does
+      // not change the reader position we are asking Jelly to restore.
+      const target = element.querySelector<HTMLElement>(`[id="jelly-app-${id}-launch"]`)!;
+      const top = target.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+      element.scrollTop = Math.max(1, top - 24);
+    }, registered.id);
     const currentScroll = await scroller.evaluate(
       (element) => element.scrollTop,
     );
@@ -220,14 +269,11 @@ try {
       await page
         .getByRole("button", { name: `Options for ${app.name}` })
         .click();
-      await page
-        .getByRole("menuitem", { name: "Embedding help / retry" })
-        .click();
-      await page
-        .getByText("App not appearing? Embedding help", { exact: true })
-        .click();
-      await page.getByText(/third-party-cookie restrictions/).waitFor();
-      await page.getByRole("button", { name: "Retry frame" }).click();
+      assert(
+        (await page.getByRole("menuitem", { name: "Embedding help / retry" }).count()) === 0,
+        "Removed embedding-help action is still present",
+      );
+      assert((await page.locator(".viewer-guidance").count()) === 0, "Unexpected embedding overlay");
       assert(
         (await page.getByText("Open in new tab", { exact: true }).count()) ===
           0,
@@ -337,11 +383,9 @@ try {
   const page = await browser.newPage();
   await page.goto(origin + "/apps/" + dead.id);
   await page.getByRole("button", { name: "Options for Downtime" }).click();
-  await page.getByRole("menuitem", { name: "Embedding help / retry" }).click();
-  await page
-    .getByText("App not appearing? Embedding help", { exact: true })
-    .click();
-  await page.getByText(/cross-origin failure/).waitFor();
+  // The old eight-second timer must not inject help over the embedded app.
+  await page.waitForTimeout(8500);
+  assert((await page.locator(".viewer-guidance").count()) === 0, "Embedding overlay reappeared after timeout");
   await page.getByRole("button", { name: "Back to Apps" }).click();
   console.log(
     "PASS downtime recovery; no live registry, credentials, services or remote-device claims",

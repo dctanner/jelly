@@ -7,10 +7,13 @@ import {
   openSync,
   closeSync,
   constants,
+  mkdirSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
+import { nativeChromeDesktop } from "../src/server/chrome-desktop";
 import { spawn, execFileSync } from "node:child_process";
 import {
   ChromeFrames,
@@ -24,7 +27,7 @@ import {
 } from "../src/server/chrome-writer";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function hostFixture(stalledStdout = false) {
+async function hostFixture(stalledStdout = false, env = process.env) {
   const dir = mkdtempSync(join(tmpdir(), "jelly-native-backpressure-"));
   const socketPath = join(dir, "bridge.sock");
   let accept!: (socket: Socket) => void;
@@ -58,7 +61,7 @@ async function hostFixture(stalledStdout = false) {
       config,
       `chrome-extension://${extensionId}/`,
     ],
-    { stdio: ["pipe", outputFd ?? "pipe", "ignore"] },
+    { env, stdio: ["pipe", outputFd ?? "pipe", "ignore"] },
   );
   // The stalled-reader case deliberately kills the host with queued stdin
   // bytes. Its writer may then receive EPIPE; that is expected shutdown, not
@@ -207,5 +210,178 @@ test("ChromeWriter drains queued frames once in order and rejects a bounded queu
   } finally {
     writer.dispose();
     destination.destroy();
+  }
+});
+
+test("native host rejects spoofed desktop claims and an X11 environment without a Chrome browser parent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jelly-native-desktop-"));
+  const auth = join(dir, "authority");
+  writeFileSync(auth, "private", { mode: 0o600 });
+  try {
+    for (const supported of [true, false]) {
+      const f = await hostFixture(false, {
+        ...process.env,
+        XDG_SESSION_TYPE: supported ? "x11" : "wayland",
+        WAYLAND_DISPLAY: "",
+        DISPLAY: ":818.0",
+        XAUTHORITY: auth,
+      });
+      try {
+        const parser = new ChromeFrames();
+        const received: any[] = [];
+        f.socket.on("data", (b) =>
+          received.push(...parser.push(Buffer.from(b))),
+        );
+        f.child.stdin!.write(
+          chromeFrame({
+            type: "hello",
+            version: CHROME_PROTOCOL,
+            desktop: {
+              available: true,
+              display: ":9999",
+              auth: "/arbitrary/extension/path",
+            },
+          }),
+        );
+        for (let i = 0; i < 100 && !received.length; i++) await delay(10);
+        expect(received[0]?.desktop).toEqual({ available: false });
+      } finally {
+        await f.close();
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("nativeChromeDesktop requires matching parent environment and unambiguous resolved X11 process evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jelly-native-proc-"));
+  const auth = join(dir, "authority"),
+    exe = join(dir, "chrome");
+  writeFileSync(auth, "private", { mode: 0o600 });
+  writeFileSync(exe, "fixture executable identity");
+  const keys = [
+    "DISPLAY",
+    "XAUTHORITY",
+    "XDG_SESSION_TYPE",
+    "WAYLAND_DISPLAY",
+  ] as const;
+  const saved = keys.map((key) => process.env[key]);
+  const env = {
+    DISPLAY: ":818.0",
+    XAUTHORITY: auth,
+    XDG_SESSION_TYPE: "x11",
+    WAYLAND_DISPLAY: "",
+  };
+  Object.assign(process.env, env);
+  const browser = `${exe} --user-data-dir=/private/profile\0`;
+  const gpu = `${exe} --type=gpu-process --ozone-platform=x11\0`;
+  const writeProcess = (
+    pid: number,
+    parent: number,
+    command: string,
+    children = "",
+  ) => {
+    const path = join(dir, String(pid));
+    mkdirSync(join(path, "task", String(pid)), { recursive: true });
+    writeFileSync(
+      join(path, "stat"),
+      `${pid} (chrome) S ${parent} ${Array(17).fill("0").join(" ")} 123\n`,
+    );
+    writeFileSync(join(path, "cmdline"), command);
+    writeFileSync(join(path, "task", String(pid), "children"), children);
+    symlinkSync(exe, join(path, "exe"));
+  };
+  const setEnvironment = (changes = {}) =>
+    writeFileSync(
+      join(dir, "100/environ"),
+      Object.entries({ ...env, ...changes })
+        .map(([k, v]) => `${k}=${v}\0`)
+        .join(""),
+    );
+  const attest = () => nativeChromeDesktop(100, dir);
+  try {
+    writeProcess(100, 1, browser, "101");
+    writeProcess(101, 100, gpu);
+    setEnvironment();
+    expect(attest()).toEqual({ available: true, display: env.DISPLAY, auth });
+    expect(nativeChromeDesktop(100, dir, "darwin")).toEqual({
+      available: false,
+    });
+    for (const extra of [
+      "--display=:819",
+      "--display :819",
+      "-display=:819",
+      "-display :819",
+      "-ozone-platform=x11",
+      "-ozone-platform-hint=x11",
+      "-headless=new",
+      "--display=:818.0",
+      "--display-server=other",
+      "--ozone-platform=wayland",
+      "--ozone-platform=auto",
+      "--ozone-platform x11",
+      "--ozone-platform=x11 --ozone-platform=x11",
+      "--ozone-platform-hint=auto",
+      "--ozone-platform-hint=wayland",
+      "--headless=new",
+      "--type=renderer",
+      "--user-data-dir=/path/containing--ozone-platform=x11",
+    ]) {
+      writeFileSync(
+        join(dir, "100/cmdline"),
+        browser.slice(0, -1) + ` ${extra}\0`,
+      );
+      expect(attest()).toEqual({ available: false });
+    }
+    writeFileSync(
+      join(dir, "100/cmdline"),
+      browser.slice(0, -1) +
+        " --ozone-platform=x11 --ozone-platform-hint=x11\0",
+    );
+    expect(attest()).toEqual({ available: true, display: env.DISPLAY, auth });
+    writeFileSync(join(dir, "100/cmdline"), browser);
+    for (const command of [
+      `${exe} --type=gpu-process\0`,
+      `${exe} --type=gpu-process --ozone-platform=wayland\0`,
+      `${exe} --type=gpu-process --ozone-platform=x11 --ozone-platform=wayland\0`,
+      `${exe} --type=gpu-process --ozone-platform=x11 --ozone-platform-hint=auto\0`,
+      `${exe} --type=gpu-process --ozone-platform=x11 --display=:819\0`,
+      `${exe} --type=renderer --type=gpu-process --ozone-platform=x11\0`,
+    ]) {
+      writeFileSync(join(dir, "101/cmdline"), command);
+      expect(attest()).toEqual({ available: false });
+    }
+    writeFileSync(join(dir, "101/cmdline"), gpu);
+    for (const changes of [
+      { DISPLAY: ":819" },
+      { XAUTHORITY: "/different/private/auth" },
+      { XDG_SESSION_TYPE: "wayland" },
+      { WAYLAND_DISPLAY: "wayland-0" },
+      { OZONE_PLATFORM: "wayland" },
+    ]) {
+      setEnvironment(changes);
+      expect(attest()).toEqual({ available: false });
+    }
+    setEnvironment();
+    writeFileSync(join(dir, "100/task/100/children"), "");
+    expect(attest()).toEqual({ available: false });
+    writeFileSync(join(dir, "100/task/100/children"), "101 ".repeat(129));
+    expect(attest()).toEqual({ available: false });
+    writeFileSync(join(dir, "100/task/100/children"), "101");
+    rmSync(join(dir, "101/exe"));
+    symlinkSync(process.execPath, join(dir, "101/exe"));
+    expect(attest()).toEqual({ available: false });
+    rmSync(join(dir, "101/exe"));
+    symlinkSync(exe, join(dir, "101/exe"));
+    rmSync(join(dir, "100/exe"));
+    symlinkSync(process.execPath, join(dir, "100/exe"));
+    expect(attest()).toEqual({ available: false });
+  } finally {
+    keys.forEach((key, i) => {
+      if (saved[i] === undefined) delete process.env[key];
+      else process.env[key] = saved[i];
+    });
+    rmSync(dir, { recursive: true, force: true });
   }
 });

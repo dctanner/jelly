@@ -38,6 +38,25 @@ async function fixture() {
   return { dir, app, get, cookie };
 }
 
+test("Jelly prompt requires inline rendering of created or updated human-review files", async () => {
+  const f = await fixture();
+  const h = f.app.service.harness;
+  useTestModel(h);
+  const session = await h.create(
+    f.app.store.agents()[0]!,
+    [],
+    h.config("api"),
+    f.app.store.instance(),
+  );
+  try {
+    expect(session.systemPrompt).toContain(
+      "Whenever you create or update a file intended for human review (such as a plan, document, report, or draft), always call render_file to show the latest version inline in chat so the user can read it; a file path, link, or summary alone is not enough.",
+    );
+  } finally {
+    await h.dispose(session);
+  }
+});
+
 test("render_file is registered and shows an image with metadata only, no prior read", async () => {
   const f = await fixture();
   const agent = f.app.store.agents()[0]!;

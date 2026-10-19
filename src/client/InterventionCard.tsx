@@ -13,6 +13,7 @@ import { api, control } from "./api";
 import type { ChromeStatus } from "./ChromeConnection";
 import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 import { DesktopHandoffCard } from "./DesktopConnection";
+import { ChromeSharePanel } from "./ChromeSharePanel";
 export function InterventionCard({
   item,
   onComputer,
@@ -29,6 +30,7 @@ export function InterventionCard({
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [browserOpened, setBrowserOpened] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [submitted, setSubmitted] = useState<Intervention["status"] | null>(
     null,
   );
@@ -40,6 +42,7 @@ export function InterventionCard({
   const connectedChrome = item.payload.browserTarget === "chrome";
   const [chromeTask, setChromeTask] = useState<ChromeStatus["task"]>(null);
   const [chromeUnavailable, setChromeUnavailable] = useState(false);
+  const [chromeSharing, setChromeSharing] = useState(false);
   const chromeRevision = useRef(0);
   const chromeControlling = useRef(false);
   useEffect(() => {
@@ -57,6 +60,7 @@ export function InterventionCard({
         );
         if (!disposed && revision === chromeRevision.current) {
           setChromeTask(state.task);
+          setChromeSharing(!!state.desktopShared);
           setChromeUnavailable(false);
         }
       } catch {
@@ -90,7 +94,7 @@ export function InterventionCard({
           ? "Resuming—do not enter credentials."
           : "Pausing—do not enter credentials yet";
   async function chromeControl(operation: "focus" | "resume") {
-    if (!chromeReady || chromeControlling.current) return;
+    if (!chromeReady || chromeSharing || chromeControlling.current) return;
     chromeControlling.current = true;
     ++chromeRevision.current;
     setChromeTask(null);
@@ -266,7 +270,7 @@ export function InterventionCard({
           <p className="chat-form-hint">
             {connectedChrome
               ? chromeReady
-                ? "Connected Chrome is paused and its debugger detached. Open the task tab in your actual Chrome profile, sign in privately, then explicitly return control. No VNC or credentials in chat."
+                ? "Connected Chrome is paused and its debugger detached. Open locally in Chrome, or use full-desktop web VNC. Never enter credentials in chat; return control when finished."
                 : chromeWarning
               : "Sign in privately in this agent’s browser session, then return control to the agent."}
           </p>
@@ -282,7 +286,7 @@ export function InterventionCard({
             <button
               type="button"
               className="primary"
-              disabled={busy || (connectedChrome && !chromeReady)}
+              disabled={busy || (connectedChrome && (!chromeReady || chromeSharing))}
               onClick={() => {
                 if (connectedChrome) void chromeControl("focus");
                 else {
@@ -293,17 +297,19 @@ export function InterventionCard({
             >
               {connectedChrome ? "Open in Chrome" : "Open browser"}
             </button>
+            {connectedChrome && <button type="button" disabled={busy || !chromeReady} onClick={() => setShareOpen(true)}>Open web VNC…</button>}
             {connectedChrome && (
               <button
                 type="button"
                 className="primary"
-                disabled={busy || !chromeReady}
+                disabled={busy || !chromeReady || chromeSharing}
                 onClick={() => void chromeControl("resume")}
               >
                 Return control to agent
               </button>
             )}
           </ChatFormActions>
+          {shareOpen && connectedChrome && <ChromeSharePanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
         </>
       )}
     </ChatFormCard>

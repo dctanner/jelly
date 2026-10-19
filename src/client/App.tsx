@@ -10,6 +10,7 @@ import { useInputModality } from "./useInputModality";
 import { useKeyboardViewport } from "./useKeyboardViewport";
 import { useComposerSize } from "./useComposerSize";
 import { useUnreadMessages } from "./useUnreadMessages";
+import { useAgentNotifications } from "./useAgentNotifications";
 import { AgentInbox } from "./AgentInbox";
 import { MessageText } from "./MessageText";
 import { GeneratedImages } from "./GeneratedImages";
@@ -44,7 +45,7 @@ import type { ProjectRecord } from "../shared/types";
 import { Folder, ChevronLeft } from "lucide-react";
 import { requestId } from "./request-id";
 import { InterventionCard } from "./InterventionCard";
-import { ComputerPanel } from "./ComputerPanel";
+import { BrowserPanel } from "./BrowserPanel";
 import {
   useEffect,
   useCallback,
@@ -85,7 +86,7 @@ import type { AppRecord } from "../shared/apps";
 import { AppsHome } from "./AppsHome";
 import { AppViewer } from "./AppViewer";
 import { AppDetails, RemoveApp } from "./AppDetails";
-import { AppBuilder, appIntentDraft, type AppIntent } from "./AppBuilder";
+import { AppEditor, appEditDraft, type AppEditIntent } from "./AppEditor";
 import { useAppsNavigation } from "./apps-navigation";
 import "./Apps.css";
 import { readPreference, savePreference, useTheme } from "./theme";
@@ -371,7 +372,6 @@ function AgentDetails({
   onClose,
   onUpload,
   onComputer,
-  managedBrowser,
   onMove,
   onArchive,
   onSaved,
@@ -387,7 +387,6 @@ function AgentDetails({
   onClose: () => void;
   onUpload: () => void;
   onComputer: () => void;
-  managedBrowser: boolean;
   onMove: () => void;
   onArchive: () => void;
   onSaved: () => void;
@@ -454,12 +453,12 @@ function AgentDetails({
               disabled={!connected || !!agent.archivedAt}
               onClick={onUpload}
             />
-            {managedBrowser && <SettingsRow
+            <SettingsRow
               label="Computer"
               icon={<Monitor size={19} />}
               disabled={!connected}
               onClick={onComputer}
-            />}
+            />
             <SettingsRow
               label="Fresh Session"
               value={canCompact ? "Compact context · keep chat history" : "Connect a model to compact"}
@@ -755,16 +754,17 @@ function EventItem({
     );
   return null;
 }
-function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNavigationId, navigationNotice, intent, onIntentDone, onSnapshot, onPrivateSheet }: {
+function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNavigationId, navigationNotice, intent, onIntentDone, onSnapshot, onPrivateSheet, onNotificationAgent }: {
   active: boolean;
   destinationReady: boolean;
   explicitAgentId: string | null;
   explicitNavigationId: string;
   navigationNotice: string;
   onPrivateSheet: (open: boolean) => void;
-  intent: AppIntent | null;
+  intent: AppEditIntent | null;
   onIntentDone: () => void;
   onSnapshot: (snapshot: Snapshot) => void;
+  onNotificationAgent: (id: string) => void;
 }) {
   const explicitAgent = useRef(explicitAgentId);
   explicitAgent.current = explicitAgentId;
@@ -832,6 +832,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const appDraftFocus = useRef<string | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [creationError, setCreationError] = useState("");
   const creationPending = useRef(false);
@@ -1191,6 +1192,11 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     data?.latestAssistantMessages,
     active && destinationReady && agent && (!mobile || !listOpen) && !scrolledUp ? agent.id : null,
   );
+  useAgentNotifications(
+    data,
+    active && destinationReady && agent && (!mobile || !listOpen) && !scrolledUp && !modal && !computerOpen ? agent.id : null,
+    onNotificationAgent,
+  );
   const draft = agent ? (drafts[agent.id] ?? "") : "";
   useComposerSize(composerInput, draft, agent?.id, actionError, connectionReady, !!agent?.archivedAt);
   const running = agent?.status === "running" || agent?.status === "waiting";
@@ -1330,7 +1336,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   function prepareAppDraft(id: string) {
     if (!intent) return;
     openInboxAgent(id);
-    const text = appIntentDraft(intent.app);
+    const text = appEditDraft(intent.app);
     setDrafts(current => ({ ...current, [id]: `${current[id] ?? ""}${current[id] ? "\n\n" : ""}${text}` }));
     appDraftFocus.current = id;
     onIntentDone();
@@ -1360,7 +1366,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
       setModal(null);
       setAnnouncement("New Agent created");
       if (forAppProject !== undefined && intent) {
-        setDrafts(current => ({ ...current, [created.id]: appIntentDraft(intent.app) }));
+        setDrafts(current => ({ ...current, [created.id]: appEditDraft(intent.app) }));
         appDraftFocus.current = created.id;
         onIntentDone();
       }
@@ -1451,10 +1457,12 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
       setRefreshing(false);
     }
   }
-  async function archive(archived: boolean) {
-    if (!agent || archiving) return;
-    const target = agent.id;
+  async function archive(archived: boolean, target = agent?.id) {
+    const targetAgent = data?.agents.find((a) => a.id === target);
+    if (!targetAgent || !connected || archiving ||
+        targetAgent.status === "running" || targetAgent.status === "waiting") return;
     setArchiving(true);
+    setArchiveError("");
     setActionError("");
     try {
       await post(`/agents/${target}/${archived ? "archive" : "restore"}`, {});
@@ -1462,6 +1470,8 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     } catch (error) {
       if (nav.current.selected === target)
         setActionError((error as Error).message);
+      else
+        setArchiveError(`Could not archive ${targetAgent.name}: ${(error as Error).message}`);
     } finally {
       setArchiving(false);
     }
@@ -1536,11 +1546,13 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           selectedId={agent?.id}
           unread={unreadAgents}
           connected={connected}
+          archiving={archiving}
           visible={active && (!mobile || listOpen)}
           dark={resolved === "dark"}
           onProject={openProject}
           onBack={backToProjects}
           onAgent={openInboxAgent}
+          onArchive={(id) => void archive(true, id)}
           onArchived={() => setModal("archived")}
           onSettings={() => setModal("settings")}
           onToggleTheme={() => setTheme(resolved === "dark" ? "light" : "dark")}
@@ -1550,6 +1562,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           previewTime={previewTime}
           previewText={previewText}
         />
+        {archiveError && <p className="error-text" role="alert">{archiveError}</p>}
         {creationError && (!mobile || listOpen) && <p className="error-text" role="alert">{creationError}</p>}
         <button
           type="button"
@@ -1610,7 +1623,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             <span className="empty-header-title">Your agents</span>
           ) : null}
           <div className="conversation-actions">
-            {data?.config.browserTarget !== "chrome" && <button
+            {<button
               className="icon computer-button"
               aria-label="Computer"
               title="Computer"
@@ -2002,8 +2015,8 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           }}
         />
       )}
-      {data?.config.browserTarget !== "chrome" && computerOpen && agent?.id === computerOpen && (
-        <ComputerPanel
+      {computerOpen && agent?.id === computerOpen && (
+        <BrowserPanel
           key={computerOpen}
           agentId={computerOpen}
           navigationNotice={navigationNotice}
@@ -2056,7 +2069,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             setUploadTarget(agent);
             setModal(null);
           }}
-          managedBrowser={data?.config.browserTarget !== "chrome"}
           onComputer={() => {
             setModal(null);
             setComputerOpen(agent?.id ?? null);
@@ -2084,7 +2096,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           }}
         />
       )}
-      {active && intent && data && <AppBuilder key={intent.id} intent={intent} data={data} connected={connected} onClose={onIntentDone} onChoose={prepareAppDraft} onCreate={projectId => createAgent(projectId)} onProject={project => {
+      {active && intent && data && <AppEditor key={intent.id} intent={intent} data={data} connected={connected} onClose={onIntentDone} onChoose={prepareAppDraft} onCreate={projectId => createAgent(projectId)} onProject={project => {
         setData(current => current ? { ...current, projects: [...current.projects.filter(item => item.id !== project.id), project] } : current);
       }} />}
       {modal === "settings" && data && (
@@ -2117,7 +2129,7 @@ export function App() {
   const [addingApp, setAddingApp] = useState(false);
   const [details, setDetails] = useState<AppRecord | null>(null);
   const [removing, setRemoving] = useState<AppRecord | null>(null);
-  const [intent, setIntent] = useState<AppIntent | null>(null);
+  const [intent, setIntent] = useState<AppEditIntent | null>(null);
   const shell = useRef<HTMLDivElement>(null);
   useInputModality(shell);
   useEffect(() => {
@@ -2129,7 +2141,7 @@ export function App() {
     setChangedApp(app);
     setDetails(current => current?.id === app.id ? app : current);
   }
-  function build(app: AppRecord | null) {
+  function editApp(app: AppRecord) {
     setDetails(null);
     navigate("agents");
     setIntent({ app, id: requestId() });
@@ -2153,16 +2165,16 @@ export function App() {
     {!mobileNavigation && !viewing && <aside className="destination-sidebar" aria-label="Jelly navigation">{destinationNavigation}</aside>}
     <div className="destination-body">
       <div className="destination-layer agents-layer" data-active={location.destination === "agents"} inert={location.destination !== "agents"} aria-hidden={location.destination !== "agents"}>
-        <AgentsWorkspace active={location.destination === "agents"} destinationReady={destinationReady} explicitAgentId={location.agentId} explicitNavigationId={location.navigationId} navigationNotice={navigationNotice} onPrivateSheet={setPrivateSheetOpen} intent={intent} onIntentDone={() => setIntent(null)} onSnapshot={setWorkspace} />
+        <AgentsWorkspace active={location.destination === "agents"} destinationReady={destinationReady} explicitAgentId={location.agentId} explicitNavigationId={location.navigationId} navigationNotice={navigationNotice} onPrivateSheet={setPrivateSheetOpen} intent={intent} onIntentDone={() => setIntent(null)} onSnapshot={setWorkspace} onNotificationAgent={openAgent} />
       </div>
       <div className="destination-layer apps-layer" data-active={location.destination === "apps"} inert={location.destination !== "apps"} aria-hidden={location.destination !== "apps"}>
-        <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={app => build(app)} onBuild={() => build(null)} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />
+        <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={editApp} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />
       </div>
-      {viewing && <AppViewer key={location.navigationId} appId={location.appId!} navigationId={location.navigationId} changedApp={changedApp} revision={revision} onHome={() => navigate("apps", location.appId)} onChanged={changed} onDetails={setDetails} onEdit={app => build(app)} onRemove={setRemoving} />}
+      {viewing && <AppViewer appId={location.appId!} navigationId={location.navigationId} changedApp={changedApp} revision={revision} onHome={() => navigate("apps", location.appId)} onLaunch={launch} onChanged={changed} onDetails={setDetails} onEdit={editApp} onRemove={setRemoving} />}
     </div>
     {mobileNavigation && destinationNavigation}
     {addingApp && <AppRegistration onClose={() => setAddingApp(false)} onSaved={app => { changed(app); setAddingApp(false); setRevision(value => value + 1); }} />}
-    {details && <AppDetails key={details.id} app={details} onChanged={changed} agents={workspace?.agents ?? []} projects={workspace?.projects ?? []} onClose={() => setDetails(null)} onAgent={openAgent} onEdit={() => build(details)} onRemove={() => { setRemoving(details); setDetails(null); }} />}
+    {details && <AppDetails key={details.id} app={details} onChanged={changed} agents={workspace?.agents ?? []} projects={workspace?.projects ?? []} onClose={() => setDetails(null)} onAgent={openAgent} onEdit={() => editApp(details)} onRemove={() => { setRemoving(details); setDetails(null); }} />}
     {removing && <RemoveApp app={removing} onClose={() => setRemoving(null)} onRemoved={() => {
       setRemoving(null); setDetails(null); setChangedApp(null); setRevision(value => value + 1);
       navigate("apps");

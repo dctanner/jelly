@@ -6,12 +6,13 @@ import { startApp } from "./fixtures/app";
 import { interventionTools } from "../src/server/agent-tools";
 import { DEFAULT_DESKTOP_CONFIG } from "../src/shared/desktop";
 import { DesktopLease } from "../src/server/desktop-lease";
-async function fixture() {
+async function fixture(platform: NodeJS.Platform = process.platform) {
   const directory = mkdtempSync(join(tmpdir(), "jelly-desktop-api-"));
   const app = await startApp({
     dataDir: directory,
     configDir: join(directory, "config"),
     port: 0,
+    desktopOptions: { platform },
   });
   const origin = app.server.url.origin;
   const bootstrap = await fetch(`${origin}/api/control-session`);
@@ -224,7 +225,8 @@ test("Chrome cannot report a private-safe pause while desktop completion is unsa
   }
 });
 test("browser handback cannot release an independent manual native private boundary", async () => {
-  const f = await fixture();
+  // Mac lease behavior must be simulated explicitly on Linux CI.
+  const f = await fixture("darwin");
   try {
     const agentId = f.app.store.agents()[0]!.id;
     expect((await f.request("pause")).ok).toBe(true);

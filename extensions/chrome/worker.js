@@ -14,6 +14,7 @@ let port = null,
   instance = null,
   generation = crypto.randomUUID(),
   profile = null;
+let pendingPair = false;
 const sessions = new Map(),
   leases = new Map();
 // Cleanup obligations are not leases. These numeric IDs may only detach or
@@ -106,13 +107,14 @@ function tabEvent(type, s, tab) {
   if (port && instance)
     post({ type, generation, session: s.id, run: s.run, tab: tab.cap });
 }
+let desktopFrozen = false;
 function current(s, run, allowPaused = false) {
   if (
     !port ||
     !instance ||
     sessions.get(s.id) !== s ||
     s.run !== run ||
-    (!allowPaused && (s.paused || s.idle))
+    (!allowPaused && (desktopFrozen || s.paused || s.idle))
   )
     unavailable();
 }
@@ -166,6 +168,7 @@ function disconnect() {
   const old = port;
   port = null;
   instance = null;
+  pendingPair = false;
   for (const s of sessions.values()) s.paused = true;
   disconnecting = (async () => {
     await Promise.allSettled([...sessions.values()].map((s) => pause(s)));
@@ -190,6 +193,7 @@ async function connect() {
   // Reconnect never forgives an unresolved detach. Explicit retry may clean it
   // up, but no profile pairs or tab can be re-granted until that is confirmed.
   await cleanupDebuggers();
+  desktopFrozen = false;
   generation = crypto.randomUUID();
   const native = chrome.runtime.connectNative("org.jelly.browser");
   port = native;
@@ -199,6 +203,20 @@ async function connect() {
   });
   native.onMessage.addListener((message) => {
     if (port !== native) return;
+    if (message.type === "pending" && message.version === CHROME_PROTOCOL &&
+        message.generation === generation && typeof message.instance === "string" &&
+        Array.isArray(message.capabilities) && CHROME_METHODS.every(m => message.capabilities.includes(m))) {
+      if (instance || pendingPair) { void disconnect(); return; }
+      pendingPair = true;
+      desktopFrozen = true;
+      // Connect already reconciled debugger obligations. No instance, sessions,
+      // lease or RPC authority is granted while the private desktop is active.
+      void cleanupDebuggers().then(() => {
+        if (port === native && pendingPair && !instance)
+          post({ type: "pendingReady", generation });
+      }).catch(() => { void disconnect(); });
+      return;
+    }
     if (
       message.type === "paired" &&
       message.version === CHROME_PROTOCOL &&
@@ -208,6 +226,7 @@ async function connect() {
       typeof message.instance === "string"
     ) {
       instance = message.instance;
+      if (pendingPair) { pendingPair = false; desktopFrozen = false; }
       return;
     }
     if (
@@ -219,6 +238,10 @@ async function connect() {
     ) {
       void disconnect();
       return;
+    }
+    if (message.method === "freeze") {
+      desktopFrozen = true; // Preempt queued begins/resumes and revoke in-flight results.
+      for (const s of sessions.values()) localPause(s);
     }
     const urgent = sessions.get(message.session);
     if (
@@ -480,6 +503,18 @@ async function script(s, run, tab, op, args) {
 }
 async function dispatch(r) {
   const p = r.params;
+  if (r.method === "freeze") {
+    desktopFrozen = true;
+    await Promise.all([...sessions.values()].map(s => pause(s)));
+    await cleanupDebuggers();
+    return { frozen: true };
+  }
+  if (r.method === "unfreeze") {
+    // This only removes the instance latch; individual tasks remain paused.
+    desktopFrozen = false;
+    return { ok: true };
+  }
+  if (desktopFrozen && !["pause", "end", "focus"].includes(r.method)) unavailable();
   if (r.method === "begin") {
     const retained = sessions.get(r.session);
     if (retained) {
@@ -568,7 +603,7 @@ async function dispatch(r) {
   if (r.method === "resume") {
     await s.pausing;
     current(s, r.run, true);
-    if (s.idle || s.pauseFailed) unavailable();
+    if (desktopFrozen || s.idle || s.pauseFailed) unavailable();
     s.epoch = crypto.randomUUID();
     for (const tab of s.tabs.values()) tab.pauseRetained = false;
     s.paused = false;
@@ -942,7 +977,10 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (
     sender.id !== chrome.runtime.id ||
-    sender.url !== chrome.runtime.getURL("popup.html")
+    ![
+      chrome.runtime.getURL("popup.html"),
+      chrome.runtime.getURL("popup.html") + "#connect",
+    ].includes(sender.url)
   )
     return;
   void (async () => {
@@ -983,6 +1021,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       profile,
       instance,
       connected: !!instance,
+      pending: pendingPair,
       unresolvedDebuggerCleanup: [...debuggerCleanup].filter(
         (id) => !leases.has(id),
       ).length,

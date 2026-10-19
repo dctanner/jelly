@@ -33,6 +33,66 @@ export class ChromeSessions {
   readonly bridge: ChromeBridge;
   private tasks = new Map<string, Task>();
   private protected: string[] = [];
+  private privacyEpoch = 0;
+  private desktopPrivate = false;
+  get sharingDesktop() { return this.desktopPrivate; }
+  assertAutomationAllowed() {
+    if (this.desktopPrivate) throw new HttpError(409, "Connected Chrome browser tools paused for a private desktop share. Explicit Return control is required.");
+  }
+  lockDesktop() {
+    this.desktopPrivate = true;
+    ++this.privacyEpoch;
+    this.bridge.setDesktopPrivate(true);
+    for (const t of this.tasks.values()) {
+      ++t.transition;
+      t.paused = true;
+      t.pauseState = "pausing";
+      this.changed(t.agent);
+    }
+  }
+  freezeDesktop() { return this.freezeDesktopProfiles(false); }
+  /** Cleanup-only: dead tasks cannot ACK and must never regain authority. */
+  freezeDesktopForCleanup() { return this.freezeDesktopProfiles(true); }
+  private async freezeDesktopProfiles(cleanupOnly: boolean) {
+    const epoch = this.privacyEpoch;
+    const profiles = this.bridge.profiles();
+    const pending = this.bridge.deferredProfiles();
+    const bridgeEpoch = this.bridge.desktopEpoch;
+    await Promise.all([this.bridge.waitDeferredReady(), ...profiles.map(p => this.bridge.call(p.id, p.generation, "desktop", "desktop", "freeze", {}))]);
+    if (!this.desktopPrivate || epoch !== this.privacyEpoch || bridgeEpoch !== this.bridge.desktopEpoch ||
+        JSON.stringify(pending) !== JSON.stringify(this.bridge.deferredProfiles()) ||
+        JSON.stringify(profiles) !== JSON.stringify(this.bridge.profiles()))
+      throw new Error("Chrome profiles changed while draining. Desktop remains paused.");
+    for (const t of this.tasks.values()) {
+      if (t.lost) {
+        if (!cleanupOnly) throw new Error("Chrome task disconnected while draining.");
+        t.paused = true;
+        continue;
+      }
+      t.paused = true;
+      t.pauseState = "paused";
+      this.changed(t.agent);
+    }
+  }
+  async unlockDesktop(allowed: () => boolean = () => true, beforePublish: () => Promise<void> = async () => {}) {
+    // A failed unfreeze never opens server admission. No task is resumed here.
+    const privacyEpoch = this.privacyEpoch, bridgeEpoch = this.bridge.desktopEpoch;
+    const profiles = this.bridge.profiles();
+    const valid = () => this.desktopPrivate && privacyEpoch === this.privacyEpoch && bridgeEpoch === this.bridge.desktopEpoch &&
+      JSON.stringify(profiles) === JSON.stringify(this.bridge.profiles()) && allowed();
+    const requireCurrent = () => { if (!valid()) throw new Error("Desktop handback authority changed. Browser tools remain paused."); };
+    requireCurrent();
+    await this.bridge.waitDeferredReady();
+    requireCurrent();
+    await Promise.all(profiles.map(p => this.bridge.call(p.id, p.generation, "desktop", "desktop", "unfreeze", {})));
+    requireCurrent();
+    await beforePublish();
+    requireCurrent();
+    this.bridge.publishDeferred(bridgeEpoch);
+    this.desktopPrivate = false;
+    ++this.privacyEpoch;
+    this.bridge.setDesktopPrivate(false);
+  }
   constructor(
     dataDir: string,
     instance: string,
@@ -138,6 +198,7 @@ export class ChromeSessions {
     selection: ChromeSelection,
     name: string,
   ) {
+    this.assertAutomationAllowed();
     let task = this.tasks.get(agent);
     if (!task) {
       this.validate(selection);
@@ -185,11 +246,16 @@ export class ChromeSessions {
       return next;
     };
     const begin = async () => {
+      this.assertAutomationAllowed();
       if (t.lost || t.run !== run)
         throw new Error(
           "Chrome authority expired. Close the session and explicitly reconnect.",
         );
       if (!t.begun) {
+        // Record cleanup authority before dispatch; a privacy epoch can revoke
+        // the begin result after the extension has already created the task.
+        t.begun = true;
+        t.authorityRun = run;
         const resumed = (await this.call(t, "begin", {
           name: name.slice(0, 75),
           agent,
@@ -366,6 +432,9 @@ export class ChromeSessions {
       throw new Error(
         "Unavailable Chrome operation parameters; use exact references and bounded inputs.",
       );
+    const epoch = this.privacyEpoch;
+    const automation = !["pause", "end", "focus"].includes(method);
+    if (automation) this.assertAutomationAllowed();
     // Removal can arrive before an in-flight open/select response. Never restore
     // a revoked capability from that response; retain tombstones only while pending.
     const removed = new Set<string>();
@@ -380,6 +449,8 @@ export class ChromeSessions {
         params,
         signal,
       );
+      if (automation && (epoch !== this.privacyEpoch || this.desktopPrivate))
+        throw new Error("Chrome result revoked by private desktop handoff.");
       if (
         result &&
         typeof result === "object" &&
@@ -421,7 +492,13 @@ export class ChromeSessions {
         : null,
     };
   }
+  async resumeAfterShare(agent: string) {
+    const t = this.tasks.get(agent);
+    if (!t || !t.run || !t.begun || t.lost || t.pauseState !== "paused") return null;
+    return this.control(agent, "resume");
+  }
   async control(agent: string, operation: string, pageId?: string) {
+    this.assertAutomationAllowed();
     const t = this.tasks.get(agent);
     if (!t && operation === "close") return null;
     if (!t) throw new HttpError(404, "No Connected Chrome session.");
@@ -541,7 +618,7 @@ export class ChromeSessions {
       t.tabs = new Set(retained);
       t.active = retained[0] ?? null;
       if (!t.lost) {
-        t.paused = retained.length > 0;
+        t.paused = this.desktopPrivate || retained.length > 0;
         t.pauseState = t.paused ? "paused" : "active";
       }
       this.changed(agent);
@@ -553,6 +630,9 @@ export class ChromeSessions {
         t.run ? this.settle(t.agent, t.run) : Promise.resolve(),
       ),
     );
+    // Bun can deliver socket-close callbacks after server.close resolves. All
+    // task authority is already settled; late loss cannot emit into a closed DB.
+    this.tasks.clear();
     await this.bridge.close();
   }
 }
