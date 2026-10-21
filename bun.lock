@@ -35,6 +35,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "pi-subagents@0.71.0": "patches/pi-subagents@0.71.0.patch",
+  },
   "overrides": {
     "undici": "8.10.2",
   },

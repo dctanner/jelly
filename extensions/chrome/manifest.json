@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Jelly Connected Chrome (experimental)",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwZ5R3+miCRGo8PA9e4Ji60b/ijt92tF5dDNX1XZUtyaflLZ6yPlriqKtuG/QI+kyL+LMOC3tGbqJdhlmj1pIGArbr3bGt2UvcDh8zQOzbICEea7ciNlJzu5bC+lteoqsCv0hvThjTf1fENkxALz40yu8iakKlx1885flYs+Naed3E5gyOHbN3I/BHObySub/xoo7qbXIsf82LoIs1W2LxJjU7e4kSA4kS8coczPlx+fnIiSNXEzykp+o7PKmsfcS6ONNWL98l2TfHVGAJoTFoNrf0ikaGPlLzY6szckTMAjqCfciWdtzGKDpx55hyk67io+VNSaAj2QszB6Od1jnAQIDAQAB",
-  "description": "Jelly task tabs with approved sites or unrestricted internet. Not a browser sandbox.",
+  "description": "Jelly task tabs with approved sites or unrestricted web including local/private services. Not a browser sandbox.",
   "permissions": [
     "nativeMessaging",
+    "alarms",
     "debugger",
     "tabs",
     "tabGroups",

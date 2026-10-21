@@ -225,7 +225,7 @@ try {
   const extension = join(dir, "extension");
   await command(
     [process.execPath, "scripts/build-chrome-extension.ts", extension],
-    { ...process.env, JELLY_CHROME_FIXTURE: "1" },
+    process.env,
   );
   const home = join(dir, "home"),
     config = join(home, ".config"),
@@ -285,7 +285,7 @@ try {
       const popup = await overridden.newPage();
       await popup.goto(`chrome-extension://${id}/popup.html`);
       await popup
-        .getByRole("button", { name: "Connect to installed Jelly instance" })
+        .getByRole("button", { name: "Reconnect to installed Jelly instance" })
         .click();
       await waitFor(() => chrome.bridge.profiles().length === 1);
       const peer = chrome.bridge.profiles()[0]!;
@@ -343,7 +343,7 @@ try {
   const popup = await personal.newPage();
   await popup.goto(`chrome-extension://${id}/popup.html`);
   await popup
-    .getByRole("button", { name: "Connect to installed Jelly instance" })
+    .getByRole("button", { name: "Reconnect to installed Jelly instance" })
     .click();
   await waitFor(() => chrome.bridge.profiles().length === 1);
   const peer = chrome.bridge.profiles()[0]!;
@@ -371,7 +371,7 @@ try {
   const b = app.service.browsers
     .forRun(other.id, "run-b", selected, other.name)
     .get(other.id);
-  // Only the disposable extension fixture permits loopback test pages. No live
+  // Production policy permits these disposable loopback test pages. No live
   // settings or production URL-validation bypass is introduced.
   const tasks = (chrome as any).tasks as Map<string, any>;
   for (const agentId of [agent.id, other.id])

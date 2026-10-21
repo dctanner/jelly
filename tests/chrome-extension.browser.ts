@@ -7,8 +7,10 @@ import { ChromeBridge } from "../src/server/chrome-bridge";
 const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-headed-"));
 let deniedHits = 0;
 let protectedHits = 0;
+let socketHits = 0;
+let assetHits = 0;
 const protectedFixture = Bun.serve({
-  hostname: process.platform === "darwin" ? "::1" : "127.0.0.3",
+  hostname: "127.0.0.1",
   port: 0,
   fetch() {
     protectedHits++;
@@ -35,13 +37,20 @@ const childFixture = Bun.serve({
 const fixture = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  fetch(req) {
+  websocket: { open(ws) { socketHits++; ws.send("local socket ready"); }, message() {} },
+  fetch(req, server): Response | undefined {
     const path = new URL(req.url).pathname;
+    if (path === "/socket" && server.upgrade(req)) return;
+    if (path === "/local-asset.js") { assetHits++; return new Response("document.body.dataset.localAsset = 'yes'", { headers: { "Content-Type": "text/javascript" } }); }
+    if (path === "/dotted-redirect") return Response.redirect(`http://LOCALHOST.:${fixture.port}/dotted-assets`);
+    if (path === "/dotted-control") return Response.redirect(`http://LOCALHOST.:${protectedFixture.port}/control`);
+    if (path === "/dotted-assets") return new Response(`<h1>Dotted approved</h1><script src="http://LOCALHOST.:${fixture.port}/local-asset.js"></script><img src="http://LOCALHOST.:${protectedFixture.port}/secret.png">`, { headers: { "Content-Type": "text/html" } });
+    if (path === "/local-redirect") return Response.redirect(`${fixture.url.origin}/internet-assets`);
     if (path === "/internet-redirect")
       return Response.redirect(`${protectedFixture.url.origin}/control`);
     if (path === "/internet-assets")
       return new Response(
-        `<h1>Internet assets</h1><iframe src="${childFixture.url.origin}/"></iframe><img src="${protectedFixture.url.origin}/secret.png"><script src="${protectedFixture.url.origin}/secret.js"></script>`,
+        `<h1>Internet assets</h1><script src="/local-asset.js"></script><script>new WebSocket('ws://${fixture.url.host}/socket'); new WebSocket('ws://${protectedFixture.url.host}/socket');</script><iframe src="${childFixture.url.origin}/"></iframe><img src="${protectedFixture.url.origin}/secret.png"><script src="${protectedFixture.url.origin}/secret.js"></script>`,
         { headers: { "Content-Type": "text/html" } },
       );
     if (path === "/redirect")
@@ -110,7 +119,7 @@ try {
   const extension = join(dir, "extension");
   await command(
     [process.execPath, "scripts/build-chrome-extension.ts", extension],
-    { ...process.env, JELLY_CHROME_FIXTURE: "1" },
+    process.env,
   );
   const home = join(dir, "home");
   mkdirSync(home);
@@ -204,7 +213,9 @@ try {
     "--chrome-config",
     join(dir, "profile"),
   ]);
-  console.log("Chrome fixture: host installed, connecting popup");
+  console.log("Chrome fixture: host installed, waiting for automatic retry without popup");
+  for (let i = 0; i < 450 && !bridge.profiles().length; i++) await delay();
+  expect(bridge.profiles()).toHaveLength(1);
   let popup = await context.newPage();
   await popup.goto(`chrome-extension://${id}/popup.html#connect`);
   await popup.waitForURL(`chrome-extension://${id}/popup.html`);
@@ -270,8 +281,27 @@ try {
     }
   }
   expect(snapshot.text).toContain("Local fixture");
+  const dottedSession = crypto.randomUUID();
+  const dottedOrigin = `http://localhost:${fixture.port}`;
+  const dottedControl = `http://localhost:${protectedFixture.port}`;
+  await call("begin", { name: "Dotted approved", origins: [dottedOrigin], protected: [dottedControl] }, dottedSession);
+  const assetsBefore = assetHits;
+  const dotted = await call("open", { url: `http://LOCALHOST.:${fixture.port}/dotted-assets` }, dottedSession);
+  for (let i = 0; i < 40 && assetHits === assetsBefore; i++) await delay();
+  expect(assetHits).toBeGreaterThan(assetsBefore);
+  expect((await call("snapshot", { tab: dotted.pageId }, dottedSession)).text).toContain("Dotted approved");
+  await call("open", { tab: dotted.pageId, url: `${dottedOrigin}/dotted-redirect` }, dottedSession);
+  for (let i = 0; i < 40 && assetHits < assetsBefore + 2; i++) await delay();
+  expect(assetHits).toBeGreaterThan(assetsBefore + 1);
+  expect((await call("snapshot", { tab: dotted.pageId }, dottedSession)).text).toContain("Dotted approved");
+  await expect(call("open", { url: `http://LOCALHOST.:${protectedFixture.port}/control` }, dottedSession)).rejects.toThrow();
+  await call("open", { tab: dotted.pageId, url: `${dottedOrigin}/dotted-control` }, dottedSession);
+  await delay(300);
+  expect(protectedHits).toBe(0);
+  await call("end", { discard: true }, dottedSession);
+  console.log("PASS: approved production policy accepts dotted navigation, redirect and script; dotted control navigation/redirect/assets denied.");
   // No origin allowlist in internet mode, including cross-site frames/assets.
-  // Control-host denies apply before navigation and subresource requests.
+  // Exact control-endpoint denies apply before navigation and subresource requests.
   const internetSession = crypto.randomUUID();
   await call(
     "begin",
@@ -285,7 +315,7 @@ try {
   );
   const unrestricted = await call(
     "open",
-    { url: `${fixture.url.origin}/internet-assets` },
+    { url: `${fixture.url.origin}/local-redirect` },
     internetSession,
   );
   let internetSnapshot: any;
@@ -303,6 +333,9 @@ try {
   }
   expect(internetSnapshot.text).toContain("Internet assets");
   expect(internetSnapshot.text).toContain("OOPIF child");
+  for (let i = 0; i < 40 && (!socketHits || !assetHits); i++) await delay();
+  expect(socketHits).toBeGreaterThan(0);
+  expect(assetHits).toBeGreaterThan(0);
   expect(protectedHits).toBe(0);
   await expect(
     call("open", { url: protectedFixture.url.href }, internetSession),
@@ -322,6 +355,7 @@ try {
       .siteScope,
   ).toBe("internet");
   await call("end", { discard: true }, internetSession);
+  console.log("PASS: production local-address policy permits same-host different-port main frame, local redirect, cross-site frame, script and WebSocket; exact local control navigation/redirect/assets/WebSocket have zero hits.");
   // Private control survives run settlement for explicit and protective pauses.
   // Human input still works, while agent observation remains revoked.
   for (const mode of ["server", "popup", "debugger-conflict"]) {
@@ -719,7 +753,7 @@ try {
   expect(nextGroup.id).not.toBe(group.id);
   expect(nextGroup.color).toBe(group.color);
   await call("tabs", { operation: "close", pageId: regrouped.pageId });
-  // Explicit user-tab grant: existing group and lifecycle are not agent-owned.
+  // Personal tabs cannot be granted; original groups and lifecycle remain untouched.
   const additions: unknown[][] = [];
   bridge.onTabAdded = (...args) => additions.push(args);
   const userPage = await context.newPage();
@@ -735,51 +769,19 @@ try {
     return { id: tab.id, groupId };
   }, userPage.url());
   await popup.reload();
-  await popup
-    .locator("#session option")
-    .filter({ hasText: "Fixture comparison" })
-    .waitFor({ state: "attached" });
-  await popup.locator("#session").selectOption(session);
-  await popup.locator("#tab").selectOption(String(userInfo.id));
-  await popup.getByRole("button", { name: "Grant selected tab" }).click();
-  for (let i = 0; i < 50 && !additions.length; i++) await delay();
-  const userCap = additions.at(-1)![4] as string;
-  expect(additions.at(-1)?.slice(0, 4)).toEqual([
-    peer.id,
-    peer.generation,
-    session,
-    run,
-  ]);
-  await expect(call("snapshot", { tab: userCap }, other)).rejects.toThrow();
-  expect(
-    await popup.evaluate(
-      async ({ session, tab }) =>
-        (globalThis as any).chrome.runtime.sendMessage({
-          action: "grant",
-          session,
-          tab,
-        }),
-      { session: other, tab: userInfo.id },
-    ),
-  ).toEqual({ error: "Unavailable" });
-  await call("tabs", { operation: "close", pageId: userCap });
-  expect(
-    await worker.evaluate(
-      (id: number) => (globalThis as any).chrome.tabs.get(id),
-      userInfo.id,
-    ),
-  ).toMatchObject({ groupId: userInfo.groupId });
+  expect(await popup.locator("select, #grant").count()).toBe(0);
+  const ungranted = await popup.evaluate(
+    async ({ session, tab }) => {
+      const api = (globalThis as any).chrome;
+      return { grant: await api.runtime.sendMessage({ action: "grant", session, tab }),
+        status: await api.runtime.sendMessage({ action: "status" }) };
+    }, { session, tab: userInfo.id });
+  expect(ungranted.grant).toEqual({ error: "Unavailable" });
+  expect(ungranted.status).not.toHaveProperty("candidates");
+  expect(additions).toHaveLength(0);
+  expect(await worker.evaluate((id: number) => (globalThis as any).chrome.tabs.get(id), userInfo.id))
+    .toMatchObject({ groupId: userInfo.groupId });
   expect(userPage.isClosed()).toBe(false);
-  const regrant = await popup.evaluate(
-    async ({ session, tab }) =>
-      (globalThis as any).chrome.runtime.sendMessage({
-        action: "grant",
-        session,
-        tab,
-      }),
-    { session, tab: userInfo.id },
-  );
-  expect(regrant.error).toBeUndefined();
   // Referenced select and semantic key actions, bounded waits and no shortcuts.
   const options = await call("open", { url: `${fixture.url.origin}/options` });
   await delay(250);
@@ -1224,7 +1226,7 @@ try {
   const secondPopup = await secondContext.newPage();
   await secondPopup.goto(`chrome-extension://${id}/popup.html`);
   await secondPopup
-    .getByRole("button", { name: "Connect to installed Jelly instance" })
+    .getByRole("button", { name: "Reconnect to installed Jelly instance" })
     .click();
   for (let i = 0; i < 100 && !secondBridge.profiles().length; i++)
     await delay();
@@ -1326,7 +1328,7 @@ try {
   await popup.goto(`chrome-extension://${id}/popup.html`);
   worker = context.serviceWorkers().find((w) => w.url().includes(id))!;
   await popup
-    .getByRole("button", { name: "Connect to installed Jelly instance" })
+    .getByRole("button", { name: "Reconnect to installed Jelly instance" })
     .click();
   for (let i = 0; i < 100 && !bridge.profiles().length; i++) await delay();
   expect(bridge.profiles()[0]?.id).toBe(peer.id);
@@ -1360,11 +1362,7 @@ try {
   await bridge.close();
   bridge = new ChromeBridge(join(dir, "data"), "headed-fixture");
   await bridge.ready;
-  await delay(250);
-  await popup
-    .getByRole("button", { name: "Connect to installed Jelly instance" })
-    .click();
-  for (let i = 0; i < 100 && !bridge.profiles().length; i++) await delay();
+  for (let i = 0; i < 450 && !bridge.profiles().length; i++) await delay();
   const afterServerRestart = bridge.profiles()[0]!;
   expect(afterServerRestart.id).toBe(beforeServerRestart.id);
   expect(afterServerRestart.generation).not.toBe(
@@ -1446,7 +1444,7 @@ try {
   const refused = await popup.evaluate(() =>
     (globalThis as any).chrome.runtime.sendMessage({ action: "connect" }),
   );
-  expect(refused.error).toBe("Unavailable");
+  expect(refused.connectionError).toBe("cleanup-required");
   expect(bridge.profiles()).toHaveLength(0);
   const orphaned = await popup.evaluate(() =>
     (globalThis as any).chrome.runtime.sendMessage({ action: "status" }),
@@ -1520,7 +1518,7 @@ try {
       }),
     { session: regrantSession, tab: cleanupNativeId },
   );
-  expect(regranted.sessions[0].tabs).toBe(1);
+  expect(regranted).toEqual({ error: "Unavailable" });
   const newCaps = (await bridge.call(
     cleanedPeer.id,
     cleanedPeer.generation,
@@ -1529,7 +1527,7 @@ try {
     "tabs",
     { operation: "list" },
   )) as any;
-  expect(newCaps.tabs[0].pageId).not.toBe(cleanupTab.pageId);
+  expect(newCaps.tabs).toEqual([]);
   await bridge.call(
     cleanedPeer.id,
     cleanedPeer.generation,
@@ -1553,7 +1551,7 @@ try {
   await delay(250);
   expect(bridge.profiles()).toHaveLength(0); // The one-shot launch fragment was consumed.
   console.log(
-    "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, exclusive user-tab grant/release with original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by local pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
+    "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, rejected personal-tab grant with preserved original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by local pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
   );
 } finally {
   await Promise.race([context?.close(), delay(5000)]);

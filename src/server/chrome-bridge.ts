@@ -7,6 +7,11 @@ import {
   existsSync,
   lstatSync,
   unlinkSync,
+  renameSync,
+  openSync,
+  closeSync,
+  fsyncSync,
+  opendirSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -40,6 +45,40 @@ export class ChromeBridge {
   readonly directory: string;
   readonly ready: Promise<void>;
   private server: Server;
+  private blocked = new Set<string>();
+  private admissionFailed = false;
+  private saveBlocked() {
+    const path = join(this.directory, "disconnected-profiles.json");
+    const temporary = `${path}.${randomBytes(8).toString("hex")}`;
+    try {
+      writeFileSync(temporary, JSON.stringify([...this.blocked]), { mode: 0o600, flag: "wx" });
+      const fd = openSync(temporary, "r");
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+      // Commit the transaction's existence before replacement: a failed rename
+      // must leave durable evidence rather than revive the older permissive file.
+      const intentDirectory = openSync(this.directory, "r");
+      try { fsyncSync(intentDirectory); } finally { closeSync(intentDirectory); }
+      renameSync(temporary, path);
+      const directory = openSync(this.directory, "r");
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+    } catch (error) {
+      this.admissionFailed = true;
+      throw error;
+    }
+    // Failed transactions deliberately remain for fail-closed startup/repair.
+  }
+  private blockOverflow(profile: string): never {
+    this.admissionFailed = true;
+    // One reserved, bounded marker denies ALL admission, including later
+    // disconnects that cannot fit in the profile set. Never overwrite it.
+    const path = join(this.directory, "disconnected-profiles.json.overflow");
+    writeFileSync(path, JSON.stringify({ blockedAll: true, profile }), { mode: 0o600, flag: "wx" });
+    const fd = openSync(path, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    const directory = openSync(this.directory, "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+    throw new Error("Chrome disconnect state is full; repair required.");
+  }
   private peers = new Map<string, Peer>();
   private deferred = new Map<string, Peer>();
   private admissionRevision = 0;
@@ -116,6 +155,30 @@ export class ChromeBridge {
     )
       throw new Error("Unsafe Chrome bridge directory.");
     chmodSync(this.directory, 0o700);
+    // A process interruption before rename may leave uncommitted disconnect
+    // intent. Never interpret the older file as permission to reconnect.
+    const entries = opendirSync(this.directory);
+    try {
+      let count = 0;
+      for (let entry = entries.readSync(); entry; entry = entries.readSync()) {
+        if (++count > 128) throw new Error("Chrome bridge state needs repair.");
+        if (/^disconnected-profiles\.json\.(?:[a-f0-9]{16}|overflow)$/.test(entry.name))
+          throw new Error("Interrupted Chrome disconnect state needs repair.");
+      }
+    } finally { entries.closeSync(); }
+    const blockedPath = join(this.directory, "disconnected-profiles.json");
+    try {
+      const stat = lstatSync(blockedPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() ||
+          stat.mode & 0o077 || stat.size > 65536) throw new Error("Unsafe Chrome disconnect state.");
+      const blocked = JSON.parse(readFileSync(blockedPath, "utf8"));
+      if (!Array.isArray(blocked) || blocked.length > 1024 ||
+          !blocked.every(id => typeof id === "string" && /^[a-f0-9-]{36}$/.test(id)))
+        throw new Error("Invalid Chrome disconnect state.");
+      this.blocked = new Set(blocked);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const configPath = join(this.directory, "pairing.json");
     if (existsSync(configPath)) {
       const stat = lstatSync(configPath);
@@ -230,6 +293,8 @@ export class ChromeBridge {
             );
             const expected = Buffer.from(this.grant);
             if (
+              this.admissionFailed ||
+              (v.explicitReconnect !== undefined && typeof v.explicitReconnect !== "boolean") ||
               v.type !== "hello" ||
               v.version !== CHROME_PROTOCOL ||
               !Array.isArray(v.capabilities) ||
@@ -248,6 +313,15 @@ export class ChromeBridge {
               this.peers.has(v.profile) || this.deferred.has(v.profile)
             )
               throw new Error();
+            if (this.blocked.has(v.profile)) {
+              if (v.explicitReconnect !== true) {
+                writer.write(chromeFrame({ type: "reconnectRequired", generation: v.generation }));
+                socket.end();
+                return;
+              }
+              this.blocked.delete(v.profile);
+              this.saveBlocked();
+            }
             peer = {
               socket,
               writer,
@@ -388,7 +462,15 @@ export class ChromeBridge {
     });
   }
   disconnect(profile: string) {
-    this.peers.get(profile)?.socket.destroy();
+    try {
+      if (!this.blocked.has(profile) && this.blocked.size >= 1024)
+        this.blockOverflow(profile);
+      this.blocked.add(profile);
+      this.saveBlocked();
+    } finally {
+      this.peers.get(profile)?.socket.destroy();
+      this.deferred.get(profile)?.socket.destroy();
+    }
   }
   async close() {
     this.closing = true;

@@ -54,28 +54,49 @@ after review; tests never modify the normal profile or live Jelly settings.
    reinstalling the wrapper. One host registration chooses one Jelly instance
    per Chrome user-data root; use separate roots for separate instances.
 
-4. Open the Jelly extension popup and click **Connect to installed Jelly
-   instance**. Compare its instance ID and persistent profile UUID with Jelly.
-   An explicit operator launch can instead open
-   `chrome-extension://mikadpfmkipiafkemjplldmfckomphcf/popup.html#connect`.
-   This consumes the fragment and connects once; ordinary popup opens, reloads
-   and browser restarts do not reconnect automatically.
+4. The extension connects automatically on load and browser startup, without opening
+   the popup. The popup shows Connecting, pending private handback, Connected, or a
+   bounded safe failure category. Unavailable hosts retry using MV3 alarms (30 seconds
+   up to five minutes between attempts). **Disconnect** persists across browser restarts;
+   only **Reconnect to installed Jelly instance** clears it. Legacy `#connect` URLs
+   only open status and never override Disconnect. Server-side Disconnect also records
+   a durable profile block, cleared only by an authenticated explicit Reconnect.
+   Failed task settlement conservatively requires the same explicit reconnect.
+   Upgrade the backend, native host and extension together (extension 0.3.2/protocol 7).
+   Reload the unpacked extension after the backend update; mixed protocol versions
+   refuse pairing, with no fallback. Existing persistent Disconnect intent is retained.
+   Transport recovery always creates a new generation, never reclaiming old task tabs.
+   Server Disconnect records are private, bounded and atomically replaced with file
+   and directory fsync. Failed replacement retains its synchronized transaction;
+   capacity exhaustion writes a bounded `blockedAll` overflow marker before revocation.
+   Unsafe/malformed state, pending transactions or that marker refuse bridge startup.
+   Preserve these records for operator repair; do not delete them to unblock Chrome.
+   Repair must retain all disconnected IDs from committed and interrupted state;
+   an overflow marker means global denial, not just denial of the first overflow ID.
+   Do not clear that marker merely to regain admission. Ordinary valid state uses
+   explicit Reconnect to unblock only the intended profile.
+   Persistence errors always revoke the affected live socket and fail closed for new
+   admissions in the running bridge. If the filesystem cannot create/write any intent
+   record at all, however, that new intent cannot be guaranteed across restart: repair
+   storage and preserve the disconnect decision before restarting. Hardware/filesystem
+   failures that lose even synchronized writes are also outside the guarantee.
 5. In **Settings → Browser target**, choose Connected Chrome, the exact connected
-   profile, and **Site access**. Choose **Approved sites only** with exact HTTPS
-   origins (one per line), or **Unrestricted internet (HTTP and HTTPS)** with no
+   profile, and **Site access**. Choose **Approved sites only** with exact HTTP/HTTPS
+   origins (one per line), or **Unrestricted web (HTTP and HTTPS)** with no
    origin list, then **Save browser target
    and site scope**. This is a global setting, not per-agent setup. Every
    persistent agent's next unpinned browser session uses it.
 
-   Approved-site scope accepts no wildcards, HTTP or literal IPs. Approve required
-   asset and identity-provider origins deliberately. Unrestricted internet allows
-   public HTTP/HTTPS domains and public IP addresses, redirects, assets and frames
-   without an origin allowlist; this exposes the profile's signed-in public sites
-   to every persistent agent. Both modes reject credentials in URLs, local/private
-   addresses and aliases, Tailscale hosts, internal schemes and Jelly/control
-   hosts across ports. Per-tab network rules block known local/control hosts even
-   for redirects and assets in unrestricted mode. Public names resolving to private
-   addresses remain a DNS-rebinding risk, not an egress-isolation guarantee. A
+   Approved-site scope accepts exact canonical HTTP/HTTPS origins, including local
+   services and literal IPs, without wildcards. Approve required asset and identity-provider
+   origins deliberately. Unrestricted web allows public and local/private services
+   reachable from this machine, redirects, assets, frames and WebSocket resources
+   without an origin allowlist, using the profile's signed-in accounts. Other websites'
+   subresources may now reach local services intentionally. This is not a network
+   sandbox. Both modes reject credentials in navigation URLs, non-web navigation and
+   Jelly's exact control origins (including equivalent WebSocket endpoints); other ports
+   on the same host remain available. DNS aliases are not an isolation boundary, and
+   same-origin/CSRF protections do not prevent all cross-site side effects. A
    disconnected selected profile never falls back to another profile or managed
    browser. Already allocated sessions keep their target/profile/sites; stop the
    agent and **Close / Reset pinned target** to change those choices, including
@@ -114,13 +135,10 @@ transport; local native messaging cannot bridge machines.
   shadow root are rejected. Stable closed-root fields cannot bypass these guards;
   transient rendering/capture races remain a separate, unresolved rollout gate.
   Large images fail at the bounded cap rather than exporting to disk.
-- To grant an existing user tab, first let an agent start its browser task.
-  In the **extension popup**, explicitly choose the task and an approved-site
-  user tab, then **Grant selected tab**. Only the packaged popup can do this;
-  models cannot enumerate or claim unrelated user tabs. Numeric tab IDs never
-  reach model tools. The chosen tab keeps its original group. Closing it through
-  `browser_tabs` means **release**, not browser closure. Settlement always releases
-  user tabs without closing them. A second task cannot claim an existing lease.
+- Each agent automatically controls its own Jelly-created task tabs and groups within
+  its approved site scope. No individual tab-grant workflow exists. Personal tabs and
+  other agents’ tabs cannot be claimed, even by hidden popup RPCs. Group membership is
+  organization, not authority; reconnect never reclaims stale groups, tabs or capabilities.
 - Popups are adopted only from an exclusively leased opener during an authorized
   run, after installing policy and checking the destination. Adopted popups get
   fresh capabilities and task groups; unapproved/failed popup adoption pauses the
@@ -183,10 +201,11 @@ After the complete Jelly run settles and children are disposed:
 
 Disconnect, worker termination, browser/server restart and tab replacement revoke
 capabilities; there is no mutation replay or automatic authority reconstruction
-from numeric IDs. Reconnect explicitly, close/reset the lost Jelly session and
+from numeric IDs. Transport reconnects automatically unless explicitly disconnected;
+close/reset the lost Jelly session and
 allocate anew. Startup reconciles only cleanup: detach this extension's old
 sessions and remove its stale per-tab rules; never close/reclaim leftover tabs.
-They can be explicitly selected again through the user grant UI. Navigation,
+They cannot be reclaimed through the popup. Navigation,
 frame-document changes, detach and handoff invalidate references; group deletion
 only discards organizational metadata. Cleanup cannot guarantee closing temporary
 tabs after transport has vanished.
@@ -195,8 +214,8 @@ Debugger cleanup obligations are separate from tab leases and are persisted in
 extension session storage **before** an attachment attempt. Disconnect revokes
 all authority but does not forget a rejected or uncertain detach. Reconnect
 refuses pairing until cleanup is confirmed, and quarantined tabs cannot be
-re-granted. Worker recreation reloads these cleanup-only IDs; it never reconstructs
-a lease. If the popup reports unresolved debugger cleanup, retry Connect after
+adopted. Worker recreation reloads these cleanup-only IDs; it never reconstructs
+a lease. If the popup reports unresolved debugger cleanup, retry Reconnect after
 closing DevTools/cancelling the debugger, or close the affected task tab. A generic
 detach rejection is not treated as success; another attached debugger may cause
 conservative refusal. Legacy installations lacking this metadata quarantine their
@@ -650,7 +669,7 @@ operator work after review; tests never perform it.
 
 ## Security boundary and remaining rollout gates
 
-Protocol v6 has schema-validated methods/identities, explicit pinned site-access mode, pairing grant, extension ID,
+Protocol v7 has schema-validated methods/identities, explicit pinned site-access mode, pairing grant, extension ID,
 instance/profile/connection generation binding, bounded pending requests and event
 rates. Pause progress/failure/acknowledgement events also bind to the current run.
 Older protocol versions are rejected: reload the unpacked extension when idle
@@ -746,7 +765,7 @@ profiles, temporary host installs and local fixture sites. Playwright's private
 pipe provides fixture/human inspection and worker termination, not Jelly browser
 actions. `JELLY_EXTENSION_BROWSER_PATH` can select a compatible executable;
 Xvfb or DISPLAY is required on Linux; macOS uses its normal headed display.
-Only fixture builds bypass local-address guards to allow loopback fixture sites.
+Disposable fixtures use production address policy; no local-address bypass is compiled.
 
 `bun run test:chrome-vnc` builds the client and exercises disposable authenticated
 Xvfb + existing headed Chrome + native host + x11vnc + actual noVNC. It verifies
@@ -768,7 +787,7 @@ behavior. These this-host fixtures do not replace personal-desktop or real
 phone/Tailscale/HTTPS-device validation.
 
 The live suite covers simultaneous agents and profiles/instances, foreign tab
-and reference rejection, user grants/release preserving groups, group deletion,
+and reference rejection, rejected personal-tab grants preserving groups, group deletion,
 exact fill/click/select/key, bounded waits, native PNG, same-process and verified
 OOPIF actions, secret fields in child frames, popup adoption, retained handoff
 across runs, stale run rejection, zero-hit denied redirect destination, human

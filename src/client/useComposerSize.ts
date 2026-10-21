@@ -26,6 +26,61 @@ export function useComposerSize(
       if (element.style.getPropertyValue(property) !== value)
         element.style.setProperty(property, value);
     };
+    // Never collapse the live input to measure it. Besides disturbing its
+    // scroll position, even a synchronous collapse/restore can dismiss iOS's
+    // native selection menu and trigger more visual-viewport events.
+    const measure = document.createElement("textarea");
+    measure.tabIndex = -1;
+    measure.setAttribute("aria-hidden", "true");
+    measure.inert = true;
+    measure.rows = 1;
+    measure.style.cssText =
+      "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;" +
+      "height:0;min-height:0;max-height:none;overflow:hidden;resize:none;";
+    document.body.appendChild(measure);
+    const naturalHeight = () => {
+      const style = getComputedStyle(input);
+      // Copy resolved metrics, not classes: the mirror is outside the composer
+      // so it cannot participate in layout or any of its ResizeObservers.
+      for (const property of [
+        "width",
+        "box-sizing",
+        "padding-top",
+        "padding-right",
+        "padding-bottom",
+        "padding-left",
+        "border-top-width",
+        "border-right-width",
+        "border-bottom-width",
+        "border-left-width",
+        "border-style",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "font-style",
+        "font-stretch",
+        "font-variant",
+        "line-height",
+        "letter-spacing",
+        "word-spacing",
+        "text-transform",
+        "text-indent",
+        "text-rendering",
+        "tab-size",
+        "white-space",
+        "word-break",
+        "overflow-wrap",
+        "direction",
+      ])
+        set(measure, property, style.getPropertyValue(property));
+      measure.wrap = input.wrap;
+      measure.value = input.value;
+      return (
+        measure.scrollHeight +
+        (parseFloat(style.borderTopWidth) || 0) +
+        (parseFloat(style.borderBottomWidth) || 0)
+      );
+    };
     const resize = () => {
       const composerHeight = wrap.getBoundingClientRect().height;
       set(main, "--composer-height", `${composerHeight}px`);
@@ -65,12 +120,17 @@ export function useComposerSize(
         0,
         wrap.scrollHeight - input.getBoundingClientRect().height,
       );
-      const available = Math.max(44, budget - chrome);
-      set(input, "height", "44px");
-      const height = Math.min(available, Math.max(44, input.scrollHeight));
+      // scrollHeight is integer-rounded. Keep the capped input height integral
+      // too, so subtracting it above doesn't feed fractional rounding back into
+      // the next observer delivery.
+      const available = Math.max(44, Math.floor(budget - chrome));
+      const contentHeight = naturalHeight();
+      const height = Math.min(available, Math.max(44, contentHeight));
       set(input, "height", `${height}px`);
-      set(input, "overflow-y", input.scrollHeight > height ? "auto" : "hidden");
-      wrap.dataset.constrained = String(wrap.scrollHeight > budget + 1);
+      set(input, "overflow-y", contentHeight > height ? "auto" : "hidden");
+      const constrained = String(wrap.scrollHeight > budget + 1);
+      if (wrap.dataset.constrained !== constrained)
+        wrap.dataset.constrained = constrained;
       set(
         main,
         "--composer-height",
@@ -91,6 +151,7 @@ export function useComposerSize(
     return () => {
       unobserve();
       observer?.disconnect();
+      measure.remove();
     };
   }, [ref, draft, agentId, notice, connected, archived]);
 }

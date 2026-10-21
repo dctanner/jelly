@@ -170,7 +170,7 @@ test("Chrome target UI saves explicit profile/site scope separately and describe
     target: { value: "profile-one" },
   });
   fireEvent.change(
-    screen.getByLabelText("Approved exact HTTPS origins (one per line)"),
+    screen.getByLabelText("Approved exact HTTP/HTTPS origins (one per line)"),
     { target: { value: "https://example.com" } },
   );
   fireEvent.click(
@@ -186,7 +186,7 @@ test("Chrome target UI saves explicit profile/site scope separately and describe
   );
   expect(screen.getByText(/not a network sandbox/i)).toBeTruthy();
 });
-test("Chrome target UI saves unrestricted internet without an origin list", async () => {
+test("Chrome target UI saves unrestricted web without an origin list", async () => {
   const calls = transport();
   render(
     <ChromeConnection
@@ -205,7 +205,7 @@ test("Chrome target UI saves unrestricted internet without an origin list", asyn
     target: { value: "internet" },
   });
   expect(
-    screen.queryByLabelText("Approved exact HTTPS origins (one per line)"),
+    screen.queryByLabelText("Approved exact HTTP/HTTPS origins (one per line)"),
   ).toBeNull();
   fireEvent.click(
     screen.getByRole("button", { name: "Save browser target and site scope" }),

@@ -24,7 +24,7 @@ test("Connected Chrome settings require private control and persist separately f
     const settings = {
       browserTarget: "chrome" as const,
       chromeProfile: crypto.randomUUID(),
-      chromeOrigins: ["https://example.com"],
+      chromeOrigins: ["https://example.com", "http://localhost:8080", "http://[::1]:8080"],
     };
     expect(
       (
@@ -42,7 +42,7 @@ test("Connected Chrome settings require private control and persist separately f
           headers,
           body: JSON.stringify({
             ...settings,
-            chromeOrigins: ["https://localhost"],
+            chromeOrigins: [origin],
           }),
         })
       ).status,

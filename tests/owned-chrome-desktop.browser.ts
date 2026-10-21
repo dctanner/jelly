@@ -51,7 +51,7 @@ async function keyringLocked() {
 }
 try {
   const extension = join(dir, "extension");
-  await command([process.execPath, "scripts/build-chrome-extension.ts", extension], { ...process.env, JELLY_CHROME_FIXTURE: "1" });
+  await command([process.execPath, "scripts/build-chrome-extension.ts", extension], process.env);
   for (const chromeRoot of [root, join(home, ".config/google-chrome-for-testing"), join(home, ".config/google-chrome"), join(home, ".config/chromium")])
     await command([process.execPath, "scripts/install-chrome-host.ts", "--data-dir", dir, "--chrome-config", chromeRoot]);
   // Test-only executable adds unpacked fixture loading. The installed production
@@ -122,7 +122,7 @@ try {
   await page.keyboard.type("disposable-fixture-passphrase");
   await page.keyboard.press("Enter");
   await until(async () => !await keyringLocked());
-  // Explicit human Connect by URL, through real VNC, before Return control.
+  // Human navigation through real VNC; pairing requires no popup or Connect.
   async function humanNavigate(url: string) {
     await remoteClick(1000, 200);
     await Bun.sleep(100); // Human UI pacing only, never an input cleanup fence.
@@ -139,10 +139,7 @@ try {
     const d = c?.getContext("2d")?.getImageData(0, 0, c.width, c.height).data;
     return d && d.some((_, i) => i % 4 === 0 && d[i] === 51 && d[i + 1] === 204 && d[i + 2] === 51);
   });
-  // Navigate from another document: changing only the already-open popup's
-  // fragment would not rerun its explicit one-shot initialization script.
-  phase = "explicit-connect";
-  await humanNavigate("chrome-extension://mikadpfmkipiafkemjplldmfckomphcf/popup.html#connect");
+  phase = "automatic-deferred-connect";
   await until(() => app.service.chrome.bridge.deferredProfiles().length === 1);
   expect(app.service.chrome.bridge.profiles()).toEqual([]);
   expect(() => app.service.chrome.assertAutomationAllowed()).toThrow("paused");
@@ -229,7 +226,6 @@ try {
   await page.getByText(/You control the full desktop/).waitFor();
   await humanNavigate(new URL("/check", site.url).href);
   await until(() => cookieSeen);
-  await humanNavigate("chrome-extension://mikadpfmkipiafkemjplldmfckomphcf/popup.html#connect");
   await until(() => app.service.chrome.bridge.deferredProfiles().length === 1);
   await page.getByRole("button", { name: "Return control", exact: true }).click();
   await page.getByRole("button", { name: "Take control", exact: true }).waitFor();
@@ -270,7 +266,7 @@ try {
   expect(app.service.chrome.sharingDesktop).toBe(true);
   expect(app.service.chromeShare.state().status).toBe("failed");
   expect(errors).toEqual([]);
-  console.log(`PASS: auth binding v${original.auth?.version}/${original.auth?.kind}; actual private Chrome erased/flattened-environ predecessor listening-kernel proof; private keyring OS authentication via actual noVNC; zero paired profiles/direct Take; deferred explicit Connect published only after auth/VNC/input teardown; ordinary native Chrome existing-cookie/profile/PID persistence across Jelly restart; private bus loss stops exact owned tree, refuses old generation and permits explicit stale relaunch; conflicting lock/refused paths; already-clean orphan recovery after owned Chrome/Xvfb death then explicit owned relaunch; private daemon loss retains latch; controlled owned-stale relaunch retains disk cookie and extension profile identity with new owned/connection generation, no lock deletion.`);
+  console.log(`PASS: auth binding v${original.auth?.version}/${original.auth?.kind}; actual private Chrome erased/flattened-environ predecessor listening-kernel proof; private keyring OS authentication via actual noVNC; zero paired profiles/direct Take; deferred automatic pairing published only after auth/VNC/input teardown; ordinary native Chrome existing-cookie/profile/PID persistence across Jelly restart; private bus loss stops exact owned tree, refuses old generation and permits explicit stale relaunch; conflicting lock/refused paths; already-clean orphan recovery after owned Chrome/Xvfb death then explicit owned relaunch; private daemon loss retains latch; controlled owned-stale relaunch retains disk cookie and extension profile identity with new owned/connection generation, no lock deletion.`);
 } catch (error) {
   console.error("Disposable fixture phase:", phase);
   console.error("Disposable share state:", app.service.chromeShare.state(), "native claim attempts/accepted:", nativeClaims, acceptedClaims);

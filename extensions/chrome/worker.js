@@ -14,7 +14,51 @@ let port = null,
   instance = null,
   generation = crypto.randomUUID(),
   profile = null;
-let pendingPair = false;
+let pendingPair = false, pendingReady = false;
+let handshakeAlarm = null;
+let connecting = null, connectionEpoch = 0, optedOut = false;
+let connectionError = null, retryAttempt = 0;
+const RETRY_ALARM = "jelly-connect-retry", HANDSHAKE_ALARM = "jelly-connect-handshake";
+// Only bounded categories reach the popup, never native error text or host paths.
+function nativeFailure(message) {
+  if (message === "Specified native messaging host not found.") return "host-missing";
+  if (message === "Access to the specified native messaging host is forbidden.") return "host-forbidden";
+  return "host-unavailable";
+}
+async function scheduleRetry() {
+  if (optedOut || debuggerCleanup.size) return;
+  retryAttempt = Math.min(retryAttempt + 1, 5);
+  await chrome.storage.local.set({ retryAttempt });
+  if (!optedOut) await chrome.alarms.create(RETRY_ALARM, {
+    delayInMinutes: Math.min(0.5 * 2 ** (retryAttempt - 1), 5),
+  });
+}
+async function lostConnection(error) {
+  connectionError = error;
+  await disconnect();
+  if (debuggerCleanup.size) connectionError = "cleanup-required";
+  await scheduleRetry();
+}
+function connect(explicit = false) {
+  if (connecting) return connecting;
+  const epoch = connectionEpoch;
+  connecting = establish(explicit, epoch).catch(async () => {
+    if (epoch !== connectionEpoch) return;
+    connectionError = debuggerCleanup.size ? "cleanup-required" : "host-unavailable";
+    await disconnect();
+    await scheduleRetry();
+  }).finally(() => { connecting = null; });
+  return connecting;
+}
+async function automaticConnect() {
+  try {
+    await initialized;
+    if (optedOut || port || connecting || disconnecting) return;
+    const retry = await chrome.alarms.get(RETRY_ALARM);
+    if (retry && retry.scheduledTime > Date.now()) return;
+    await connect();
+  } catch { connectionError = "initialization-failed"; }
+}
 const sessions = new Map(),
   leases = new Map();
 // Cleanup obligations are not leases. These numeric IDs may only detach or
@@ -67,7 +111,9 @@ const unavailable = () => {
   throw new Error("Unavailable or revoked");
 };
 const initialized = (async () => {
-  const stored = await chrome.storage.local.get("profile");
+  const stored = await chrome.storage.local.get(["profile", "connectionOptOut", "retryAttempt"]);
+  optedOut = stored.connectionOptOut === true;
+  retryAttempt = Number.isInteger(stored.retryAttempt) ? Math.max(0, Math.min(stored.retryAttempt, 5)) : 0;
   profile = stored.profile ?? crypto.randomUUID();
   await chrome.storage.local.set({ profile });
   const cleanup = await chrome.storage.session.get([
@@ -164,11 +210,14 @@ function localPause(s, retain = true) {
 }
 let disconnecting = null;
 function disconnect() {
+  ++connectionEpoch;
+  if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
   if (disconnecting) return disconnecting;
   const old = port;
   port = null;
   instance = null;
   pendingPair = false;
+  pendingReady = false;
   for (const s of sessions.values()) s.paused = true;
   disconnecting = (async () => {
     await Promise.allSettled([...sessions.values()].map((s) => pause(s)));
@@ -186,35 +235,64 @@ function disconnect() {
   });
   return disconnecting;
 }
-async function connect() {
+async function establish(explicit, epoch) {
   await initialized;
   await disconnecting;
-  if (port) return;
+  if (epoch !== connectionEpoch || port || (optedOut && !explicit)) return;
+  if (explicit) {
+    optedOut = false;
+    await chrome.storage.local.set({ connectionOptOut: false });
+  }
+  if (epoch !== connectionEpoch || optedOut) return;
+  connectionError = null;
+  await chrome.alarms.clear(RETRY_ALARM);
   // Reconnect never forgives an unresolved detach. Explicit retry may clean it
   // up, but no profile pairs or tab can be re-granted until that is confirmed.
   await cleanupDebuggers();
+  if (epoch !== connectionEpoch || optedOut) return;
   desktopFrozen = false;
   generation = crypto.randomUUID();
   const native = chrome.runtime.connectNative("org.jelly.browser");
   port = native;
+  handshakeAlarm = `${HANDSHAKE_ALARM}-${generation}`;
+  void chrome.alarms.create(handshakeAlarm, { delayInMinutes: 0.5 });
+  if (epoch !== connectionEpoch || port !== native) { native.disconnect(); return; }
   native.onDisconnect.addListener(() => {
-    void chrome.runtime.lastError;
-    if (port === native) void disconnect();
+    const error = nativeFailure(chrome.runtime.lastError?.message);
+    if (port === native) void lostConnection(error);
   });
   native.onMessage.addListener((message) => {
-    if (port !== native) return;
+    if (port !== native || epoch !== connectionEpoch) return;
+    if (!message || typeof message !== "object") {
+      void lostConnection("protocol-error");
+      return;
+    }
+    if (message.type === "reconnectRequired" && message.generation === generation) {
+      optedOut = true;
+      connectionError = "reconnect-required";
+      void chrome.storage.local.set({ connectionOptOut: true });
+      void chrome.alarms.clear(RETRY_ALARM);
+      void disconnect();
+      return;
+    }
     if (message.type === "pending" && message.version === CHROME_PROTOCOL &&
         message.generation === generation && typeof message.instance === "string" &&
         Array.isArray(message.capabilities) && CHROME_METHODS.every(m => message.capabilities.includes(m))) {
-      if (instance || pendingPair) { void disconnect(); return; }
+      if (instance || pendingPair) { void lostConnection("protocol-error"); return; }
+      if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
       pendingPair = true;
       desktopFrozen = true;
       // Connect already reconciled debugger obligations. No instance, sessions,
       // lease or RPC authority is granted while the private desktop is active.
       void cleanupDebuggers().then(() => {
-        if (port === native && pendingPair && !instance)
+        if (port === native && pendingPair && !instance) {
+          pendingReady = true;
           post({ type: "pendingReady", generation });
-      }).catch(() => { void disconnect(); });
+        }
+      }).catch(() => {
+        if (port === native && epoch === connectionEpoch)
+          void lostConnection("cleanup-required");
+      });
       return;
     }
     if (
@@ -225,6 +303,11 @@ async function connect() {
       message.generation === generation &&
       typeof message.instance === "string"
     ) {
+      if (instance || (pendingPair && !pendingReady)) { void lostConnection("protocol-error"); return; }
+      if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
+      retryAttempt = 0;
+      void chrome.storage.local.set({ retryAttempt: 0 });
+      connectionError = null;
       instance = message.instance;
       if (pendingPair) { pendingPair = false; desktopFrozen = false; }
       return;
@@ -236,7 +319,7 @@ async function connect() {
       messageBytes(message) > CHROME_MAX_FRAME ||
       queued >= 32
     ) {
-      void disconnect();
+      void lostConnection("protocol-error");
       return;
     }
     if (message.method === "freeze") {
@@ -276,6 +359,7 @@ async function connect() {
   });
   native.postMessage({
     type: "hello",
+    explicitReconnect: explicit === true,
     version: CHROME_PROTOCOL,
     capabilities: CHROME_METHODS,
     profile,
@@ -285,11 +369,8 @@ async function connect() {
 async function protect(tabId, s) {
   const regexes =
     s.siteScope === "internet"
-      ? chromeInternetDenyRegexes(
-          s.protected,
-          globalThis.JELLY_FIXTURE === true,
-        )
-      : chromeDenyRegexes(s.origins);
+      ? chromeInternetDenyRegexes(s.protected)
+      : [...chromeDenyRegexes(s.origins), ...chromeInternetDenyRegexes(s.protected)];
   if (regexes.length > 500) unavailable();
   const ids = regexes.map(() => ruleId++);
   await chrome.declarativeNetRequest.updateSessionRules({
@@ -375,8 +456,6 @@ function checkURL(s, url) {
   const origin = chromeOrigin(
     url,
     s.protected,
-    globalThis.JELLY_FIXTURE === true,
-    s.siteScope,
   );
   if (
     typeof url !== "string" ||
@@ -545,7 +624,6 @@ async function dispatch(r) {
       const canonical = chromeOrigin(
         o,
         p.protected,
-        globalThis.JELLY_FIXTURE === true,
       );
       if (canonical !== o) unavailable();
       return canonical;
@@ -985,38 +1063,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return;
   void (async () => {
     await initialized;
-    if (message.action === "connect") await connect();
+    if (message.action === "connect") await connect(true);
     else if (message.action === "pause")
       await Promise.all([...sessions.values()].map((s) => pause(s, true)));
-    else if (message.action === "disconnect") await disconnect();
-    else if (message.action === "grant") {
-      const s = sessions.get(message.session);
-      if (!s || !Number.isSafeInteger(message.tab)) unavailable();
-      await tracked(s, adopt(s, s.run, message.tab, "user"));
+    else if (message.action === "disconnect") {
+      optedOut = true;
+      connectionError = null;
+      const cleanup = disconnect();
+      await chrome.storage.local.set({ connectionOptOut: true });
+      await chrome.alarms.clear(RETRY_ALARM);
+      await cleanup;
     } else if (message.action !== "status") unavailable();
-    const candidates = instance
-      ? (await chrome.tabs.query({}))
-          .filter(
-            (t) =>
-              !leases.has(t.id) &&
-              sessions.size &&
-              [...sessions.values()].some((s) => {
-                try {
-                  current(s, s.run);
-                  checkURL(s, t.url);
-                  return true;
-                } catch {
-                  return false;
-                }
-              }),
-          )
-          .slice(0, 100)
-          .map((t) => ({
-            id: t.id,
-            title: (t.title ?? "Untitled").slice(0, 100),
-            url: t.url,
-          }))
-      : [];
     return {
       profile,
       instance,
@@ -1025,7 +1082,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       unresolvedDebuggerCleanup: [...debuggerCleanup].filter(
         (id) => !leases.has(id),
       ).length,
-      candidates,
+      connecting: !!connecting || (!!port && !instance && !pendingPair),
+      optedOut,
+      connectionError,
       sessions: [...sessions.values()].map((s) => ({
         id: s.id,
         name: s.name,
@@ -1039,3 +1098,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   })().then(respond, () => respond({ error: "Unavailable" }));
   return true;
 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RETRY_ALARM) {
+    void automaticConnect();
+  } else if (alarm.name === handshakeAlarm && port && !instance && !pendingPair) {
+    void lostConnection("handshake-timeout");
+  }
+});
+chrome.runtime.onStartup.addListener(() => void automaticConnect());
+chrome.runtime.onInstalled.addListener(() => void automaticConnect());
+// Module evaluation also covers extension reload and MV3 worker recreation.
+void automaticConnect();

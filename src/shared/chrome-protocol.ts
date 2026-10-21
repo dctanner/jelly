@@ -1,5 +1,5 @@
 /** Private native bridge protocol. No raw CDP or model-supplied identities. */
-export const CHROME_PROTOCOL = 6;
+export const CHROME_PROTOCOL = 7;
 export const CHROME_MAX_FRAME = 768 * 1024;
 export const CHROME_METHODS = [
   "freeze",
@@ -50,81 +50,32 @@ export const defaultChromeSelection = (): ChromeSelection => ({
   chromeProfile: "",
   chromeOrigins: [],
 });
+/** Canonical HTTP endpoint; WebSocket resources share their HTTP(S) endpoint. */
+export function chromeWebEndpoint(value: string): string {
+  const u = new URL(value);
+  if (u.protocol === "ws:") u.protocol = "http:";
+  if (u.protocol === "wss:") u.protocol = "https:";
+  if (!["http:", "https:"].includes(u.protocol))
+    throw new Error("Chrome requires web origins.");
+  u.hostname = u.hostname.replace(/\.+$/, "");
+  return u.origin;
+}
 export function chromeOrigin(
   value: unknown,
   protectedOrigins: string[] = [],
-  fixture = false,
-  siteScope: "approved" | "internet" = "approved",
 ): string {
   if (typeof value !== "string" || value.length > 2048)
     throw new Error("Invalid Chrome site scope.");
   const u = new URL(value);
-  if (
-    u.username ||
-    u.password ||
-    ![
-      "https:",
-      ...(fixture || siteScope === "internet" ? ["http:"] : []),
-    ].includes(u.protocol)
-  )
-    throw new Error(
-      "Chrome requires approved web origins without credentials.",
-    );
-  const host = u.hostname.toLowerCase().replace(/\.+$/, "");
-  // Reject local addresses/aliases; approved-site mode also rejects all literals.
-  // This is not DNS/egress isolation;
-  // DNS rebinding and arbitrary public names resolving privately remain risks.
-  if (
-    !fixture &&
-    (host === "localhost" ||
-      (!host.includes(".") && !host.includes(":")) ||
-      /(?:\.localhost|\.local|\.localdomain|\.internal|\.lan|\.home|\.home\.arpa|\.ts\.net)$/.test(
-        host,
-      ) ||
-      /(?:^|\.)(?:localtest\.me|lvh\.me|nip\.io|sslip\.io|vcap\.me|local\.gd)$/.test(
-        host,
-      ) ||
-      (siteScope === "approved" &&
-        (/^[\d.]+$/.test(host) || host.includes(":"))) ||
-      (siteScope === "internet" && chromePrivateHost(host)))
-  )
-    throw new Error("Local/control sites are unavailable in Connected Chrome.");
-  if (
-    protectedOrigins.some((origin) => {
-      try {
-        return (
-          new URL(origin).hostname.toLowerCase().replace(/\.+$/, "") === host
-        );
-      } catch {
-        return true;
-      }
-    })
-  )
+  if (u.username || u.password || !["https:", "http:"].includes(u.protocol))
+    throw new Error("Chrome requires approved web origins without credentials.");
+  const origin = chromeWebEndpoint(value);
+  if (protectedOrigins.some((protectedOrigin) => {
+    try { return chromeWebEndpoint(protectedOrigin) === origin; }
+    catch { return true; }
+  }))
     throw new Error("Jelly/control sites are unavailable in Connected Chrome.");
-  return u.origin;
-}
-/** Canonical URL host patterns shared with extension network rules. */
-export const CHROME_PRIVATE_HOST_PATTERNS = [
-  "(?:0|10|127)(?:\\.[0-9]+){3}",
-  "169\\.254(?:\\.[0-9]+){2}",
-  "172\\.(?:1[6-9]|2[0-9]|3[01])(?:\\.[0-9]+){2}",
-  "192\\.168(?:\\.[0-9]+){2}",
-  "100\\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])(?:\\.[0-9]+){2}",
-  "(?:22[4-9]|23[0-9]|24[0-9]|25[0-5])(?:\\.[0-9]+){3}",
-  "198\\.(?:18|19)(?:\\.[0-9]+){2}",
-  "(?:192\\.0\\.(?:0|2)|198\\.51\\.100|203\\.0\\.113)\\.[0-9]+",
-  "\\[(?:[^23][^\\]]*|[23][0-9a-f]{0,2}:[^\\]]*|2001:db8:[^\\]]*)\\]",
-];
-export const CHROME_LOCAL_HOST_PATTERNS = [
-  "[^./:\\[\\]]+",
-  "[^/]*\\.(?:localhost|local|localdomain|internal|lan|home|home\\.arpa|ts\\.net)",
-  "(?:[^/]*\\.)?(?:localtest\\.me|lvh\\.me|nip\\.io|sslip\\.io|vcap\\.me|local\\.gd)",
-  ...CHROME_PRIVATE_HOST_PATTERNS,
-];
-function chromePrivateHost(host: string) {
-  return CHROME_PRIVATE_HOST_PATTERNS.some((pattern) =>
-    new RegExp(`^(?:${pattern})$`, "i").test(host),
-  );
+  return origin;
 }
 export function chromeRequest(value: unknown): value is ChromeRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;

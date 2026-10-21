@@ -69,6 +69,42 @@ async function waitForConnectedAgent() {
     expect(!!document.querySelector(".initial-agent-identity, .conversation-header .agent-identity")).toBe(true);
   });
 }
+test("slow HTTP loads agents and keeps controls usable with a blocked event stream", async () => {
+  const a = await setup();
+  globalThis.EventSource = class extends EventTarget {
+    static OPEN = 1;
+    readyState = 0;
+    onopen = null;
+    onerror = null;
+    close() {}
+  } as unknown as typeof EventSource;
+  const fetchApi = globalThis.fetch;
+  let pending = 0;
+  let peak = 0;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (typeof input !== "string" || !input.startsWith("/api/state"))
+      return fetchApi(input, init);
+    pending++;
+    peak = Math.max(peak, pending);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 3400));
+      return await fetchApi(input, init);
+    } finally {
+      pending--;
+    }
+  }) as typeof fetch;
+  render(<App />);
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Create agent" }).hasAttribute("disabled")).toBe(false);
+    expect(!!screen.queryByRole("textbox", { name: "Message Jelly" })).toBe(true);
+  }, { timeout: 10000 });
+  a.service.createAgent({ name: "Arrived via polling", instructions: "", color: "#a4c8e8" });
+  await waitFor(() => {
+    expect(screen.getAllByText("Arrived via polling").length).toBeGreaterThan(0);
+  }, { timeout: 10000 });
+  expect(peak).toBe(1);
+}, 25000);
+
 async function backToInboxRoot() {
   const back = screen.queryByRole("button", { name: "Back to all agents" });
   if (back) fireEvent.click(back);
@@ -1200,31 +1236,41 @@ test("composer and popup budgets reserve conversation and avoid viewport edges",
 
 test("composer expands, reserves a quarter of the viewport, and shrinks when text is removed", async () => {
   await setup();
-  render(<App />);
-  const input = (await screen.findByRole("textbox", {
-    name: /Message Jelly/,
-  })) as HTMLTextAreaElement;
-  const main = input.closest("main")!;
-  Object.defineProperty(main, "clientHeight", {
-    configurable: true,
-    value: 800,
-  });
+  // The DOM fixture has no layout. Supply textarea metrics for both the live
+  // input and the hidden measurement textarea used to preserve iOS selection.
+  const prototype = window.HTMLTextAreaElement.prototype;
+  const original = Object.getOwnPropertyDescriptor(prototype, "scrollHeight");
   let contentHeight = 240;
-  Object.defineProperty(input, "scrollHeight", {
+  Object.defineProperty(prototype, "scrollHeight", {
     configurable: true,
     get: () => contentHeight,
   });
-  fireEvent.change(input, { target: { value: "one\ntwo\nthree" } });
-  expect(input.style.height).toBe("240px");
-  expect(input.style.overflowY).toBe("hidden");
-  contentHeight = 1200;
-  fireEvent.change(input, { target: { value: "line\n".repeat(80) } });
-  expect(parseFloat(input.style.height)).toBeLessThanOrEqual(800 - Math.min(800, window.innerHeight) / 4);
-  expect(input.style.overflowY).toBe("auto");
-  contentHeight = 44;
-  fireEvent.change(input, { target: { value: "" } });
-  expect(input.style.height).toBe("44px");
-  expect(input.style.overflowY).toBe("hidden");
+  try {
+    render(<App />);
+    const input = (await screen.findByRole("textbox", {
+      name: /Message Jelly/,
+    })) as HTMLTextAreaElement;
+    const main = input.closest("main")!;
+    Object.defineProperty(main, "clientHeight", {
+      configurable: true,
+      value: 800,
+    });
+    fireEvent.change(input, { target: { value: "one\ntwo\nthree" } });
+    expect(input.style.height).toBe("240px");
+    expect(input.style.overflowY).toBe("hidden");
+    contentHeight = 1200;
+    fireEvent.change(input, { target: { value: "line\n".repeat(80) } });
+    expect(parseFloat(input.style.height)).toBeLessThanOrEqual(800 - Math.min(800, window.innerHeight) / 4);
+    expect(input.style.overflowY).toBe("auto");
+    contentHeight = 44;
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input.style.height).toBe("44px");
+    expect(input.style.overflowY).toBe("hidden");
+  } finally {
+    cleanup();
+    if (original) Object.defineProperty(prototype, "scrollHeight", original);
+    else Reflect.deleteProperty(prototype, "scrollHeight");
+  }
 });
 
 test("settings shows read-only MCP status and refreshes agent configuration changes", async () => {

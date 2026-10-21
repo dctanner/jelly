@@ -51,6 +51,52 @@ async function fits(page: Page, selector: string) {
       );
   });
 }
+async function composerStaysStable(page: Page) {
+  // Allow observer deliveries to settle before selecting text. Viewport scroll
+  // events also fire when iOS pans around a selection; they must not collapse
+  // and restore the focused textarea, even within a single frame.
+  await page.waitForTimeout(100);
+  await page.locator(".composer textarea").evaluate(async (element) => {
+    const input = element as HTMLTextAreaElement;
+    input.focus();
+    input.setSelectionRange(5, 15, "backward");
+    input.scrollTop = Math.min(24, input.scrollHeight - input.clientHeight);
+    const top = input.scrollTop;
+    const height = input.getBoundingClientRect().height;
+    const mutations: MutationRecord[] = [];
+    const observer = new MutationObserver((records) =>
+      mutations.push(...records),
+    );
+    observer.observe(input, { attributes: true, attributeFilter: ["style"] });
+    try {
+      for (let frame = 0; frame < 12; frame++) {
+        window.visualViewport!.dispatchEvent(new Event("scroll"));
+        window.visualViewport!.dispatchEvent(new Event("resize"));
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+        if (Math.abs(input.getBoundingClientRect().height - height) > 0.1)
+          throw new Error("Composer height jitters without a layout change");
+      }
+      if (mutations.length)
+        throw new Error(
+          `Unchanged composer rewrote textarea styles ${mutations.length} times`,
+        );
+      if (
+        input.selectionStart !== 5 ||
+        input.selectionEnd !== 15 ||
+        input.selectionDirection !== "backward" ||
+        input.scrollTop !== top ||
+        document.activeElement !== input
+      )
+        throw new Error(
+          "Composer measurement disturbed selection, focus, or scroll",
+        );
+    } finally {
+      observer.disconnect();
+    }
+  });
+}
 async function composerFits(page: Page) {
   await page.waitForFunction(() => {
     const wrap = document
@@ -120,6 +166,35 @@ try {
       });
       await input.waitFor();
       await settled(page, "main");
+      for (const lines of [4, 5, 8, 5]) {
+        await input.fill("Draft line for selection\n".repeat(lines));
+        await composerFits(page);
+        await composerStaysStable(page);
+        await input.evaluate((element) => {
+          const input = element as HTMLTextAreaElement;
+          if (
+            input.clientHeight <= 44 &&
+            getComputedStyle(input).overflowY !== "auto"
+          )
+            throw new Error("Multiline draft neither grew nor scrolls");
+          if (
+            getComputedStyle(input).overflowY === "hidden" &&
+            input.scrollHeight > input.clientHeight + 1
+          )
+            throw new Error("Measured draft height clips text");
+        });
+      }
+      // Wrapping (without explicit newlines) must use the same text metrics.
+      await input.fill("Soft-wrapped draft for selection. ".repeat(10));
+      await composerFits(page);
+      await composerStaysStable(page);
+      await input.evaluate((element) => {
+        if (
+          getComputedStyle(element).overflowY === "hidden" &&
+          element.scrollHeight > element.clientHeight + 1
+        )
+          throw new Error("Measured wrapped draft height clips text");
+      });
       await input.fill(
         "Long draft with enough text to wrap across the full input width.\n".repeat(
           200,
@@ -133,6 +208,7 @@ try {
         )) !== "auto"
       )
         throw new Error("Long draft does not scroll");
+      await composerStaysStable(page);
       if (running) {
         const mode = page.getByRole("combobox", { name: "Message delivery" });
         if (
@@ -197,7 +273,7 @@ try {
         await input.focus();
         await page.evaluate(() => {
           Object.assign(window.visualViewport!, {
-            height: Math.min(320, innerHeight - 120),
+            height: Math.min(319.5, innerHeight - 120),
             offsetTop: 40,
           });
           window.visualViewport!.dispatchEvent(new Event("resize"));
@@ -205,6 +281,7 @@ try {
         await input.fill("Keyboard draft\n".repeat(200));
         await composerFits(page);
         await fits(page, ".composer-wrap");
+        await composerStaysStable(page);
         await page.getByRole("button", { name: "Model and effort" }).click();
         await fits(page, popup);
         await page.keyboard.press("Escape");

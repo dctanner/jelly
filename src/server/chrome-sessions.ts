@@ -178,7 +178,7 @@ export class ChromeSessions {
     } catch {
       throw new HttpError(
         400,
-        "Approve exact HTTPS origins only; Jelly, local/control and internal sites are unavailable.",
+        "Approve exact HTTP/HTTPS origins only; Jelly control endpoints and non-web URLs are unavailable.",
       );
     }
     if (
@@ -189,7 +189,7 @@ export class ChromeSessions {
     )
       throw new HttpError(
         400,
-        "Choose a connected Chrome profile and approve site origins or select unrestricted internet.",
+        "Choose a connected Chrome profile and approve site origins or select unrestricted web.",
       );
   }
   allocate(
@@ -417,7 +417,7 @@ export class ChromeSessions {
     return pending;
   }
   private url(t: Task, value: unknown) {
-    const origin = chromeOrigin(value, this.protected, false, t.siteScope);
+    const origin = chromeOrigin(value, this.protected);
     if (t.siteScope !== "internet" && !t.origins.includes(origin))
       throw new Error("Website is outside the approved Chrome scope.");
   }

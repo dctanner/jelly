@@ -1,0 +1,206 @@
+diff --git a/node_modules/pi-subagents/.bun-tag-4ce3d12cbefbe9 b/.bun-tag-4ce3d12cbefbe9
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/src/extension/fanout-child.js b/src/extension/fanout-child.js
+index d5bd4918ae5dc2d6a476ac93a2a8b2a5599272fd..5a82e40119d598cb237356aca5256d5204595f71 100644
+--- a/src/extension/fanout-child.js
++++ b/src/extension/fanout-child.js
+@@ -4,6 +4,7 @@ import * as path from "node:path";
+ import { discoverAgents } from "../agents/agents.js";
+ import { getArtifactsDir } from "../shared/artifacts.js";
+ import { createSubagentExecutor } from "../runs/foreground/subagent-executor.js";
++import { createOwnedChildSessionFactory } from "../runs/shared/child-session.js";
+ import { resolveWaitToolConfig } from "../runs/background/wait-config.js";
+ import { readNestedControlRequests, resolveInheritedNestedRoute, writeNestedControlResult } from "../runs/shared/nested-events.js";
+ import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.js";
+@@ -185,7 +186,9 @@ export default function registerFanoutChildSubagentExtension(pi, childConfig) {
+     });
+     const hasPendingSupervisorRequest = supervisorChannel.hasPendingRequests;
+     childConfig.hasPendingSupervisorRequest = hasPendingSupervisorRequest;
++    const childSessions = createOwnedChildSessionFactory();
+     const executor = createSubagentExecutor({
++        childSessionFactory: childSessions,
+         pi,
+         state,
+         config,
+@@ -235,7 +238,7 @@ export default function registerFanoutChildSubagentExtension(pi, childConfig) {
+         supervisorChannel.start();
+         supervisorChannel.activateTransport();
+     });
+-    pi.on("session_shutdown", () => {
++    pi.on("session_shutdown", async () => {
+         unsubscribeAsyncStarted?.();
+         asyncChildren.clear();
+         foregroundChannels.clear();
+@@ -243,6 +246,7 @@ export default function registerFanoutChildSubagentExtension(pi, childConfig) {
+         if (childConfig.hasPendingSupervisorRequest === hasPendingSupervisorRequest)
+             childConfig.hasPendingSupervisorRequest = undefined;
+         state.supervisorOwnerSessionId = null;
++        await childSessions.dispose();
+     });
+     const route = resolveNestedControlRoute(childConfig);
+     if (!route)
+diff --git a/src/extension/index.js b/src/extension/index.js
+index b7fe811629c88feb12caf445184a18a68db0d444..12417f2346f1261614e79c478aa815afb9d19686 100644
+--- a/src/extension/index.js
++++ b/src/extension/index.js
+@@ -61,7 +61,7 @@ import { drainOutstandingWork } from "../runs/background/auto-drain.js";
+ import registerSubagentNotify, { parseSubagentNotifyContent } from "../runs/background/notify.js";
+ import { formatSteeringNotice, handleSubagentSteeringNotice, SUBAGENT_STEERING_MESSAGE_TYPE } from "./steering-notices.js";
+ import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/child-runtime-config.js";
+-import { disposeChildSessions } from "../runs/shared/child-session.js";
++import { createOwnedChildSessionFactory } from "../runs/shared/child-session.js";
+ import { resolveCurrentSubagentCapabilityCeiling } from "../runs/shared/capability-ceiling.js";
+ import { formatDuration, shortenPath } from "../shared/formatters.js";
+ import { loadConfig, resolveAsyncByDefault, resolveScheduledStoreRoot } from "./config.js";
+@@ -568,7 +568,10 @@ export default function registerSubagentExtension(pi) {
+             asyncRetentionTimer.unref?.();
+         }
+     };
++    // One owner per extension runtime, never the process-wide fallback registry.
++    const childSessions = createOwnedChildSessionFactory();
+     const executorDeps = {
++        childSessionFactory: childSessions,
+         pi,
+         state,
+         config,
+@@ -1094,7 +1097,7 @@ export default function registerSubagentExtension(pi) {
+     pi.on("session_shutdown", async () => {
+         runtimeEntry.cleanup();
+         try {
+-            await disposeChildSessions();
++            await childSessions.dispose();
+         }
+         catch (error) {
+             console.error("Failed to dispose in-process child sessions:", error);
+diff --git a/src/runs/foreground/execution.js b/src/runs/foreground/execution.js
+index 9555cf4ea9266223df45ccf1fb485ad516a4f16c..9b283ecb8725bb3e5e9e2881cce3397bf329ac45 100644
+--- a/src/runs/foreground/execution.js
++++ b/src/runs/foreground/execution.js
+@@ -489,7 +489,9 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
+             });
+         };
+         const detachForeground = (reason) => {
+-            if (detached || sessionSettled || lifecycleFinished || options.signal?.aborted)
++            // A successful receipt must immediately protect a registered child
++            // from owner cleanup. Creation has no child to mark detached yet.
++            if (!session || session.shutDown || detached || sessionSettled || lifecycleFinished || options.signal?.aborted)
+                 return false;
+             const receiptProgress = snapshotProgress(progress);
+             receiptProgress.status = "detached";
+@@ -1319,6 +1321,10 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
+                     return;
+                 }
+                 session = created;
++                // Shutdown may race the continuation after factory.create resolves.
++                // Never start a new prompt on a child already stopped by its owner.
++                if (created.shutDown)
++                    throw new Error("Subagent stopped because the parent session shut down.");
+                 const steer = created.steer.bind(created);
+                 const followUp = created.followUp.bind(created);
+                 created.steer = async (text) => {
+diff --git a/src/runs/foreground/subagent-executor.d.ts b/src/runs/foreground/subagent-executor.d.ts
+index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..45547d06efa87dea1490cb0e8e49c07244d9e3b8 100644
+--- a/src/runs/foreground/subagent-executor.d.ts
++++ b/src/runs/foreground/subagent-executor.d.ts
+@@ -12,6 +12,7 @@ import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
+ import { type SteerDeliveryMode } from "../background/control-channel.ts";
+ import { steerAsyncRun } from "./async-steering-action.ts";
+ import type { ChildRuntimeConfig } from "../shared/child-runtime-config.ts";
++import type { ChildSessionFactory } from "../shared/child-session.ts";
+ import { type MissionLaunchBinding } from "../../missions/lifecycle.ts";
+ import { type WorkflowSteerOptions, type WorkflowSteerResult } from "../../workflows/scripted-workflow.ts";
+ import { type AcceptanceInput, type AgentContract, type ControlConfig, type Details, type ExtensionConfig, type IntercomBridgeConfig, type JsonSchemaObject, type MaxOutputConfig, type ResolvedControlConfig, type RunFanoutBudgetDescriptor, type SteeringRecoveryDescriptor, type SingleResult, type ToolBudgetConfig, type UsageBudgetConfig, type SubagentState, type ScheduleOrigin } from "../../shared/types.ts";
+@@ -162,6 +163,8 @@ export interface SubagentParamsLike {
+     summary?: string;
+ }
+ interface ExecutorDeps {
++    /** Child sessions owned by this extension runtime, not the host process. */
++    childSessionFactory?: ChildSessionFactory;
+     pi: ExtensionAPI;
+     state: SubagentState;
+     config: ExtensionConfig;
+diff --git a/src/runs/foreground/subagent-executor.js b/src/runs/foreground/subagent-executor.js
+index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..497718e8521f183b2b92a77feb713a56f9bd3752 100644
+--- a/src/runs/foreground/subagent-executor.js
++++ b/src/runs/foreground/subagent-executor.js
+@@ -3476,6 +3476,7 @@ async function runSinglePath(data, deps) {
+         const launched = await runSync(ctx.cwd, agents, params.agent, task, compactOptional({
+             machine: foregroundMachine,
+             parentProviderRegistry: ctx.modelRegistry,
++            childSessionFactory: deps.childSessionFactory,
+             remoteReads: foregroundMachine ? readsOverride : undefined,
+             permissions: deps.config.permissions,
+             runtimeSnapshotHost: deps.pi,
+diff --git a/src/runs/shared/child-session.d.ts b/src/runs/shared/child-session.d.ts
+index bff066d648e4e84d29a4f309f18040089f0ea76e..e15569903309fc815e7159c031f3024a1da2a618 100644
+--- a/src/runs/shared/child-session.d.ts
++++ b/src/runs/shared/child-session.d.ts
+@@ -136,6 +136,8 @@ export declare function createDefaultChildSessionFactory(options?: DefaultChildS
+ export declare function childSessionFactory(): ChildSessionFactory;
+ /** Default factory including pane-native placement; detached runners use the same boundary. */
+ export declare function createPlacementChildSessionFactory(options?: DefaultChildSessionFactoryOptions): ChildSessionFactory;
++/** Terminal owner-scoped factory; closes admission and drains pending launches on shutdown. */
++export declare function createOwnedChildSessionFactory(factory?: ChildSessionFactory): ChildSessionFactory;
+ /**
+  * Replace the process-wide factory. Tests install a scripted factory; passing
+  * undefined restores the default on next use.
+diff --git a/src/runs/shared/child-session.js b/src/runs/shared/child-session.js
+index db9df56da4dbc69f88e876ad7b74346c737288e6..e0fd20d87e29b2e7a718a8da3d6ca4b83fa6c7ee 100644
+--- a/src/runs/shared/child-session.js
++++ b/src/runs/shared/child-session.js
+@@ -384,6 +384,54 @@ function createLazyPlacementFactory(local) {
+ export function createPlacementChildSessionFactory(options = {}) {
+     return createLazyPlacementFactory(createDefaultChildSessionFactory(options));
+ }
++/**
++ * A terminal, owner-scoped factory. Shutdown closes admission before disposing
++ * live children and drains launches already in flight, including placement.
++ * A late-created child is never returned to its executor after owner shutdown.
++ */
++export function createOwnedChildSessionFactory(factory = createPlacementChildSessionFactory()) {
++    let closed = false;
++    let disposal;
++    const pending = new Set();
++    const shutdownError = () => new Error("Subagent stopped because the parent session shut down.");
++    return {
++        create(launch) {
++            if (closed)
++                return Promise.reject(shutdownError());
++            const creation = Promise.resolve().then(() => {
++                if (closed)
++                    throw shutdownError();
++                return factory.create(launch);
++            }).then(async (child) => {
++                if (!closed)
++                    return child;
++                child.shutDown = true;
++                try {
++                    await child.abort();
++                }
++                finally {
++                    await child.dispose();
++                }
++                throw shutdownError();
++            });
++            pending.add(creation);
++            void creation.then(() => pending.delete(creation), () => pending.delete(creation));
++            return creation;
++        },
++        dispose() {
++            closed = true;
++            disposal ??= (async () => {
++                try {
++                    await factory.dispose();
++                }
++                finally {
++                    await Promise.allSettled([...pending]);
++                }
++            })();
++            return disposal;
++        },
++    };
++}
+ /**
+  * Replace the process-wide factory. Tests install a scripted factory; passing
+  * undefined restores the default on next use.

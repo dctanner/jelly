@@ -440,6 +440,39 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     } finally {
       await h.dispose(low);
     }
+    // Regression: completing any other Jelly session used to dispose the
+    // process-wide registry, killing this parent's in-process workflow child.
+    // Top-level async does not imply that each workflow child is isolated.
+    const unrelated = await h.create(
+      { ...agent, id: "unrelated-parent", managedCwd: 0 },
+      [],
+      h.config("api"),
+      instance,
+    );
+    let releaseOwnedChild!: () => void;
+    holdNext = new Promise<void>((resolve) => { releaseOwnedChild = resolve; });
+    const beforeOwnedChild = requests.length;
+    try {
+      await tool.execute(
+        "ownership-regression",
+        {
+          async: true,
+          workflowScript: 'return await runs.run("owned", {agent:"delegate", task:"Reply Child completed", async:false, acceptance:false})',
+        },
+        new AbortController().signal,
+      );
+      const until = Date.now() + 15000;
+      while (requests.length === beforeOwnedChild && Date.now() < until)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(requests.length).toBe(beforeOwnedChild + 1);
+      await h.dispose(unrelated);
+      releaseOwnedChild();
+      await h.settle(s);
+      expect(completions.at(-1)?.success).toBe(true);
+    } finally {
+      releaseOwnedChild();
+      await h.dispose(unrelated);
+    }
     const beforeCancel = requests.length;
     slow = true;
     const controller = new AbortController();

@@ -165,7 +165,7 @@ export function ChromeConnection({
           </li>
           <li>
             Choose the connected profile below, select approved sites or
-            unrestricted internet, and save once for all agents. No profile
+            unrestricted web, and save once for all agents. No profile
             copying, Chrome restart flags or debugging port.
           </li>
         </ol>
@@ -204,20 +204,20 @@ export function ChromeConnection({
         >
           <option value="approved">Approved sites only</option>
           <option value="internet">
-            Unrestricted internet (HTTP and HTTPS)
+            Unrestricted web (HTTP and HTTPS)
           </option>
         </select>
       </label>
       {siteScope === "internet" && (
         <p className="chat-form-hint">
-          Every persistent agent can use public websites with this profile’s
-          signed-in accounts. Jelly, local/private addresses and internal
-          browser pages remain blocked.
+          Every persistent agent can use websites, including local/private services
+          reachable from this machine, with this profile’s signed-in accounts.
+          Not a network sandbox. Jelly control endpoints and non-web URLs remain blocked.
         </p>
       )}
       {siteScope === "approved" && (
         <label className="chat-form-field">
-          <span>Approved exact HTTPS origins (one per line)</span>
+          <span>Approved exact HTTP/HTTPS origins (one per line)</span>
           <textarea
             rows={4}
             value={origins}
@@ -269,7 +269,7 @@ export function ChromeConnection({
           </p>
           <p>
             {status.task.siteScope === "internet"
-              ? "Unrestricted internet (HTTP and HTTPS)"
+              ? "Unrestricted web (HTTP and HTTPS)"
               : status.task.origins.join(", ")}
           </p>
           {["pause", "resume", "disconnect", "close"].map((op) => (

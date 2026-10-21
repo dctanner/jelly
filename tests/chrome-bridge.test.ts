@@ -1,4 +1,5 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { connect, type Socket } from "node:net";
 import {
   mkdtempSync,
@@ -112,87 +113,42 @@ test("Chrome framing is incremental, bounded and rejects invalid JSON/methods", 
     }),
   ).toBe(false);
 });
-test("Chrome scope rejects local aliases, dangerous schemes, credentials and Jelly host across ports", () => {
+test("Chrome production policy allows local/private web endpoints but protects exact control endpoints", () => {
+  const protectedOrigins = ["http://127.0.0.1:5173", "https://JELLY.example.:443", "http://[::1]:5173", "http://control.local"];
+  const rules = chromeInternetDenyRegexes(protectedOrigins).map(p => new RegExp(p, "i"));
+  const blocked = (url: string) => rules.some(r => r.test(new URL(url).href));
   for (const url of [
-    "http://example.com",
-    "file:///tmp/file",
-    "chrome://settings",
-    "https://localhost",
-    "https://localhost.",
-    "https://foo.localhost.",
-    "https://localhost.localdomain",
-    "https://lvh.me",
-    "https://127.0.0.1.nip.io",
-    "https://box.home.arpa",
-    "https://127.0.0.1",
-    "https://2130706433",
-    "https://[::1]",
-    "https://box.tailbfab3f.ts.net",
-    "https://host.local",
-    "https://user:pass@example.com",
-  ])
-    expect(() => chromeOrigin(url)).toThrow();
-  expect(() =>
-    chromeOrigin("https://jelly.example.com:99/path", [
-      "http://jelly.example.com:5173",
-    ]),
-  ).toThrow();
-  expect(chromeOrigin("https://example.com/path")).toBe("https://example.com");
-});
-test("Unrestricted Chrome scope allows public web sites and blocks local/control URLs and network requests", () => {
-  const protectedOrigins = ["http://jelly.example.com:3100"];
-  const rules = chromeInternetDenyRegexes(protectedOrigins).map(
-    (pattern) => new RegExp(pattern, "i"),
-  );
-  const blocked = (url: string) =>
-    rules.some((rule) => rule.test(new URL(url).href));
-  for (const url of [
-    "https://unlisted.example/path",
-    "http://unlisted.example:8080/path",
-    "https://1.1.1.1/path",
-    "https://[2606:4700:4700::1111]/path",
-    "https://jelly.example.com.evil.example/path",
-    "https://public.example./path",
+    "http://localhost:8080", "https://localhost./", "http://machine/",
+    "https://box.home.arpa/", "https://127.0.0.1.nip.io/", "https://box.tailnet.ts.net/",
+    "http://127.0.0.1:8080/", "http://2130706433:8080/", "http://10.0.0.1/",
+    "http://172.31.1.1/", "http://192.168.1.1/", "http://169.254.169.254/",
+    "http://100.91.31.77/", "http://[::1]:8080/", "http://[fc00::1]/",
+    "http://[::ffff:127.0.0.1]/", "https://example.com/", "https://1.1.1.1/",
+    "https://jelly.example:444/", "http://jelly.example/", "https://jelly.example.evil/",
   ]) {
-    expect(chromeOrigin(url, protectedOrigins, false, "internet")).toBe(
-      new URL(url).origin,
-    );
+    expect(chromeOrigin(url, protectedOrigins)).toMatch(/^https?:/);
     expect(blocked(url)).toBe(false);
+    expect(blocked(url.replace(/^http/, "ws"))).toBe(false);
   }
   for (const url of [
-    "http://localhost/",
-    "https://localhost./",
-    "http://machine/",
-    "https://box.home.arpa/",
-    "https://127.0.0.1.nip.io/",
-    "https://box.tailnet.ts.net/",
-    "http://127.0.0.1/",
-    "http://2130706433/",
-    "http://10.0.0.1/",
-    "http://172.31.1.1/",
-    "http://192.168.1.1/",
-    "http://169.254.169.254/",
-    "http://100.91.31.77/",
-    "http://198.18.0.1/",
-    "http://[::1]/",
-    "http://[fc00::1]/",
-    "http://[::ffff:127.0.0.1]/",
-    "http://[200::1]/",
-    "https://jelly.example.com:444/",
-    "https://jelly.example.com./",
-    "file:///tmp/file",
-    "chrome://settings/",
+    "http://127.0.0.1:5173/", "http://2130706433:5173/", "http://0x7f000001:5173/",
+    "http://[0:0:0:0:0:0:0:1]:5173/", "https://JELLY.EXAMPLE.:443/path",
+    "https://jelly.example/", "http://control.local.:80/",
   ]) {
-    expect(() =>
-      chromeOrigin(url, protectedOrigins, false, "internet"),
-    ).toThrow();
+    expect(() => chromeOrigin(url, protectedOrigins)).toThrow("Jelly/control");
+    expect(blocked(url)).toBe(true);
+    expect(blocked(url.replace(/^http/, "ws"))).toBe(true);
+  }
+  for (const url of ["file:///tmp/file", "chrome://settings/", "https://user:pass@example.com/", "http://evil@127.0.0.1:5173/", "http://127.0.0.1:5173@evil/"]) {
+    expect(() => chromeOrigin(url, protectedOrigins)).toThrow();
     expect(blocked(url)).toBe(true);
   }
-  expect(() =>
-    chromeOrigin("https://user:pass@example.com/", [], false, "internet"),
-  ).toThrow();
-  expect(blocked("wss://localhost/socket")).toBe(true);
-  expect(blocked("wss://public.example/socket")).toBe(false);
+  expect(() => chromeOrigin("ws://localhost/")).toThrow(); // navigation is HTTP(S) only
+  expect(chromeOrigin("HTTP://LOCALHOST.:80/path")).toBe("http://localhost");
+  const approved = chromeDenyRegexes(["http://localhost:8080", "http://[::1]:8080"]).map(p => new RegExp(p));
+  expect(approved.some(r => r.test("http://localhost:8080/app"))).toBe(false);
+  expect(approved.some(r => r.test("http://localhost:8081/app"))).toBe(true);
+  expect(approved.some(r => r.test("http://localhost:8080.evil/app"))).toBe(true);
 });
 
 test("Chrome bridge authenticates profile/generation, isolates requests and rejects stale connections", async () => {
@@ -369,6 +325,21 @@ test("Chrome DNR deny rules match unapproved redirect origins, port changes and 
     expect(denied(url)).toBe(true);
 });
 
+test("Approved DNR matches canonical dotted origins without admitting lookalikes or control endpoints", () => {
+  const origins = ["http://localhost:8080", "https://example.com", "https://example.com.child", "https://example.com.child:8443"];
+  const protectedOrigins = ["http://control.local:5173", "https://control.local"];
+  const rules = [...chromeDenyRegexes([...origins, ...protectedOrigins]), ...chromeInternetDenyRegexes(protectedOrigins)].map(r => new RegExp(r));
+  // Like DNR, match the browser's parsed URL: host case/default ports normalize,
+  // but DNS trailing dots remain in the serialized URL.
+  const denied = (url: string) => rules.some(r => r.test(new URL(url).href));
+  for (const url of ["http://LOCALHOST.:8080/app", "http://localhost...:8080/", "https://EXAMPLE.COM.:443/", "https://example.com.child./", "https://example.com.child.:8443/"])
+    expect(denied(url)).toBe(false);
+  for (const url of ["http://localhost.:8081/", "https://example.com.evil/", "https://example.com..child/", "https://example.com.child.:9443/", "https://example.com.:444/", "http://user@localhost.:8080/", "http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
+    expect(denied(url)).toBe(true);
+  for (const url of ["http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
+    expect(() => chromeOrigin(url, protectedOrigins)).toThrow("Jelly/control");
+});
+
 test("ChromeSessions pins unrestricted access and sends its scope to the extension", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-internet-"));
   const chrome = new ChromeSessions(dir, "instance");
@@ -388,7 +359,7 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
     calls.push({ method, params });
     return method === "open" ? { pageId: crypto.randomUUID() } : { ok: true };
   };
-  chrome.protectOrigins(["http://jelly.example.com:3100"]);
+  chrome.protectOrigins(["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"]);
   const selection = {
     browserTarget: "chrome" as const,
     chromeProfile: profile,
@@ -404,11 +375,14 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
       origins: [],
     });
     expect(chrome.state("agent").task?.siteScope).toBe("internet");
+    await browser.action("open", { url: "http://localhost/" });
+    await browser.action("open", { url: "http://127.0.0.1:8080/" });
+    await browser.action("open", { url: "https://[::1]:8080/" });
+    for (const url of ["http://2130706433:5173/", "https://[0:0:0:0:0:0:0:1]:443/", "ws://127.0.0.1:5173/", "https://user:pass@localhost/", "file:///tmp/test"])
+      await expect(browser.action("open", { url })).rejects.toThrow();
+    await browser.action("open", { url: "https://jelly.example.com:444/" });
     await expect(
-      browser.action("open", { url: "http://localhost/" }),
-    ).rejects.toThrow();
-    await expect(
-      browser.action("open", { url: "https://jelly.example.com:444/" }),
+      browser.action("open", { url: "http://jelly.example.com:3100/" }),
     ).rejects.toThrow();
     await chrome.settle("agent", "run");
     const next = chrome.allocate(
@@ -1144,4 +1118,178 @@ test("Chrome bridge binds all pause states to an authenticated generation and ru
   } finally {
     await f.close();
   }
+});
+
+test("intentional disconnect survives dropped final frames and bridge restart; only authenticated explicit reconnect clears", async () => {
+  const f = await fixture();
+  let restarted: ChromeBridge | undefined;
+  try {
+    const profile = crypto.randomUUID();
+    const first = await f.peer({ profile });
+    expect(first.messages[0].type).toBe("paired");
+    f.bridge.disconnect(profile);
+    await waitFor(() => first.socket.destroyed);
+    expect(JSON.parse(readFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([profile]);
+    // No reliance on receiving the denial frame: closing immediately cannot clear intent.
+    const denied = await f.peer({ profile });
+    denied.socket.destroy();
+    expect(f.bridge.profiles()).toHaveLength(0);
+    await f.bridge.close();
+    restarted = new ChromeBridge(f.dir, "test-instance");
+    await restarted.ready;
+    const unauthenticated = await f.peer({ profile, explicitReconnect: true, grant: "wrong" });
+    expect(unauthenticated.messages).toEqual([]);
+    const stillBlocked = await f.peer({ profile });
+    expect(stillBlocked.messages[0]?.type).toBe("reconnectRequired");
+    expect(restarted.profiles()).toHaveLength(0);
+    const reconnect = await f.peer({ profile, explicitReconnect: true });
+    expect(reconnect.messages[0]?.type).toBe("paired");
+    expect(JSON.parse(readFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([]);
+  } finally {
+    if (restarted) await restarted.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed durable disconnect state fails closed; missing state is valid", async () => {
+  const f = await fixture();
+  await f.bridge.close();
+  try {
+    writeFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "{}", { mode: 0o600 });
+    expect(() => new ChromeBridge(f.dir, "test-instance")).toThrow("Invalid Chrome disconnect state");
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("failed durable replacement revokes current socket and closes all future admission", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID();
+    const first = await f.peer({ profile });
+    // A directory at the destination forces atomic rename failure without OS permission assumptions.
+    mkdirSync(join(f.bridge.directory, "disconnected-profiles.json"));
+    expect(() => f.bridge.disconnect(profile)).toThrow();
+    await waitFor(() => first.socket.destroyed);
+    const retry = await f.peer({ profile, explicitReconnect: true });
+    expect(retry.messages).toEqual([]);
+    expect(f.bridge.profiles()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("failed task settlement uses the same durable reconnect-required policy as explicit disconnect", async () => {
+  const f = await pauseFixture();
+  try {
+    f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
+      if (method === "end") throw new Error("fixture lost cleanup acknowledgement");
+      return method === "open" ? { pageId: "owned-tab" } : { ok: true };
+    };
+    await f.browser.action("open", { url: "https://example.com" });
+    await f.chrome.settle("agent", "run");
+    expect(JSON.parse(readFileSync(join(f.chrome.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([f.profile]);
+  } finally { await f.close(); }
+});
+
+test("v6 client cannot pair or clear v7 durable disconnect intent", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID();
+    f.bridge.disconnect(profile);
+    const old = await f.peer({ profile, version: 6, explicitReconnect: true });
+    expect(old.messages).toEqual([]);
+    expect(f.bridge.profiles()).toEqual([]);
+    expect(JSON.parse(readFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([profile]);
+  } finally { await f.close(); }
+});
+
+test("interrupted disconnect transaction never falls back to older permissive state", async () => {
+  const f = await fixture();
+  await f.bridge.close();
+  try {
+    writeFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "[]", { mode: 0o600 });
+    const interrupted = join(f.bridge.directory, "disconnected-profiles.json.0123456789abcdef");
+    writeFileSync(interrupted, JSON.stringify([crypto.randomUUID()]), { mode: 0o600 });
+    expect(() => new ChromeBridge(f.dir, "test-instance")).toThrow("Interrupted Chrome disconnect state needs repair");
+    expect(existsSync(interrupted)).toBe(true);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+
+test("capacity overflow durably refuses restart even with an older valid full profile store", async () => {
+  const f = await fixture();
+  await f.bridge.close();
+  const path = join(f.bridge.directory, "disconnected-profiles.json");
+  const previous = Array.from({ length: 1024 }, () => crypto.randomUUID());
+  writeFileSync(path, JSON.stringify(previous), { mode: 0o600 });
+  const full = new ChromeBridge(f.dir, "test-instance");
+  await full.ready;
+  try {
+    const profile = crypto.randomUUID();
+    const current = await f.peer({ profile });
+    expect(current.messages[0]?.type).toBe("paired");
+    expect(() => full.disconnect(profile)).toThrow("state is full");
+    await waitFor(() => current.socket.destroyed);
+    const marker = join(full.directory, "disconnected-profiles.json.overflow");
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ blockedAll: true, profile });
+    expect(statSync(marker).mode & 0o777).toBe(0o600);
+    expect(statSync(marker).size).toBeLessThan(128);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(previous);
+    // Repeated overflow never grows the store or replaces global denial evidence.
+    expect(() => full.disconnect(crypto.randomUUID())).toThrow();
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ blockedAll: true, profile });
+    const retry = await f.peer({ profile, explicitReconnect: true });
+    expect(retry.messages).toEqual([]);
+    await full.close();
+    expect(() => new ChromeBridge(f.dir, "test-instance")).toThrow("Interrupted Chrome disconnect state needs repair");
+    expect(existsSync(marker)).toBe(true);
+  } finally {
+    await full.close().catch(() => {});
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("recoverable pre-rename failure preserves intent and refuses restart over a valid older file", async () => {
+  const f = await fixture();
+  const path = join(f.bridge.directory, "disconnected-profiles.json");
+  const previous = crypto.randomUUID();
+  f.bridge.disconnect(previous);
+  const profile = crypto.randomUUID();
+  const current = await f.peer({ profile });
+  const rename = spyOn(fs, "renameSync").mockImplementation(() => { throw new Error("fixture recoverable rename failure"); });
+  try {
+    expect(() => f.bridge.disconnect(profile)).toThrow("fixture recoverable rename failure");
+  } finally { rename.mockRestore(); }
+  try {
+    await waitFor(() => current.socket.destroyed);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual([previous]);
+    const pending = fs.readdirSync(f.bridge.directory).filter(name => /^disconnected-profiles\.json\.[a-f0-9]{16}$/.test(name));
+    expect(pending).toHaveLength(1);
+    const intent = join(f.bridge.directory, pending[0]!);
+    expect(JSON.parse(readFileSync(intent, "utf8"))).toEqual([previous, profile]);
+    const retry = await f.peer({ profile, explicitReconnect: true });
+    expect(retry.messages).toEqual([]);
+    await f.bridge.close();
+    // The rename fault is gone, but startup cannot discard the failed intent.
+    expect(() => new ChromeBridge(f.dir, "test-instance")).toThrow("Interrupted Chrome disconnect state needs repair");
+    expect(existsSync(intent)).toBe(true);
+  } finally {
+    await f.bridge.close().catch(() => {});
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("total intent-write failure still revokes live authority and refuses running admission", async () => {
+  const f = await fixture();
+  const profile = crypto.randomUUID();
+  const current = await f.peer({ profile });
+  const write = spyOn(fs, "writeFileSync").mockImplementation(() => { throw new Error("fixture filesystem cannot write"); });
+  try {
+    expect(() => f.bridge.disconnect(profile)).toThrow("fixture filesystem cannot write");
+  } finally { write.mockRestore(); }
+  try {
+    await waitFor(() => current.socket.destroyed);
+    expect(f.bridge.profiles()).toEqual([]);
+    const retry = await f.peer({ profile, explicitReconnect: true });
+    expect(retry.messages).toEqual([]);
+    // No claim of restart durability when the filesystem accepted no evidence.
+    expect(fs.readdirSync(f.bridge.directory).some(name => name.startsWith("disconnected-profiles.json"))).toBe(false);
+  } finally { await f.close(); }
 });

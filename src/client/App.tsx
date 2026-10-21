@@ -934,7 +934,19 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     let source: EventSource | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let latest = 0;
-    const load = async () => {
+    let inFlight = 0;
+    let lastLoaded = 0;
+    let refreshQueued = false;
+    const load = async (background = false) => {
+      // Background retries must not supersede responses on a slow connection.
+      // Explicit navigation still starts a new request and wins over older data.
+      if (dead) return;
+      if (background && inFlight > 0) {
+        refreshQueued = true;
+        return;
+      }
+      refreshQueued = false;
+      inFlight++;
       const request = ++latest;
       try {
         let next: Snapshot;
@@ -952,6 +964,9 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           } else throw error;
         }
         if (dead || request !== latest) return;
+        lastLoaded = Date.now();
+        setConnected(true);
+        setLoadError("");
         next.projects ??= [];
         if (
           !nav.current.instance ||
@@ -1030,7 +1045,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           : previous);
         setData(next);
         setLoadError("");
-        if (source?.readyState === EventSource.OPEN) setConnected(true);
         if (!source) {
           const connection = new EventSource(
             `/api/events?after=${next.cursor}`,
@@ -1044,18 +1058,16 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           };
           source.onerror = () => {
             if (dead || source !== connection) return;
-            setConnected(false);
             source?.close();
             source = undefined;
             // Reopen from a fresh snapshot instead of retrying an expired cursor.
             clearTimeout(timer);
-            timer = setTimeout(() => void load(), 1000);
+            timer = setTimeout(() => void load(true), 1000);
           };
           source.addEventListener("reset", () => {
             if (dead || source !== connection) return;
             source?.close();
             source = undefined;
-            setConnected(false);
             void load();
           });
           source.addEventListener("subagents_updated", () => {
@@ -1082,7 +1094,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
               // Normal snapshot refresh also recovers malformed event envelopes.
             }
             clearTimeout(timer);
-            timer = setTimeout(() => void load(), 25);
+            timer = setTimeout(() => void load(true), 25);
           });
         }
       } catch (error) {
@@ -1090,12 +1102,17 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           setLoadError((error as Error).message);
           setConnected(false);
         }
+      } finally {
+        inFlight--;
+        if (!dead && inFlight === 0 && refreshQueued) void load(true);
       }
     };
     refresh.current = load;
     void load();
     const retry = setInterval(() => {
-      if (!source || source.readyState !== EventSource.OPEN) void load();
+      // Poll even an apparently open stream occasionally: proxies can buffer it.
+      if (!source || source.readyState !== EventSource.OPEN || Date.now() - lastLoaded >= 15000)
+        void load(true);
     }, 3000);
     return () => {
       dead = true;
