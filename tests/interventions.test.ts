@@ -346,7 +346,7 @@ test("sudo executes without approval when the OS permits, and ordinary failures 
 test("request_sudo requires a bounded human-readable summary and preserves it during validation", async () => {
   const { interventionTools } = await import("../src/server/agent-tools");
   const f = await fixture();
-  const tool = interventionTools(f.app.service.computer, f.app.service.interventions, f.id, "schema-test", "/tmp")
+  const tool = interventionTools(f.app.service.browsers.forRun(f.id, "schema-test", f.app.store.browserSelection(), "Fixture"), f.app.service.interventions, f.id, "schema-test", "/tmp")
     .find(tool => tool.name === "request_sudo")!;
   const schema = tool.parameters as unknown as {
     required: string[];

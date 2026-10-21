@@ -16,12 +16,10 @@ import { DesktopHandoffCard } from "./DesktopConnection";
 import { ChromeSharePanel } from "./ChromeSharePanel";
 export function InterventionCard({
   item,
-  onComputer,
   onChange,
   hasInlineTool = false,
 }: {
   item: Intervention;
-  onComputer: () => void;
   onChange: () => void;
   hasInlineTool?: boolean;
 }) {
@@ -29,7 +27,6 @@ export function InterventionCard({
   const password = useRef<HTMLInputElement>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const [browserOpened, setBrowserOpened] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [submitted, setSubmitted] = useState<Intervention["status"] | null>(
     null,
@@ -39,14 +36,14 @@ export function InterventionCard({
   const status =
     item.status === "pending" ? (submitted ?? item.status) : item.status;
   const pending = status === "pending";
-  const connectedChrome = item.payload.browserTarget === "chrome";
+  const browserLogin = item.kind === "browser_login";
   const [chromeTask, setChromeTask] = useState<ChromeStatus["task"]>(null);
   const [chromeUnavailable, setChromeUnavailable] = useState(false);
   const [chromeSharing, setChromeSharing] = useState(false);
   const chromeRevision = useRef(0);
   const chromeControlling = useRef(false);
   useEffect(() => {
-    if (!connectedChrome || !pending) return;
+    if (!browserLogin || !pending) return;
     let disposed = false,
       loading = false;
     const load = async () => {
@@ -78,7 +75,7 @@ export function InterventionCard({
       disposed = true;
       clearInterval(timer);
     };
-  }, [connectedChrome, pending, item.agentId, item.id]);
+  }, [browserLogin, pending, item.agentId, item.id]);
   const chromeReady =
     !busy &&
     !!chromeTask?.connected &&
@@ -135,11 +132,11 @@ export function InterventionCard({
       setBusy(false);
     }
   }
-  if (!pending || (item.kind === "browser_login" && browserOpened)) {
+  if (!pending) {
     // The original tool event already carries arguments and the result.
     // Only add a fallback row when that event is outside the loaded history.
     if (hasInlineTool) return null;
-    const executing = status === "executing" || pending;
+    const executing = status === "executing";
     const label = item.kind === "sudo" ? "Sudo" : item.kind === "desktop_handoff" ? "Desktop handoff" : "Browser login";
     return (
       <details className="tool-event">
@@ -154,9 +151,7 @@ export function InterventionCard({
           <span>
             {busy && status === "denied"
               ? "Dismissing…"
-              : pending
-                ? "Browser login in progress"
-                : `${label} ${status}`}
+              : `${label} ${status}`}
           </span>
           <code>
             {item.kind === "sudo" ? "request_sudo" : item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"}
@@ -188,7 +183,7 @@ export function InterventionCard({
       status={
         item.kind === "sudo"
           ? "Needs your approval"
-          : connectedChrome && !chromeReady
+          : !chromeReady
             ? "Preparing private sign-in"
             : "Private sign-in"
       }
@@ -268,11 +263,9 @@ export function InterventionCard({
             <dd>{String(item.payload.url)}</dd>
           </dl>
           <p className="chat-form-hint">
-            {connectedChrome
-              ? chromeReady
-                ? "Connected Chrome is paused and its debugger detached. Open locally in Chrome, or use full-desktop web VNC. Never enter credentials in chat; return control when finished."
-                : chromeWarning
-              : "Sign in privately in this agent’s browser session, then return control to the agent."}
+            {chromeReady
+              ? "Connected Chrome is paused and its debugger detached. Open locally in Chrome, or use full-desktop web VNC. Never enter credentials in chat; return control when finished."
+              : chromeWarning}
           </p>
           <ChatFormActions>
             <button
@@ -286,30 +279,22 @@ export function InterventionCard({
             <button
               type="button"
               className="primary"
-              disabled={busy || (connectedChrome && (!chromeReady || chromeSharing))}
-              onClick={() => {
-                if (connectedChrome) void chromeControl("focus");
-                else {
-                  onComputer();
-                  setBrowserOpened(true);
-                }
-              }}
+              disabled={busy || !chromeReady || chromeSharing}
+              onClick={() => void chromeControl("focus")}
             >
-              {connectedChrome ? "Open in Chrome" : "Open browser"}
+              Open in Chrome
             </button>
-            {connectedChrome && <button type="button" disabled={busy || !chromeReady} onClick={() => setShareOpen(true)}>Open web VNC…</button>}
-            {connectedChrome && (
-              <button
-                type="button"
-                className="primary"
-                disabled={busy || !chromeReady || chromeSharing}
-                onClick={() => void chromeControl("resume")}
-              >
-                Return control to agent
-              </button>
-            )}
+            <button type="button" disabled={busy || !chromeReady} onClick={() => setShareOpen(true)}>Open web VNC…</button>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !chromeReady || chromeSharing}
+              onClick={() => void chromeControl("resume")}
+            >
+              Return control to agent
+            </button>
           </ChatFormActions>
-          {shareOpen && connectedChrome && <ChromeSharePanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
+          {shareOpen && <ChromeSharePanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
         </>
       )}
     </ChatFormCard>

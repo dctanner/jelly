@@ -216,13 +216,6 @@ test("folder browser canonicalizes symlinks, pages, hides dotfolders, rejects in
   expect((await fetch(base + "/api/directories")).status).toBe(401);
   expect(
     (
-      await request("/api/directories", "GET", undefined, {
-        "x-jelly-managed-browser": "1",
-      })
-    ).status,
-  ).toBe(403);
-  expect(
-    (
       await request(
         "/api/projects",
         "POST",

@@ -753,15 +753,6 @@ dialog .choice {
 .status-dot.waiting {
   background: #d69b3b;
 }
-.computer-button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  margin-left: 16px;
-}
 .intervention-card {
   width: min(720px, calc(100% - 40px));
   margin: 20px auto;
@@ -807,16 +798,16 @@ dialog .choice {
   padding: 10px 16px;
   border-radius: 9px;
 }
-.computer-panel {
+.chrome-share-panel {
   width: min(1400px, 96vw);
   max-width: 96vw;
 }
-.computer-panel h2 {
+.chrome-share-panel h2 {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.computer-toolbar {
+.chrome-share-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -824,36 +815,35 @@ dialog .choice {
   margin-bottom: 14px;
   font-size: 13px;
 }
-.computer-toolbar > div {
+.chrome-share-toolbar > div {
   display: flex;
   gap: 8px;
 }
-.computer-toolbar .primary {
+.chrome-share-toolbar .primary {
   padding: 10px 16px;
   border-radius: 9px;
 }
-.computer-screen {
+.chrome-share-viewer {
+  min-width: 0;
+}
+.chrome-share-viewer[hidden] {
+  display: none;
+}
+.chrome-share-display {
+  width: 100%;
+  height: 100%;
+}
+.chrome-share-screen {
   height: min(65vh, 800px);
   min-height: 300px;
   background: #111;
   border-radius: 10px;
   overflow: hidden;
 }
-.computer-private {
-  min-height: 300px;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  text-align: center;
-  padding: 30px;
-}
 @media (max-width: 600px) {
-  .computer-toolbar {
+  .chrome-share-toolbar {
     align-items: flex-start;
     flex-direction: column;
-  }
-  .computer-button {
-    margin-left: 4px;
   }
   .header-status {
     display: none;
@@ -1263,12 +1253,6 @@ header {
   padding: 16px 28px;
   gap: 10px;
 }
-header .computer-button {
-  margin-left: auto;
-  min-height: 44px;
-  background: transparent;
-  border: 0;
-}
 .header-status {
   font-size: 12px;
 }
@@ -1607,11 +1591,8 @@ dialog .hidden-folders {
   width: 100%;
   max-width: 720px;
 }
-.computer-panel {
+.chrome-share-panel {
   width: min(1400px, 96vw);
-}
-.computer-button {
-  color: var(--text);
 }
 @keyframes jelly-float {
   0%,
@@ -1752,21 +1733,6 @@ dialog .hidden-folders {
     width: 36px;
     height: 44px;
   }
-  header .computer-button {
-    margin: 0;
-    width: 44px;
-    padding: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    font-size: 0;
-    gap: 0;
-    justify-content: center;
-  }
-  header .computer-button svg {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-  }
   .header-status {
     display: none;
   }
@@ -1860,11 +1826,11 @@ dialog .hidden-folders {
   .folder-picker .modal-heading {
     flex-shrink: 0;
   }
-  .computer-panel {
+  .chrome-share-panel {
     width: 100%;
     max-width: 100%;
   }
-  .computer-screen {
+  .chrome-share-screen {
     height: 55dvh;
   }
   .intervention-card {
@@ -2518,9 +2484,6 @@ main > .connection-error + .conversation {
   .conversation-header .header-status {
     font-size: 10px;
   }
-  .conversation-header .conversation-actions .computer-button {
-    display: none;
-  }
   .conversation {
     padding: calc(var(--conversation-top) + 18px) 16px
       calc(var(--composer-height, 80px) + 24px);
@@ -2738,10 +2701,3 @@ main > .connection-error + .conversation {
   flex-wrap: wrap;
   gap: 8px;
 }
-
-.remote-clipboard { margin-bottom: 14px; min-width: 0; }
-.remote-clipboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.remote-clipboard-actions button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
-.remote-clipboard > p { margin: 8px 0; }
-.remote-clipboard .chat-form-card { max-width: none; }
-.remote-clipboard textarea { display: block; width: 100%; margin: 8px 0 12px; resize: vertical; max-height: 200px; }

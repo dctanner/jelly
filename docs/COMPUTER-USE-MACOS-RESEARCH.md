@@ -1,5 +1,10 @@
 # Computer use for Jelly on macOS — research and recommendation
 
+> Historical research. Managed-browser code referenced below has since been
+> removed. Connected Chrome is now the only browser integration; native Mac
+> desktop tools use Peekaboo separately. See [Connected Chrome](CONNECTED-CHROME.md)
+> and [Peekaboo](PEEKABOO.md) for current behavior and setup.
+
 Researched **2026-10-11**. “Hermes” means **NousResearch Hermes Agent**. This is documentation/source research, not a Mac runtime benchmark. No drivers were installed, permissions granted, application code changed, or services restarted.
 
 ## Recommendation

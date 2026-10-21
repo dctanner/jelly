@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, lstatSync, readFileSync, readlinkSync, rmSync, 
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { startApp } from "./fixtures/app";
+import { openChromeViewer } from "./fixtures/chrome-viewer";
 import { OwnedChromeDesktop, sameOwnedProcess } from "../src/server/owned-chrome-desktop";
 
 // This child runs inside the private activation-free keyring fixture. The normal
@@ -82,9 +83,8 @@ try {
   expect(await launchAgain.exited).not.toBe(0); // same instance runner flock
   expect(owned.record()).toEqual(original);
   const agent = app.store.agents()[0]!;
-  // An explicitly selected disconnected profile routes Computer to Connected
-  // Chrome without needing an initialized/published extension profile first.
-  app.store.setBrowserSelection({ browserTarget: "chrome", chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"] });
+  // Sharing can open before an initialized/published extension profile exists.
+  app.store.setBrowserSelection({ chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"] });
   app.service.emit(agent.id, null, "message", { role: "user", text: "Owned private desktop fixture" });
   viewer = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true });
   const page = await viewer.newPage({ viewport: { width: 1280, height: 1100 } });
@@ -92,7 +92,7 @@ try {
   page.on("pageerror", e => errors.push(e.message));
   await page.goto(app.server.url.origin);
   await page.getByTitle(`${agent.name} · idle`).click();
-  await page.getByRole("button", { name: "Computer", exact: true }).click();
+  await openChromeViewer(page);
   await page.getByText(/Owned virtual-X11 desktop is ready/).waitFor();
   expect(await page.locator('input[type="password"]').count()).toBe(0);
   expect(await page.locator("canvas").count()).toBe(0);
@@ -102,9 +102,9 @@ try {
   await page.getByText(/You control the full desktop/).waitFor({ timeout: 20000 });
   expect(app.service.chrome.sharingDesktop).toBe(true);
   expect(app.service.chrome.bridge.profiles()).toEqual([]);
-  await page.waitForFunction(() => (document.querySelector(".computer-screen canvas") as HTMLCanvasElement)?.width === 1280);
+  await page.waitForFunction(() => (document.querySelector(".chrome-share-screen canvas") as HTMLCanvasElement)?.width === 1280);
   const remoteClick = async (x: number, y: number) => {
-    const point = await page.locator(".computer-screen canvas").boundingBox();
+    const point = await page.locator(".chrome-share-screen canvas").boundingBox();
     if (!point) throw new Error("No private viewer canvas");
     await page.mouse.click(point.x + point.width * x / 1280, point.y + point.height * y / 900);
   };
@@ -135,7 +135,7 @@ try {
   await humanNavigate(site.url.href);
   await until(() => siteRequests > 0);
   await page.waitForFunction(() => {
-    const c = document.querySelector(".computer-screen canvas") as HTMLCanvasElement;
+    const c = document.querySelector(".chrome-share-screen canvas") as HTMLCanvasElement;
     const d = c?.getContext("2d")?.getImageData(0, 0, c.width, c.height).data;
     return d && d.some((_, i) => i % 4 === 0 && d[i] === 51 && d[i + 1] === 204 && d[i + 2] === 51);
   });
@@ -145,7 +145,7 @@ try {
   expect(() => app.service.chrome.assertAutomationAllowed()).toThrow("paused");
   await humanNavigate(site.url.href);
   await page.waitForFunction(() => {
-    const c = document.querySelector(".computer-screen canvas") as HTMLCanvasElement;
+    const c = document.querySelector(".chrome-share-screen canvas") as HTMLCanvasElement;
     const d = c?.getContext("2d")?.getImageData(0, 0, c.width, c.height).data;
     return d && d.some((_, i) => i % 4 === 0 && d[i] === 51 && d[i + 1] === 204 && d[i + 2] === 51);
   });
@@ -173,7 +173,7 @@ try {
   expect((app.service.chromeShare as any).runtime).toBeNull();
   expect(owned.record()).toEqual(original);
   const profile = app.service.chrome.bridge.profiles()[0]!;
-  const selection = { browserTarget: "chrome" as const, chromeProfile: profile.id, chromeOrigins: [], chromeSiteScope: "internet" as const };
+  const selection = { chromeProfile: profile.id, chromeOrigins: [], chromeSiteScope: "internet" as const };
   // Native extension navigation only after handback; normal root cookies survive.
   const browser = app.service.chrome.allocate(agent.id, "fixture-run", selection, "Existing profile");
   await browser.action("name", { name: "Existing profile" });
@@ -221,7 +221,7 @@ try {
   cookieSeen = false;
   await page.goto(app.server.url.origin);
   await page.getByTitle(`${agent.name} · idle`).click();
-  await page.getByRole("button", { name: "Computer", exact: true }).click();
+  await openChromeViewer(page);
   await page.getByRole("button", { name: "Take control", exact: true }).click();
   await page.getByText(/You control the full desktop/).waitFor();
   await humanNavigate(new URL("/check", site.url).href);

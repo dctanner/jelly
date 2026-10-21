@@ -40,13 +40,11 @@ export interface ChromeProfile {
   desktopAvailable?: boolean;
 }
 export interface ChromeSelection {
-  browserTarget: "managed" | "chrome";
   chromeProfile: string;
   chromeOrigins: string[];
   chromeSiteScope?: "approved" | "internet";
 }
 export const defaultChromeSelection = (): ChromeSelection => ({
-  browserTarget: "managed",
   chromeProfile: "",
   chromeOrigins: [],
 });

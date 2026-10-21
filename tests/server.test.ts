@@ -1029,61 +1029,23 @@ test("working previews stream the latest displayable thinking line across agents
   }
 });
 
-test("computer endpoints require a validated explicit agent identity", async () => {
+test("legacy managed browser endpoints no longer exist", async () => {
   const { request, id } = await fixture();
   const response = await request("/api/control-session");
   const headers = { cookie: response.headers.get("set-cookie")!.split(";")[0]!, "x-jelly-csrf": (await response.json()).csrf };
-  expect((await request("/api/computer", "GET", undefined, headers)).status).toBe(404);
-  expect((await request("/api/computer/start?agentId=..%2Fcredentials", "POST", {}, headers)).status).toBe(404);
-  const state = await request(`/api/computer?agentId=${id}`, "GET", undefined, headers);
-  expect(state.status).toBe(200);
-  expect((await state.json()).status).toBe("stopped");
-  expect((await request(`/api/computer/close?agentId=${id}`, "POST", {}, headers)).status).toBe(200);
+  for (const path of ["/api/computer", `/api/computer?agentId=${id}`, `/api/computer/socket?agentId=${id}&ticket=old`])
+    expect((await request(path, "GET", undefined, headers)).status).toBe(404);
+  for (const action of ["start", "close", "take", "recover", "release", "clipboard", "ticket"])
+    expect((await request(`/api/computer/${action}?agentId=${id}`, "POST", {}, headers)).status).toBe(404);
 });
 
-for (const authenticated of [false, true]) {
-  test(`computer state reads ${authenticated ? "with" : "without"} cookies do not allocate browser sessions`, async () => {
-    const { app, request } = await fixture();
-    let headers: Record<string, string> = {};
-    if (authenticated) {
-      const session = await request("/api/control-session");
-      headers = { cookie: session.headers.get("set-cookie")!.split(";")[0]! };
-    }
-    const createAgent = (name: string) => app.service.createAgent({ name, instructions: "Test", color: "#abc" });
-    // Use disjoint agents for reads and allocations: reusing the read agents
-    // would conceal get() allocating them as a side effect of the state route.
-    for (let i = 0; i < 8; i++) {
-      const agent = createAgent(`State reader ${i}`);
-      const response = await request(`/api/computer?agentId=${agent.id}`, "GET", undefined, headers);
-      expect(response.status).toBe(authenticated ? 200 : 401);
-      if (authenticated) expect((await response.json()).status).toBe("stopped");
-    }
-    expect((await request("/api/computer?agentId=missing", "GET", undefined, headers)).status).toBe(authenticated ? 404 : 401);
-    for (let i = 0; i < 8; i++) {
-      const agent = createAgent(`Browser owner ${i}`);
-      expect(app.service.computer.get(agent.id).state().status).toBe("stopped");
-    }
-    const overflow = createAgent("Overflow");
-    expect(() => app.service.computer.get(overflow.id)).toThrow("limit 8");
-  });
-}
-
-
-test("global browser controller defaults, validates, persists, and does not switch open sessions", async () => {
-  const { app, request, id } = await fixture();
-  expect(app.store.instance().browserBackend).toBe("agent-browser");
-  expect((await (await request("/api/state")).json()).config.browserBackend).toBe("agent-browser");
-  const original = app.service.computer.get(id);
-  expect(original.backend).toBe("agent-browser");
-  for (const browserBackend of [null, "other", 5, {}, ["playwright"]])
-    expect((await request("/api/config", "PUT", { browserBackend })).status).toBe(400);
-  expect((await request("/api/config", "PUT", { agentId: id, browserBackend: "playwright" })).status).toBe(400);
-  const response = await request("/api/config", "PUT", { browserBackend: "playwright" });
-  expect(response.status).toBe(200);
-  expect((await response.json()).browserBackend).toBe("playwright");
-  expect(app.service.computer.get(id)).toBe(original);
-  expect(original.backend).toBe("agent-browser");
-  await app.service.computer.closeSession(id);
-  expect(app.service.computer.get(id).backend).toBe("playwright");
-  expect(app.store.instance().browserBackend).toBe("playwright");
+test("state and config expose no managed browser or controller", async () => {
+  const { app, request } = await fixture();
+  const state = await (await request("/api/state")).json();
+  expect(state).not.toHaveProperty("computer");
+  expect(state.config).not.toHaveProperty("browserBackend");
+  expect(state.config).not.toHaveProperty("browserTarget");
+  expect(app.store.instance()).not.toHaveProperty("browserBackend");
+  // Ordinary settings remain editable before Chrome is configured.
+  expect((await request("/api/config", "PUT", { effort: "medium" })).status).toBe(200);
 });

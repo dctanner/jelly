@@ -147,7 +147,7 @@ for (const mode of ["api", "chatgpt"] as const)
           config,
           app.store.instance(),
           interventionTools(
-            app.service.computer,
+            app.service.browsers.forRun(agent.id, "transport-fixture", app.store.browserSelection(), agent.name),
             app.service.interventions,
             agent.id,
             "transport-fixture",
@@ -197,17 +197,19 @@ for (const mode of ["api", "chatgpt"] as const)
             "browser_snapshot",
             "browser_click",
             "browser_fill",
-            "browser_upload",
+            "browser_select",
             "browser_tabs",
             "browser_scroll",
             "browser_wait_for",
-            "browser_diagnostics",
+            "browser_keep_tab",
           ]) {
             expect(session.getActiveToolNames()).toContain(name);
             expect(
               requests[0].tools.find((tool: any) => tool.name === name),
             ).toMatchObject({ type: "function", parameters: { type: "object" } });
           }
+          for (const name of ["browser_type", "browser_upload", "browser_diagnostics"])
+            expect(session.getActiveToolNames()).not.toContain(name);
           const replay = requests[1].input;
           expect(
             replay.find((item: any) => item.type === "custom_tool_call"),

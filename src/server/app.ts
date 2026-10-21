@@ -160,7 +160,7 @@ export async function startApp(options: AppOptions) {
       options.staticDir ?? join(import.meta.dir, "../../dist"),
     );
     interface VncData {
-      computer: import("./vnc-endpoint").VncEndpoint;
+      endpoint: import("./vnc-endpoint").VncEndpoint;
       path: string;
       generation: number;
       session: string;
@@ -174,7 +174,7 @@ export async function startApp(options: AppOptions) {
       websocket: {
         open(ws) {
           if (
-            !ws.data.computer.validConnection(
+            !ws.data.endpoint.validConnection(
               ws.data.generation,
               ws.data.session,
             )
@@ -189,16 +189,16 @@ export async function startApp(options: AppOptions) {
             ws.close();
             ws.data.detach?.();
           };
-          ws.data.detach = ws.data.computer.attach(close);
+          ws.data.detach = ws.data.endpoint.attach(close);
           socket.on("data", (chunk) => {
-            if (!ws.data.computer.validConnection(ws.data.generation, ws.data.session)) { close(); return; }
+            if (!ws.data.endpoint.validConnection(ws.data.generation, ws.data.session)) { close(); return; }
             if (ws.send(chunk, true) === -1) socket.pause();
           });
           socket.on("error", close);
           socket.on("close", close);
         },
         message(ws, message) {
-          if (!ws.data.computer.validConnection(ws.data.generation, ws.data.session)) {
+          if (!ws.data.endpoint.validConnection(ws.data.generation, ws.data.session)) {
             ws.data.socket?.destroy(); ws.close(1008); return;
           }
           if (typeof message === "string" || message.byteLength > 1024 * 1024) {
@@ -235,11 +235,6 @@ export async function startApp(options: AppOptions) {
       async fetch(req: Request, server: Bun.Server<VncData>) {
         const url = new URL(req.url);
         try {
-          if (req.headers.has("x-jelly-managed-browser"))
-            throw new HttpError(
-              403,
-              "The managed browser cannot access Jelly control.",
-            );
           const allowedHosts = new Set([
             `127.0.0.1:${server.port}`,
             `localhost:${server.port}`,
@@ -290,28 +285,11 @@ export async function startApp(options: AppOptions) {
                 },
               );
             }
-            if (
-              req.method === "GET" &&
-              url.pathname === "/api/computer/socket"
-            ) {
-              if (!origin || !allowed.has(origin))
-                throw new HttpError(403, "A same-origin browser is required.");
-              const session = controls.require(req, false);
-              const browserAgentId = url.searchParams.get("agentId") ?? "";
-              if (service.browsers.target(browserAgentId) === "chrome") throw new HttpError(409, "Connected Chrome has no VNC desktop.");
-              const computer = service.computer.get(browserAgentId);
-              const connection = computer.consume(
-                url.searchParams.get("ticket") ?? "",
-                session.id,
-              );
-              if (server.upgrade(req, { data: { ...connection, computer } })) return;
-              throw new HttpError(400, "WebSocket upgrade required.");
-            }
             if (req.method === "GET" && url.pathname === "/api/chrome/share/socket") {
               if (!origin || !allowed.has(origin)) throw new HttpError(403, "A same-origin browser is required.");
               const session = controls.require(req, false);
               const connection = service.chromeShare.consume(url.searchParams.get("ticket") ?? "", session.id);
-              if (server.upgrade(req, { data: { ...connection, computer: service.chromeShare } })) return;
+              if (server.upgrade(req, { data: { ...connection, endpoint: service.chromeShare } })) return;
               throw new HttpError(400, "WebSocket upgrade required.");
             }
             if (req.method === "GET" && url.pathname === "/api/chrome/share")
@@ -331,7 +309,6 @@ export async function startApp(options: AppOptions) {
                 if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
                 const task = service.chrome.state(agentId).task;
                 const profile = task?.profile ?? store.browserSelection().chromeProfile;
-                if (!task && store.browserSelection().browserTarget !== "chrome") throw new HttpError(409, "Choose Connected Chrome first.");
                 const live = service.chrome.bridge.profiles().find(p => p.id === profile);
                 if (!live || input.profile !== profile || input.profileGeneration !== live.generation)
                   throw new HttpError(409, "Selected Chrome profile changed. Refresh before consenting.");
@@ -424,10 +401,10 @@ export async function startApp(options: AppOptions) {
               controls.require(req);
               const operation = url.pathname.slice("/api/chrome/".length);
               const input = await body(req);
-              if (operation === "settings") return json(service.setConfig({ browserTarget: input.browserTarget as "managed" | "chrome", chromeProfile: input.chromeProfile as string, chromeOrigins: input.chromeOrigins as string[], chromeSiteScope: input.chromeSiteScope as "approved" | "internet" | undefined }));
+              if (operation === "settings") return json(service.setConfig({ chromeProfile: input.chromeProfile as string, chromeOrigins: input.chromeOrigins as string[], chromeSiteScope: input.chromeSiteScope as "approved" | "internet" | undefined }));
               const agentId = text(input.agentId, "Agent ID", 100);
               if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
-              if (operation === "close" && ["running", "waiting"].includes(store.agent(agentId)!.status)) throw new HttpError(409, "Stop or finish the run before resetting its pinned browser target.");
+              if (operation === "close" && ["running", "waiting"].includes(store.agent(agentId)!.status)) throw new HttpError(409, "Stop or finish the run before resetting its pinned Chrome session.");
               if (["pause", "focus", "handoff"].includes(operation)) await service.pauseDesktopForPrivacy(`browser:${agentId}`);
               if (operation === "resume") service.assertBrowserHandbackAllowed();
               const handoff = await service.chrome.control(agentId, operation, typeof input.pageId === "string" ? input.pageId : undefined);
@@ -436,70 +413,6 @@ export async function startApp(options: AppOptions) {
               if (operation === "resume") await service.finishBrowserPrivacy(agentId);
               return json(service.chromeStatus(agentId));
             }
-            if (req.method === "GET" && url.pathname === "/api/computer") {
-              const session = controls.require(req, false);
-              const agentId = url.searchParams.get("agentId") ?? "";
-              if (!agentId || !store.agent(agentId))
-                throw new HttpError(404, "Agent not found.");
-              return json(service.computer.state(agentId, session.id));
-            }
-            if (
-              req.method === "POST" &&
-              url.pathname.startsWith("/api/computer/")
-            ) {
-              const session = controls.require(req),
-                action = url.pathname.slice("/api/computer/".length);
-              const agentId = url.searchParams.get("agentId") ?? "";
-              if (service.browsers.target(agentId) === "chrome") throw new HttpError(409, "This session uses Connected Chrome, not the managed desktop. Use Chrome controls.");
-              const computer = service.computer.get(agentId);
-              if (action === "close") {
-                if (computer.state().control === "human") throw new HttpError(409, "Return human control before closing this session.");
-                await service.computer.closeSession(agentId);
-                service.browsers.releasePin(agentId);
-                return json(service.computer.state(agentId, session.id));
-              }
-              if (action === "start") {
-                await computer.ensure();
-                return json(computer.state(session.id));
-              }
-              if (action === "take") {
-                await service.pauseDesktopForPrivacy(`browser:${agentId}`);
-                return json(await computer.take(session.id));
-              }
-              if (action === "recover") {
-                const input = await body(req);
-                if (input.confirm !== "discard-private-desktop")
-                  throw new HttpError(400, "Confirm that the private tabs and clipboard will be discarded.");
-                const handoff = computer.state().handoffId;
-                // recover() synchronously revokes old ownership before cancelling the handoff.
-                const recovery = computer.recover(session.id);
-                if (handoff) service.interventions.cancel(handoff);
-                return json(await recovery);
-              }
-              if (action === "release") {
-                service.assertBrowserHandbackAllowed();
-                const id = await computer.release(session.id);
-                if (id && store.intervention(id)?.status === "pending")
-                  service.interventions.completeLogin(id);
-                await service.finishBrowserPrivacy(agentId);
-                return json(computer.state(session.id));
-              }
-              if (action === "clipboard") {
-                const input = await body(req);
-                if (input.operation !== "read" && input.operation !== "write")
-                  throw new HttpError(400, "Clipboard operation must be read or write.");
-                return json(await computer.clipboard(session.id, input.operation, input.text));
-              }
-              if (action === "ticket") {
-                const input = await body(req);
-                if (input.mode !== "view" && input.mode !== "control")
-                  throw new HttpError(400, "Invalid access mode.");
-                if (input.mode === "control") await service.pauseDesktopForPrivacy(`browser:${agentId}`);
-                return json(
-                  await computer.ticket(session.id, input.mode),
-                );
-              }
-            }
             const intervention = url.pathname.match(
               /^\/api\/interventions\/([^/]+)\/(approve|deny)$/,
             );
@@ -507,9 +420,7 @@ export async function startApp(options: AppOptions) {
               controls.require(req);
               const [, id, action] = intervention;
               if (action === "deny") {
-                const item = service.interventions.deny(id!);
-                if (item.kind === "browser_login" && item.payload.browserTarget !== "chrome")
-                  service.computer.get(item.agentId).cancelLogin(id!);
+                service.interventions.deny(id!);
                 return json({ ok: true });
               }
               const input = await body(req);
@@ -573,7 +484,6 @@ export async function startApp(options: AppOptions) {
                   url.searchParams.get("selection") === "none"
                     ? null
                     : (url.searchParams.get("agentId") ?? undefined),
-                  controls.get(req)?.id,
                 ),
               );
             }
@@ -840,7 +750,6 @@ export async function startApp(options: AppOptions) {
               return json(
                 service.setConfig({
                   agentId: input.agentId === undefined ? undefined : text(input.agentId, "Agent ID", 100),
-                  browserBackend: input.browserBackend as import("../shared/types").BrowserBackend | undefined,
                   mode: input.mode as Mode | undefined,
                   model: input.model as ModelId | undefined,
                   effort: input.effort as Effort | undefined,
@@ -981,11 +890,6 @@ export async function startApp(options: AppOptions) {
     }
     service.apps.configureOrigins([server.url.origin, `http://localhost:${server.port}`, ...listenerOrigins]);
     service.chrome.protectOrigins([server.url.origin, `http://localhost:${server.port}`, ...listenerOrigins]);
-    service.computer.protectOrigins([
-      server.url.origin,
-      `http://localhost:${server.port}`,
-      ...listenerOrigins,
-    ]);
     let closing: Promise<void> | undefined;
     return {
       server,

@@ -45,7 +45,6 @@ import type { ProjectRecord } from "../shared/types";
 import { Folder, ChevronLeft } from "lucide-react";
 import { requestId } from "./request-id";
 import { InterventionCard } from "./InterventionCard";
-import { BrowserPanel } from "./BrowserPanel";
 import {
   useEffect,
   useCallback,
@@ -62,7 +61,6 @@ import {
   ArrowUp,
   ArrowDown,
   Plus,
-  Monitor,
   X,
   Square,
   Check,
@@ -371,7 +369,6 @@ function AgentDetails({
   onFreshSession,
   onClose,
   onUpload,
-  onComputer,
   onMove,
   onArchive,
   onSaved,
@@ -386,7 +383,6 @@ function AgentDetails({
   onFreshSession: () => void;
   onClose: () => void;
   onUpload: () => void;
-  onComputer: () => void;
   onMove: () => void;
   onArchive: () => void;
   onSaved: () => void;
@@ -452,12 +448,6 @@ function AgentDetails({
               icon={<Plus size={19} />}
               disabled={!connected || !!agent.archivedAt}
               onClick={onUpload}
-            />
-            <SettingsRow
-              label="Computer"
-              icon={<Monitor size={19} />}
-              disabled={!connected}
-              onClick={onComputer}
             />
             <SettingsRow
               label="Fresh Session"
@@ -754,13 +744,11 @@ function EventItem({
     );
   return null;
 }
-function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNavigationId, navigationNotice, intent, onIntentDone, onSnapshot, onPrivateSheet, onNotificationAgent }: {
+function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNavigationId, intent, onIntentDone, onSnapshot, onNotificationAgent }: {
   active: boolean;
   destinationReady: boolean;
   explicitAgentId: string | null;
   explicitNavigationId: string;
-  navigationNotice: string;
-  onPrivateSheet: (open: boolean) => void;
   intent: AppEditIntent | null;
   onIntentDone: () => void;
   onSnapshot: (snapshot: Snapshot) => void;
@@ -773,8 +761,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const appRoot = useRef<HTMLDivElement>(null);
   useInputModality(appRoot);
   const { theme, setTheme, resolved } = useTheme();
-  const [computerOpen, setComputerOpen] = useState<string | null>(null);
-  useLayoutEffect(() => { onPrivateSheet(!!computerOpen); }, [computerOpen, onPrivateSheet]);
   const [moveTarget, setMoveTarget] = useState<AgentRecord | null>(null);
   const [data, setData] = useState<Snapshot | null>(null);
   const [selected, setSelected] = useState("");
@@ -894,7 +880,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   }, [mobile, listOpen, active]);
   useEffect(() => {
     const pop = () => {
-      if (appRoot.current?.querySelector("dialog.computer-panel[open]")) return;
       if (!/^\/agents(?:\/|$)/.test(window.location.pathname) && window.location.pathname !== "/") return;
       // Destination history must not erase the mounted workspace's scope.
       if (window.history.state?.jellyDestination === "agents" && !('jellyProject' in window.history.state)) return;
@@ -1211,7 +1196,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   );
   useAgentNotifications(
     data,
-    active && destinationReady && agent && (!mobile || !listOpen) && !scrolledUp && !modal && !computerOpen ? agent.id : null,
+    active && destinationReady && agent && (!mobile || !listOpen) && !scrolledUp && !modal ? agent.id : null,
     onNotificationAgent,
   );
   const draft = agent ? (drafts[agent.id] ?? "") : "";
@@ -1640,15 +1625,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             <span className="empty-header-title">Your agents</span>
           ) : null}
           <div className="conversation-actions">
-            {<button
-              className="icon computer-button"
-              aria-label="Computer"
-              title="Computer"
-              onClick={() => setComputerOpen(agent?.id ?? null)}
-              disabled={!connected}
-            >
-              <Monitor size={20} />
-            </button>}
             {agent && (
               <button
                 className="icon agent-options"
@@ -1810,7 +1786,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                     (current) => current.id === item.id,
                   ) ?? item
                 }
-                onComputer={() => setComputerOpen(item.agentId)}
                 onChange={() => void refresh.current()}
               />
             ))}
@@ -2032,15 +2007,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           }}
         />
       )}
-      {computerOpen && agent?.id === computerOpen && (
-        <BrowserPanel
-          key={computerOpen}
-          agentId={computerOpen}
-          navigationNotice={navigationNotice}
-          onClose={() => setComputerOpen(null)}
-          onChange={() => void refresh.current()}
-        />
-      )}
       {uploadTarget && data && (
         <UploadFiles
           agent={uploadTarget}
@@ -2086,10 +2052,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             setUploadTarget(agent);
             setModal(null);
           }}
-          onComputer={() => {
-            setModal(null);
-            setComputerOpen(agent?.id ?? null);
-          }}
           onMove={() => {
             setModal(null);
             setMoveTarget(agent);
@@ -2132,7 +2094,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
 /** Destination layers stay mounted: Apps must never reset ongoing agent work. */
 export function App() {
   const [workspace, setWorkspace] = useState<Snapshot | null>(null);
-  const [privateSheetOpen, setPrivateSheetOpen] = useState(false);
   const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia("(max-width:767px)").matches);
   useEffect(() => {
     const media = window.matchMedia("(max-width:767px)");
@@ -2140,7 +2101,7 @@ export function App() {
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
-  const { location, navigate, viewer, destinationReady, navigationNotice } = useAppsNavigation(workspace?.instance.id ?? "", privateSheetOpen);
+  const { location, navigate, viewer, destinationReady } = useAppsNavigation(workspace?.instance.id ?? "");
   const [changedApp, setChangedApp] = useState<AppRecord | null>(null);
   const [revision, setRevision] = useState(0);
   const [addingApp, setAddingApp] = useState(false);
@@ -2182,7 +2143,7 @@ export function App() {
     {!mobileNavigation && !viewing && <aside className="destination-sidebar" aria-label="Jelly navigation">{destinationNavigation}</aside>}
     <div className="destination-body">
       <div className="destination-layer agents-layer" data-active={location.destination === "agents"} inert={location.destination !== "agents"} aria-hidden={location.destination !== "agents"}>
-        <AgentsWorkspace active={location.destination === "agents"} destinationReady={destinationReady} explicitAgentId={location.agentId} explicitNavigationId={location.navigationId} navigationNotice={navigationNotice} onPrivateSheet={setPrivateSheetOpen} intent={intent} onIntentDone={() => setIntent(null)} onSnapshot={setWorkspace} onNotificationAgent={openAgent} />
+        <AgentsWorkspace active={location.destination === "agents"} destinationReady={destinationReady} explicitAgentId={location.agentId} explicitNavigationId={location.navigationId} intent={intent} onIntentDone={() => setIntent(null)} onSnapshot={setWorkspace} onNotificationAgent={openAgent} />
       </div>
       <div className="destination-layer apps-layer" data-active={location.destination === "apps"} inert={location.destination !== "apps"} aria-hidden={location.destination !== "apps"}>
         <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={editApp} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />

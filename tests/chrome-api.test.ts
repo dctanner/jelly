@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startApp } from "./fixtures/app";
 
-test("Connected Chrome settings require private control and persist separately from managed controller", async () => {
+test("Connected Chrome settings require private control and persist without a managed controller", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-api-"));
   const app = await startApp({
     dataDir: dir,
@@ -22,7 +22,6 @@ test("Connected Chrome settings require private control and persist separately f
       "x-jelly-csrf": csrf,
     };
     const settings = {
-      browserTarget: "chrome" as const,
       chromeProfile: crypto.randomUUID(),
       chromeOrigins: ["https://example.com", "http://localhost:8080", "http://[::1]:8080"],
     };
@@ -57,17 +56,16 @@ test("Connected Chrome settings require private control and persist separately f
       ).status,
     ).toBe(200);
     expect(app.store.browserSelection()).toEqual(settings);
-    expect(app.store.instance().browserBackend).toBe("agent-browser");
-    expect(app.service.snapshot().config.browserTarget).toBe("chrome");
+    expect(app.store.instance()).not.toHaveProperty("browserBackend");
+    expect(app.service.snapshot().config).not.toHaveProperty("browserTarget");
     const status = await fetch(`${origin}/api/chrome`, { headers });
-    expect(await status.json()).toEqual({ profiles: [], task: null, browserTarget: "chrome", selectedProfile: settings.chromeProfile, desktopShared: false });
+    expect(await status.json()).toEqual({ profiles: [], task: null, selectedProfile: settings.chromeProfile, desktopShared: false });
     const agent = app.store.agents()[0]!;
     expect(() =>
       app.service.browsers
         .forRun(agent.id, "test-run", app.store.browserSelection(), agent.name)
         .get(agent.id),
     ).toThrow("disconnected");
-    expect(app.service.computer.state(agent.id).status).toBe("stopped");
     const internet = {
       ...settings,
       chromeOrigins: [],
@@ -101,7 +99,7 @@ test("Connected Chrome settings require private control and persist separately f
           headers,
         })
       ).status,
-    ).toBe(409);
+    ).toBe(404);
   } finally {
     await app.close();
     rmSync(dir, { recursive: true, force: true });

@@ -22,7 +22,7 @@ import type { ChromeShareState } from "../shared/chrome-share";
 import type { VncEndpoint } from "./vnc-endpoint";
 import { OwnedChromeDesktop, privateJson } from "./owned-chrome-desktop";
 
-/** Human-only sharing of the native host's existing X11 desktop. Never a Computer. */
+/** Human-only sharing of the connected Chrome desktop. */
 export class ChromeShare implements VncEndpoint {
   private status: ChromeShareState["status"] = "idle";
   private owner: string | null = null;

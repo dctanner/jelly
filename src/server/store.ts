@@ -8,7 +8,6 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type {
-  BrowserBackend,
   ProjectRecord,
   AgentInput,
   Activity,
@@ -24,6 +23,19 @@ import type {
 
 const assistantMessageFilter = `type='message' AND json_extract(data, '$.role')='assistant'
   AND length(trim(COALESCE(json_extract(data, '$.text'), ''))) > 0`;
+
+/** Project persisted selections onto Chrome settings; legacy target/backend keys have no authority. */
+function chromeSelection(value: unknown): ChromeSelection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultChromeSelection();
+  const selection = value as Record<string, unknown>;
+  return {
+    chromeProfile: typeof selection.chromeProfile === "string" ? selection.chromeProfile : "",
+    chromeOrigins: Array.isArray(selection.chromeOrigins) && selection.chromeOrigins.every(origin => typeof origin === "string")
+      ? [...selection.chromeOrigins] : [],
+    ...(selection.chromeSiteScope === "approved" || selection.chromeSiteScope === "internet"
+      ? { chromeSiteScope: selection.chromeSiteScope } : {}),
+  };
+}
 
 export class Store {
   readonly db: Database;
@@ -175,8 +187,6 @@ export class Store {
           snapshot TEXT NOT NULL, sources TEXT NOT NULL
         ); PRAGMA user_version=11;`);
       })();
-    if (version < 12 && !(this.db.query("PRAGMA table_info(instance)").all() as { name: string }[]).some(column => column.name === "browserBackend"))
-      this.db.exec("ALTER TABLE instance ADD COLUMN browserBackend TEXT NOT NULL DEFAULT 'agent-browser' CHECK(browserBackend IN ('playwright','agent-browser'));");
     if (version < 12) this.db.exec("PRAGMA user_version=12;");
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
@@ -299,24 +309,26 @@ export class Store {
       .run(status, result ? JSON.stringify(result) : null, id);
   }
   instance() {
-    return this.db.query("SELECT * FROM instance").get() as {
+    // Explicit columns ignore obsolete persisted browser controller settings.
+    return this.db.query("SELECT id,name,mode,model,effort FROM instance").get() as {
       id: string;
       name: string;
       mode: Mode;
-      browserBackend: BrowserBackend;
       model: ModelId;
       effort: Effort;
     };
   }
   browserSelection(): ChromeSelection {
     const row = this.db.query("SELECT selection FROM browser_selection WHERE id=1").get() as { selection: string } | null;
-    return row ? JSON.parse(row.selection) : defaultChromeSelection();
+    if (!row) return defaultChromeSelection();
+    try {
+      return chromeSelection(JSON.parse(row.selection));
+    } catch {
+      return defaultChromeSelection();
+    }
   }
   setBrowserSelection(selection: ChromeSelection) {
-    this.db.query("INSERT INTO browser_selection VALUES(1,?) ON CONFLICT(id) DO UPDATE SET selection=excluded.selection").run(JSON.stringify(selection));
-  }
-  setBrowserBackend(backend: BrowserBackend) {
-    this.db.query("UPDATE instance SET browserBackend=?").run(backend);
+    this.db.query("INSERT INTO browser_selection VALUES(1,?) ON CONFLICT(id) DO UPDATE SET selection=excluded.selection").run(JSON.stringify(chromeSelection(selection)));
   }
   setMode(mode: Mode) {
     this.db.query("UPDATE instance SET mode=?").run(mode);

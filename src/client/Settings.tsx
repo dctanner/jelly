@@ -14,7 +14,7 @@ import {
   type ModelId,
   type Effort,
 } from "../shared/models";
-import type { BrowserBackend, Mode, Snapshot } from "../shared/types";
+import type { Mode, Snapshot } from "../shared/types";
 import type { Theme } from "./theme";
 
 export function SettingsRow({
@@ -97,7 +97,6 @@ export function Settings({
   onClose: () => void;
   refresh: () => Promise<void>;
 }) {
-  const [browserBackend, setBrowserBackend] = useState<BrowserBackend>(data.config.browserBackend ?? "agent-browser");
   const [mode, setMode] = useState<Mode>(data.config.mode);
   const [model, setModel] = useState<ModelId>(data.config.selectedModel);
   const [effort, setEffort] = useState<Effort>(data.config.effort);
@@ -107,7 +106,6 @@ export function Settings({
   const [detailDirty, setDetailDirty] = useState(false);
   const speedNotice = modelSpeedNotice(model);
   const dirty =
-    browserBackend !== (data.config.browserBackend ?? "agent-browser") ||
     mode !== data.config.mode ||
     model !== data.config.selectedModel ||
     effort !== data.config.effort;
@@ -138,7 +136,7 @@ export function Settings({
     try {
       await api("/config", {
         method: "PUT",
-        body: JSON.stringify({ mode, model, effort, browserBackend }),
+        body: JSON.stringify({ mode, model, effort }),
       });
       await refresh();
       onClose();
@@ -178,38 +176,15 @@ export function Settings({
         </button>
       }
     >
-      {page === "Browser target" && <ChromeConnection data={data} refresh={refresh} />}
+      {page === "Connected Chrome" && <ChromeConnection data={data} refresh={refresh} />}
       {page === "Native Mac desktop" && <DesktopConnection data={data} refresh={refresh} onDirty={setDetailDirty} onBusy={setBusy} />}
       {page === "Browser notifications" && <BrowserNotifications instance={data.instance.id} />}
-      {page === "Browser controller" && (
-        <>
-          <Choices
-            label="Browser controller"
-            value={browserBackend}
-            onChange={setBrowserBackend}
-            options={[
-              { id: "playwright", label: "Playwright" },
-              { id: "agent-browser", label: "AgentBrowser" },
-            ]}
-          />
-          <p className="settings-footnote">
-            Applies to newly opened browser sessions for all agents. Existing
-            sessions keep their controller until closed and reopened. Sign-ins
-            stay in each agent’s isolated profile, shared by both controllers.
-          </p>
-        </>
-      )}
       {page === "Settings" && (
         <>
           <section className="settings-section">
             <h3>Browser</h3>
             <div className="settings-group">
-              <SettingsRow label="Browser target" value={data.config.browserTarget === "chrome" ? "Connected Chrome" : "Managed browser"} onClick={() => setPage("Browser target")} />
-              <SettingsRow
-                label="Browser controller"
-                value={browserBackend === "playwright" ? "Playwright" : "AgentBrowser"}
-                onClick={() => setPage("Browser controller")}
-              />
+              <SettingsRow label="Connected Chrome" onClick={() => setPage("Connected Chrome")} />
             </div>
           </section>
           <section className="settings-section">

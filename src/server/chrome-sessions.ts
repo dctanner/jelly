@@ -163,15 +163,15 @@ export class ChromeSessions {
   }
   validate(selection: ChromeSelection) {
     if (
-      !["managed", "chrome"].includes(selection.browserTarget) ||
       typeof selection.chromeProfile !== "string" ||
-      selection.chromeProfile.length > 100 ||
+      (selection.chromeProfile !== "" &&
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(selection.chromeProfile)) ||
       !Array.isArray(selection.chromeOrigins) ||
       selection.chromeOrigins.length > 20 ||
       (selection.chromeSiteScope !== undefined &&
         !["approved", "internet"].includes(selection.chromeSiteScope))
     )
-      throw new HttpError(400, "Invalid browser target/profile/site scope.");
+      throw new HttpError(400, "Invalid Connected Chrome profile/site scope.");
     try {
       for (const o of selection.chromeOrigins)
         if (chromeOrigin(o, this.protected) !== o) throw new Error();
@@ -181,8 +181,10 @@ export class ChromeSessions {
         "Approve exact HTTP/HTTPS origins only; Jelly control endpoints and non-web URLs are unavailable.",
       );
     }
+    const unconfigured = !selection.chromeProfile &&
+      !selection.chromeOrigins.length && selection.chromeSiteScope !== "internet";
     if (
-      selection.browserTarget === "chrome" &&
+      !unconfigured &&
       (!selection.chromeProfile ||
         (selection.chromeSiteScope !== "internet" &&
           !selection.chromeOrigins.length))
@@ -202,6 +204,11 @@ export class ChromeSessions {
     let task = this.tasks.get(agent);
     if (!task) {
       this.validate(selection);
+      if (!selection.chromeProfile)
+        throw new HttpError(
+          400,
+          "Choose a connected Chrome profile and approve site origins or select unrestricted web in Settings → Connected Chrome. No managed-browser fallback.",
+        );
       const profile = this.bridge
         .profiles()
         .find((p) => p.id === selection.chromeProfile);
@@ -277,7 +284,7 @@ export class ChromeSessions {
       }
       if (t.paused)
         throw new Error(
-          "Connected Chrome is paused for private human control. The user can return control in Jelly Settings → Browser target → This agent’s pinned Chrome session → Resume (or the pending Chrome sign-in card). Do not direct them to a managed browser viewer or Computer panel; chat messages cannot resume Chrome.",
+          "Connected Chrome is paused for private human control. The user can return control in Jelly Settings → Connected Chrome → This agent’s pinned Chrome session → Resume (or the pending Chrome sign-in card). Do not direct them to a managed browser viewer or Computer panel; chat messages cannot resume Chrome.",
         );
     };
     return {

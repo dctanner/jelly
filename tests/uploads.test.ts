@@ -84,7 +84,6 @@ test("uploads enforce control protections, validate paths, and never overwrite f
     [{ "x-jelly-csrf": "wrong" }, 403],
     [{ origin: "https://example.com" }, 403],
     [{ "sec-fetch-site": "cross-site" }, 403],
-    [{ "x-jelly-managed-browser": "1" }, 403],
   ] as const) {
     const response = await fetch(url(destination, "forbidden"), {
       method: "POST",

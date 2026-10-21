@@ -51,7 +51,7 @@ test("Chrome handoff and metadata controls remain unavailable during Resume and 
         data={
           {
             selectedAgentId: "agent",
-            config: { browserTarget: "chrome" },
+            config: {},
           } as Snapshot
         }
         refresh={async () => {}}
@@ -76,7 +76,6 @@ test("Chrome handoff and metadata controls remain unavailable during Resume and 
   render(
     <InterventionCard
       item={chromeLogin}
-      onComputer={() => {}}
       onChange={() => {}}
     />,
   );
@@ -152,20 +151,16 @@ test("packaged Chrome popup discards stale status during local Pause and clears 
     root.remove();
   }
 });
-test("Chrome target UI saves explicit profile/site scope separately and describes experimental limits", async () => {
+test("Connected Chrome settings save explicit profile/site scope without a target choice", async () => {
   const calls = transport();
   const data = {
-    config: { browserTarget: "managed", chromeProfile: "", chromeOrigins: [] },
+    config: { chromeProfile: "", chromeOrigins: [] },
     selectedAgentId: "agent",
   } as unknown as Snapshot;
   render(<ChromeConnection data={data} refresh={async () => {}} />);
-  expect(
-    (screen.getByLabelText("Browser target") as HTMLSelectElement).value,
-  ).toBe("managed");
+  expect(screen.queryByLabelText("Browser target")).toBeNull();
+  expect(screen.queryByText(/Managed browser|Browser controller/)).toBeNull();
   await screen.findByRole("option", { name: "profile-one · connected" });
-  fireEvent.change(screen.getByLabelText("Browser target"), {
-    target: { value: "chrome" },
-  });
   fireEvent.change(screen.getByLabelText("Chrome profile"), {
     target: { value: "profile-one" },
   });
@@ -174,11 +169,10 @@ test("Chrome target UI saves explicit profile/site scope separately and describe
     { target: { value: "https://example.com" } },
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Save browser target and site scope" }),
+    screen.getByRole("button", { name: "Save Chrome profile and site scope" }),
   );
   await waitFor(() =>
     expect(calls.find((c) => c.path === "/api/chrome/settings")?.body).toEqual({
-      browserTarget: "chrome",
       chromeProfile: "profile-one",
       chromeOrigins: ["https://example.com"],
       chromeSiteScope: "approved",
@@ -186,7 +180,7 @@ test("Chrome target UI saves explicit profile/site scope separately and describe
   );
   expect(screen.getByText(/not a network sandbox/i)).toBeTruthy();
 });
-test("Chrome target UI saves unrestricted web without an origin list", async () => {
+test("Connected Chrome settings save unrestricted web without an origin list", async () => {
   const calls = transport();
   render(
     <ChromeConnection
@@ -195,9 +189,6 @@ test("Chrome target UI saves unrestricted web without an origin list", async () 
     />,
   );
   await screen.findByRole("option", { name: "profile-one · connected" });
-  fireEvent.change(screen.getByLabelText("Browser target"), {
-    target: { value: "chrome" },
-  });
   fireEvent.change(screen.getByLabelText("Chrome profile"), {
     target: { value: "profile-one" },
   });
@@ -208,11 +199,10 @@ test("Chrome target UI saves unrestricted web without an origin list", async () 
     screen.queryByLabelText("Approved exact HTTP/HTTPS origins (one per line)"),
   ).toBeNull();
   fireEvent.click(
-    screen.getByRole("button", { name: "Save browser target and site scope" }),
+    screen.getByRole("button", { name: "Save Chrome profile and site scope" }),
   );
   await waitFor(() =>
     expect(calls.find((c) => c.path === "/api/chrome/settings")?.body).toEqual({
-      browserTarget: "chrome",
       chromeProfile: "profile-one",
       chromeOrigins: [],
       chromeSiteScope: "internet",
@@ -221,7 +211,6 @@ test("Chrome target UI saves unrestricted web without an origin list", async () 
 });
 test("Connected Chrome private handoff retains local controls without automatically opening VNC or storing passwords", async () => {
   const calls = transport(readyTask());
-  let vnc = false;
   const item = {
     id: "handoff",
     agentId: "agent",
@@ -229,7 +218,6 @@ test("Connected Chrome private handoff retains local controls without automatica
     kind: "browser_login",
     status: "pending",
     payload: {
-      browserTarget: "chrome",
       url: "https://example.com",
       reason: "Sign in privately",
     },
@@ -240,14 +228,12 @@ test("Connected Chrome private handoff retains local controls without automatica
   const { container } = render(
     <InterventionCard
       item={item}
-      onComputer={() => {
-        vnc = true;
-      }}
       onChange={() => {}}
     />,
   );
   expect(container.querySelector(".chat-form-card")).toBeTruthy();
   expect(container.querySelector('input[type="password"]')).toBeNull();
+  expect(screen.queryByRole("button", { name: "Open browser" })).toBeNull();
   await waitFor(() =>
     expect(
       (
@@ -261,7 +247,7 @@ test("Connected Chrome private handoff retains local controls without automatica
   await waitFor(() =>
     expect(calls.some((c) => c.path === "/api/chrome/focus")).toBe(true),
   );
-  expect(vnc).toBe(false);
+  expect(screen.queryByRole("dialog", { name: "Connected Chrome desktop" })).toBeNull();
   await waitFor(() =>
     expect(
       (
@@ -277,6 +263,7 @@ test("Connected Chrome private handoff retains local controls without automatica
   await waitFor(() =>
     expect(calls.some((c) => c.path === "/api/chrome/resume")).toBe(true),
   );
+  expect(calls.some((c) => c.path.includes("/computer"))).toBe(false);
 });
 
 function readyTask(): NonNullable<ChromeStatus["task"]> {
@@ -298,7 +285,6 @@ const chromeLogin = {
   kind: "browser_login",
   status: "pending",
   payload: {
-    browserTarget: "chrome",
     url: "https://example.com",
     reason: "Sign in privately",
   },
@@ -318,9 +304,6 @@ test("Connected Chrome handoff disables private controls until the reserved tab 
   render(
     <InterventionCard
       item={chromeLogin}
-      onComputer={() => {
-        throw new Error("Must not automatically open a viewer");
-      }}
       onChange={() => {}}
     />,
   );
@@ -371,7 +354,6 @@ test("Connected Chrome private handoff distinguishes failed pause and disconnect
     render(
       <InterventionCard
         item={chromeLogin}
-        onComputer={() => {}}
         onChange={() => {}}
       />,
     );

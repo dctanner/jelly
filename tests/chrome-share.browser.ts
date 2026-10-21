@@ -18,6 +18,7 @@ import { expect } from "bun:test";
 import { startApp } from "./fixtures/app";
 import { ChromeSessions } from "../src/server/chrome-sessions";
 import { ChromeShare } from "../src/server/chrome-share";
+import { openChromeViewer } from "./fixtures/chrome-viewer";
 
 // All Chrome profiles, host registrations, X11 authority and displays are disposable.
 const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-share-browser-"));
@@ -355,7 +356,6 @@ try {
   });
   expect(JSON.stringify(peer)).not.toMatch(/Xauthority|DISPLAY|\/tmp\//);
   app.service.setConfig({
-    browserTarget: "chrome",
     chromeProfile: peer.id,
     chromeOrigins: ["https://example.com"],
   });
@@ -409,7 +409,7 @@ try {
   });
   await page.goto(app.server.url.origin);
   await page.getByTitle(`${agent.name} · idle`).click();
-  await page.getByRole("button", { name: "Computer", exact: true }).click();
+  await openChromeViewer(page);
   await page
     .getByRole("heading", {
       name: "Take control of Connected Chrome",
@@ -417,7 +417,7 @@ try {
     })
     .waitFor();
   expect((app.service.chromeShare as any).process).toBeNull();
-  expect(await page.locator(".computer-screen canvas").count()).toBe(0);
+  expect(await page.locator(".chrome-share-screen canvas").count()).toBe(0);
   expect(
     await page.getByText(/Other windows, accounts, notifications/).count(),
   ).toBe(1);
@@ -475,7 +475,7 @@ try {
   // Actual full-desktop pixels, then actual RFB pointer and keyboard input.
   await page.waitForFunction(() => {
     const canvas = document.querySelector(
-      ".computer-screen canvas",
+      ".chrome-share-screen canvas",
     ) as HTMLCanvasElement;
     if (!canvas?.width) return false;
     const d = canvas
@@ -487,7 +487,7 @@ try {
   });
   const point = await page.evaluate(() => {
     const c = document.querySelector(
-        ".computer-screen canvas",
+        ".chrome-share-screen canvas",
       ) as HTMLCanvasElement,
       r = c.getBoundingClientRect();
     const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
@@ -537,9 +537,9 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => {
     const c = document
-        .querySelector(".computer-screen canvas")!
+        .querySelector(".chrome-share-screen canvas")!
         .getBoundingClientRect(),
-      v = document.querySelector(".computer-screen")!.getBoundingClientRect();
+      v = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
     return (
       c.width <= v.width + 2 &&
       c.height <= v.height + 2 &&
@@ -552,13 +552,11 @@ try {
   const foreignPage = await foreign.newPage();
   await foreignPage.goto(app.server.url.origin);
   await foreignPage.getByTitle(`${agent.name} · idle`).click();
-  await foreignPage
-    .getByRole("button", { name: "Computer", exact: true })
-    .click();
+  await openChromeViewer(foreignPage);
   await foreignPage
     .getByText(/Private desktop share owned by another/)
     .waitFor();
-  expect(await foreignPage.locator(".computer-screen canvas").count()).toBe(0);
+  expect(await foreignPage.locator(".chrome-share-screen canvas").count()).toBe(0);
   const denied = await foreignPage.evaluate(async (generation) => {
     const { csrf } = await (await fetch("/api/control-session")).json();
     return (
@@ -666,10 +664,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   ).toBe(true);
   expect(await remote.getByRole("textbox").inputValue()).toBe("human-typed");
   // A fresh sharing generation cannot be ended or ticketed by stale requests.
-  await page
-    .getByRole("button", { name: "Agent options", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Computer", exact: true }).click();
+  await openChromeViewer(page);
   await page.getByRole("button", { name: "Take control" }).click();
   await page.getByText(/You control the full desktop/).waitFor();
   const stale = await page.evaluate(async (oldGeneration) => {
@@ -693,7 +688,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   }, sharing.generation);
   expect(stale).toEqual([409, 409]);
   const newCanvas = (await page
-    .locator(".computer-screen canvas")
+    .locator(".chrome-share-screen canvas")
     .boundingBox())!;
   await page.mouse.click(
     newCanvas.x + newCanvas.width / 2,

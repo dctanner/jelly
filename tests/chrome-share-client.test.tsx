@@ -3,7 +3,6 @@ import { test, expect, afterEach } from "bun:test";
 const { render, screen, fireEvent, waitFor, cleanup } =
   await import("@testing-library/react");
 import { ChromeSharePanel } from "../src/client/ChromeSharePanel";
-import { BrowserPanel } from "../src/client/BrowserPanel";
 import type { ChromeShareState } from "../src/shared/chrome-share";
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -29,7 +28,6 @@ function transport(state = idle, available = true) {
       return Response.json({ csrf: "test" });
     if (path.includes("/chrome?"))
       return Response.json({
-        browserTarget: "chrome",
         selectedProfile: "configured-but-not-pinned",
         profiles: [
           {
@@ -50,7 +48,7 @@ function transport(state = idle, available = true) {
 test("pinned Chrome viewer opens an informational full-desktop ChatFormCard, never managed startup or automatic tickets", async () => {
   const calls = transport();
   const { container } = render(
-    <BrowserPanel agentId="agent" onClose={() => {}} onChange={() => {}} />,
+    <ChromeSharePanel agentId="agent" onClose={() => {}} onChange={() => {}} />,
   );
   await screen.findByRole("heading", {
     name: "Take control of Connected Chrome",
@@ -66,6 +64,8 @@ test("pinned Chrome viewer opens an informational full-desktop ChatFormCard, nev
     calls.some((c) => /computer\/start|\/ticket|\/take/.test(c.path)),
   ).toBe(false);
   expect(container.querySelector("canvas")).toBeNull();
+  expect(container.querySelector<HTMLElement>(".chrome-share-viewer")?.hidden).toBe(true);
+  expect(container.querySelector('[class*="computer-"]')).toBeNull();
   expect(container.querySelector('input[type="password"]')).toBeNull();
 });
 test("unsupported Chrome desktop reports unavailable with local option and no fallback", async () => {
@@ -79,7 +79,7 @@ test("unsupported Chrome desktop reports unavailable with local option and no fa
       .disabled,
   ).toBe(true);
   expect(
-    screen.getByText(/Use Open in Chrome locally; no managed-browser fallback/),
+    screen.getByText(/Use Open in Chrome locally/),
   ).toBeTruthy();
   expect(
     calls.some((c) => /computer\/start|\/ticket|\/take/.test(c.path)),

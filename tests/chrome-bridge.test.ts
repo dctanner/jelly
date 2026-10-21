@@ -15,7 +15,6 @@ import { join } from "node:path";
 import { ChromeBridge } from "../src/server/chrome-bridge";
 import { ChromeSessions } from "../src/server/chrome-sessions";
 import { BrowserSessions } from "../src/server/browser-sessions";
-import { ComputerSessions } from "../src/server/computer-sessions";
 import {
   ChromeFrames,
   chromeFrame,
@@ -211,38 +210,22 @@ test("Chrome bridge authenticates profile/generation, isolates requests and reje
     await f.close();
   }
 });
-test("Browser target persistence and pinned managed sessions do not change controller", async () => {
+test("Chrome selection persists and disconnected profiles never fall back to a managed browser", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-store-"));
   const store = new Store(join(dir, "test.sqlite"));
-  const managed = new ComputerSessions(dir, () => true);
   const chrome = new ChromeSessions(dir, "instance");
   try {
     expect(store.browserSelection()).toEqual(defaultChromeSelection());
-    const selected = {
-      browserTarget: "chrome" as const,
-      chromeProfile: crypto.randomUUID(),
-      chromeOrigins: ["https://example.com"],
-    };
+    const selected = { chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"] };
     store.setBrowserSelection(selected);
     expect(store.browserSelection()).toEqual(selected);
-    const router = new BrowserSessions(managed, chrome);
-    const first = router
-      .forRun("a", "r1", defaultChromeSelection(), "Agent")
-      .get("a");
-    expect(first.target).toBe("managed");
-    expect(router.forRun("a", "r2", selected, "Agent").get("a").target).toBe(
-      "managed",
-    );
-    expect(() => router.forRun("b", "r2", selected, "Agent").get("b")).toThrow(
-      "disconnected",
-    );
-    expect(() =>
-      router.forRun("a", "r2", selected, "Agent").get("child"),
-    ).toThrow("Child/foreign");
-    expect(managed.get("a").backend).toBe("agent-browser");
+    const router = new BrowserSessions(chrome);
+    const first = router.forRun("a", "r1", selected, "Agent");
+    expect(() => first.get("a")).toThrow("disconnected");
+    expect(() => router.forRun("b", "r2", selected, "Agent").get("b")).toThrow("disconnected");
+    expect(() => first.get("child")).toThrow("Child/foreign");
   } finally {
     await chrome.close();
-    await managed.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }
@@ -361,7 +344,6 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
   };
   chrome.protectOrigins(["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"]);
   const selection = {
-    browserTarget: "chrome" as const,
     chromeProfile: profile,
     chromeOrigins: [],
     chromeSiteScope: "internet" as const,
@@ -434,7 +416,6 @@ test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools
         : { ok: true };
   };
   const selection = {
-    browserTarget: "chrome" as const,
     chromeProfile: profile,
     chromeOrigins: ["https://example.com"],
   };
@@ -598,7 +579,6 @@ test("ChromeSessions forgets human-closed tabs, rejects foreign removal and open
       "a",
       "run",
       {
-        browserTarget: "chrome",
         chromeProfile: profile,
         chromeOrigins: ["https://example.com"],
       },
@@ -673,7 +653,6 @@ test("ChromeSessions retains paused handoffs across runs and requires explicit r
     return { ok: true };
   };
   const selection = {
-    browserTarget: "chrome" as const,
     chromeProfile: profile,
     chromeOrigins: ["https://example.com"],
   };
@@ -818,7 +797,6 @@ async function pauseFixture() {
     "agent",
     "run",
     {
-      browserTarget: "chrome",
       chromeProfile: profile,
       chromeOrigins: ["https://example.com"],
     },

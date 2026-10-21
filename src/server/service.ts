@@ -1,4 +1,3 @@
-import type { BrowserBackend } from "../shared/types";
 import type { ModelId, Effort } from "../shared/models";
 import type { AgentSession, FileEntry } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
@@ -18,7 +17,6 @@ import { thinkingPreview } from "./activity-preview";
 import { Harness } from "./harness";
 import { HttpError } from "./errors";
 export { HttpError } from "./errors";
-import { ComputerSessions } from "./computer-sessions";
 import { BrowserSessions } from "./browser-sessions";
 import { ChromeSessions } from "./chrome-sessions";
 import { ChromeShare } from "./chrome-share";
@@ -53,7 +51,6 @@ export class JellyService {
   private listeners = new Set<(event: Activity) => void>();
   private active = new Map<string, ActiveRun>();
   private closing = false;
-  readonly computer: ComputerSessions;
   readonly browsers: BrowserSessions;
   readonly chrome: ChromeSessions;
   readonly chromeShare: ChromeShare;
@@ -81,12 +78,8 @@ export class JellyService {
       allowedOrigins: options.allowedOrigins,
       emit: (type: string, data: Record<string, unknown>) => this.emit(null, null, type, data),
     });
-    this.computer = new ComputerSessions(harness.dataDir, id => !!store.agent(id), id =>
-      this.emit(id, null, "computer_changed", {}),
-      () => store.instance().browserBackend,
-    );
     this.chrome = new ChromeSessions(harness.dataDir, store.instance().id, id => {
-      this.emit(id, null, "computer_changed", {});
+      this.emit(id, null, "chrome_changed", {});
       const task = this.chrome.state(id).task;
       if (this.desktop && !this.desktop.status().privateSafe && task && (task.handoff || (task.pauseState === "paused" && task.tabs.length > 0)))
         void this.pauseDesktopForPrivacy(`browser:${id}`).catch(() => {});
@@ -94,8 +87,8 @@ export class JellyService {
     this.chromeShare = new ChromeShare(this.chrome, harness.dataDir, async () => {
       if (this.desktopHandoff) throw new HttpError(409, "Return the existing desktop handoff first.");
       await this.pauseDesktopForPrivacy("chrome-share");
-    }, () => this.emit(null, null, "computer_changed", {}));
-    this.browsers = new BrowserSessions(this.computer, this.chrome);
+    }, () => this.emit(null, null, "chrome_changed", {}));
+    this.browsers = new BrowserSessions(this.chrome);
     this.desktop = new DesktopSessions(harness.dataDir, {
       ...options.desktopOptions,
       isRunActive: (agentId, runId) => {
@@ -131,14 +124,11 @@ export class JellyService {
     if (this.chrome.sharingDesktop) return true;
     return this.store.agents().filter(agent => !agentId || agent.id === agentId).some(agent => {
       const chrome = this.chrome.state(agent.id).task;
-      return (chrome && (chrome.pauseState !== "active" || !!chrome.handoff)) ||
-        this.computer.state(agent.id).control === "human" ||
-        !!this.computer.state(agent.id).handoffId;
+      return !!chrome && (chrome.pauseState !== "active" || !!chrome.handoff);
     });
   }
   chromeStatus(agentId?: string) {
     const state = { ...this.chrome.state(agentId),
-      browserTarget: (agentId && this.browsers.target(agentId)) || this.store.browserSelection().browserTarget,
       selectedProfile: this.store.browserSelection().chromeProfile,
       desktopShared: this.chrome.sharingDesktop };
     const share = this.chromeShare.state();
@@ -178,7 +168,7 @@ export class JellyService {
         if (port && id === agentId) return port;
         const browser = scoped.get(id);
         const guard = () => {
-          if (scoped.target === "chrome") this.chrome.assertAutomationAllowed();
+          this.chrome.assertAutomationAllowed();
           if (this.desktopHandoff) throw new Error("Browser automation is paused for private desktop control. Explicit desktop handback is required.");
         };
         port = {
@@ -323,7 +313,7 @@ export class JellyService {
     this.notify(event);
     return event;
   }
-  snapshot(agentId?: string | null, sessionId?: string): Snapshot {
+  snapshot(agentId?: string | null): Snapshot {
     const agents = this.store.agents(false);
     const selected =
       agentId === null
@@ -356,9 +346,8 @@ export class JellyService {
       runs: page.runs,
       historyBefore: page.before,
       cursor: this.store.cursor(),
-      config: { ...this.harness.config(instance.mode, instance), browserBackend: instance.browserBackend, ...this.store.browserSelection() },
+      config: { ...this.harness.config(instance.mode, instance), ...this.store.browserSelection() },
       interventions: page.interventions,
-      computer: this.computer.state(selected?.id ?? null, sessionId),
     };
   }
   createAgent(input: AgentInput) {
@@ -501,16 +490,16 @@ export class JellyService {
   setMode(mode: Mode) {
     return this.setConfig({ mode });
   }
-  setConfig(input: { browserBackend?: BrowserBackend; agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort } & Partial<ChromeSelection>) {
-    const selection = { ...this.store.browserSelection(), ...Object.fromEntries(Object.entries(input).filter(([key, value]) => ["browserTarget", "chromeProfile", "chromeOrigins", "chromeSiteScope"].includes(key) && value !== undefined)) };
-    this.chrome.validate(selection);
-    if (input.agentId !== undefined && [input.browserTarget, input.chromeProfile, input.chromeOrigins, input.chromeSiteScope].some(v => v !== undefined)) throw new HttpError(400, "Browser target is a global setting.");
+  setConfig(input: { agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort } & Partial<ChromeSelection>) {
+    const chromeChanges = Object.fromEntries(Object.entries(input).filter(([key, value]) => ["chromeProfile", "chromeOrigins", "chromeSiteScope"].includes(key) && value !== undefined));
+    const selection = { ...this.store.browserSelection(), ...chromeChanges };
+    // Connection/model settings remain usable before Chrome has been configured.
+    if (Object.keys(chromeChanges).length) {
+      if (input.agentId !== undefined) throw new HttpError(400, "Chrome settings are global.");
+      this.chrome.validate(selection);
+    }
     if (input.mode !== undefined && !["auto", "chatgpt", "api"].includes(input.mode))
       throw new HttpError(400, "Unknown connection mode.");
-    if (input.browserBackend !== undefined && !["playwright", "agent-browser"].includes(input.browserBackend))
-      throw new HttpError(400, "Unknown browser controller.");
-    if (input.browserBackend !== undefined && input.agentId !== undefined)
-      throw new HttpError(400, "Browser controller is a global setting.");
     const current = this.store.instance();
     const agent = input.agentId !== undefined ? this.store.agent(input.agentId) : null;
     if (input.agentId !== undefined && !agent)
@@ -518,20 +507,18 @@ export class JellyService {
     const switching = input.model !== undefined || input.effort !== undefined;
     const baseline = agent && switching ? agent : current;
     const next = {
-      browserBackend: input.browserBackend ?? current.browserBackend,
       mode: input.mode ?? current.mode,
       model: input.model ?? baseline.model,
       effort: input.effort ?? baseline.effort,
     };
     const event = this.store.db.transaction(() => {
       this.store.setConfig(next.mode, next.model, next.effort);
-      this.store.setBrowserBackend(next.browserBackend);
       this.store.setBrowserSelection(selection);
       if (agent && switching) this.store.setAgentConfig(agent.id, next.model, next.effort);
       return this.store.event(null, null, "config_changed", { ...next, agentId: agent?.id ?? null });
     })();
     this.notify(event);
-    return { ...this.harness.config(next.mode, next), browserBackend: next.browserBackend, ...selection };
+    return { ...this.harness.config(next.mode, next), ...selection };
   }
   freshSession(agentId: string, requestId: string) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
@@ -1051,7 +1038,6 @@ export class JellyService {
         try { await this.chromeShare.close(); }
         finally { await this.chrome.close(); }
       }),
-      Promise.resolve().then(() => this.computer.close()),
     ]);
     this.harness.chatgptTransport.close();
     this.store.close();

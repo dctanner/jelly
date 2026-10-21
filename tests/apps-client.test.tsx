@@ -437,76 +437,27 @@ test("Apps/Agents switching preserves the mounted selected project, draft and ch
   expect(fixture.store.runs(created.id)).toHaveLength(0);
 }, 15000);
 
-test("Browser destination navigation defers during private ComputerPanel handback, keeps failures open, then resumes Apps", async () => {
-  dir = mkdtempSync(join(tmpdir(), "jelly-apps-private-"));
-  fixture = await startApp({
-    dataDir: dir,
-    configDir: join(dir, "config"),
-    port: 0,
-  });
+test("Apps navigation does not expose a legacy managed Computer panel", async () => {
+  dir = mkdtempSync(join(tmpdir(), "jelly-apps-chrome-only-"));
+  fixture = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
   const origin = fixture.server.url.origin;
   const agent = fixture.store.agents()[0]!;
   const passthrough = browserCookieFetch(origin, originalFetch);
   mockApps([app("Private-safe")], { passthrough });
-  const appsFetch = globalThis.fetch;
-  let releases = 0;
-  globalThis.fetch = (async (input: any, init: any) => {
-    const path = new URL(String(input), origin).pathname;
-    if (path.startsWith("/api/computer")) {
-      if (path.endsWith("/release")) {
-        releases++;
-        if (releases === 1)
-          return Response.json(
-            { error: "Fixture handback failed" },
-            { status: 503 },
-          );
-      }
-      return Response.json({
-        status: "starting",
-        control: releases >= 2 ? "agent" : "human",
-        owned: releases < 2,
-        error: null,
-      });
-    }
-    return appsFetch(input, init);
-  }) as typeof fetch;
   globalThis.EventSource = class extends NodeEventSource {
-    constructor(url: string) {
-      super(new URL(url, origin), { fetch: passthrough });
-    }
+    constructor(url: string) { super(new URL(url, origin), { fetch: passthrough }); }
   } as unknown as typeof EventSource;
   window.history.replaceState(null, "", `/agents/${agent.id}`);
   render(<App />);
-  await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "Computer" }).hasAttribute("disabled"),
-    ).toBe(false),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Computer" }));
-  const panel = await screen.findByRole("dialog", { name: "Agent computer" });
-  await within(panel).findByText(/You have control/);
+  await screen.findByRole("textbox", { name: `Message ${agent.name}` });
+  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
   act(() => {
     window.history.pushState({ jellyDestination: "apps" }, "", "/apps");
     window.dispatchEvent(new window.PopStateEvent("popstate"));
   });
-  expect(window.location.pathname).toBe(`/agents/${agent.id}`);
-  expect(document.querySelector(".agents-layer")?.hasAttribute("inert")).toBe(
-    false,
-  );
-  await within(panel).findByText(
-    /requested destination will open after handback succeeds/,
-  );
-  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
-  await within(panel).findByText(/Fixture handback failed/);
-  expect(releases).toBe(1);
-  expect(window.location.pathname).toBe(`/agents/${agent.id}`);
-  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
   await screen.findByRole("button", { name: "Open Private-safe" });
-  expect(releases).toBe(2);
   expect(window.location.pathname).toBe("/apps");
-  expect(!!screen.queryByRole("dialog", { name: "Agent computer" })).toBe(
-    false,
-  );
+  expect(screen.queryByRole("dialog", { name: "Agent computer" })).toBeNull();
 }, 15000);
 
 test("AppViewer uses the direct canonical URL without bridge or alternate launch and keeps Back reachable", async () => {

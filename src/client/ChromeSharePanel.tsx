@@ -3,7 +3,6 @@ import { Monitor } from "lucide-react";
 import { api, control } from "./api";
 import { Modal } from "./Modal";
 import { ChatFormActions, ChatFormCard } from "./ChatFormCard";
-import { ComputerViewport } from "./ComputerViewport";
 import { useVncViewer } from "./useVncViewer";
 import type { ChromeStatus } from "./ChromeConnection";
 import type { ChromeShareState } from "../shared/chrome-share";
@@ -176,13 +175,13 @@ export function ChromeSharePanel({
     <Modal
       title="Connected Chrome desktop"
       kind="panel"
-      className="computer-panel"
+      className="chrome-share-panel"
       onClose={onClose}
       dismissible={!busy}
       beforeClose={() => handback()}
     >
       {state?.owned && (
-        <div className="computer-toolbar">
+        <div className="chrome-share-toolbar">
           <span role="status">
             Connected Chrome browser tools paused ·{" "}
             {connected
@@ -217,13 +216,11 @@ export function ChromeSharePanel({
           {error || state?.error || connectionError}
         </p>
       )}
-      <ComputerViewport
-        displayRef={screen}
-        interactive={connected}
-        hidden={!state?.owned || state.status !== "sharing" || !viewer}
-        fitOnly
-        onPan={() => connection.current?.blur()}
-      />
+      <div className="chrome-share-viewer" hidden={!state?.owned || state.status !== "sharing" || !viewer}>
+        <div className="chrome-share-screen">
+          <div className="chrome-share-display" ref={screen} />
+        </div>
+      </div>
       {state?.status === "idle" && (
         <ChatFormCard
           title="Take control of Connected Chrome"
@@ -259,8 +256,7 @@ export function ChromeSharePanel({
             <p role="status">
               Web VNC unavailable. Requires local Linux X11, native-host DISPLAY
               and private XAUTHORITY, plus x11vnc. Wayland, remote displays,
-              macOS and Windows are unavailable. Use Open in Chrome locally; no
-              managed-browser fallback.
+              macOS and Windows are unavailable. Use Open in Chrome locally.
             </p>
           )}
           <ChatFormActions>

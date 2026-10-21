@@ -96,18 +96,16 @@ Use `ChatFormCard` and `ChatFormActions` from `src/client/ChatFormCard.tsx` for 
 - Errors use the shell's `error` prop and an alert. Never put credentials in React state, stored transcripts, logs or persistence; clear password fields before submitting private requests.
 - Do not steal focus when a card arrives. Collapse settled requests back into tool history; restore an empty, retryable form if submission fails.
 
-## Mobile remote browser
+## Connected Chrome viewer
 
-While a person controls the remote browser in a portrait viewport up to 767px
-wide, scale the desktop to fill the viewer's height and clip its sides. Place
-a 44px-tall, keyboard-accessible horizontal pan slider directly above the viewer.
-Panning moves only the local view; do not change the website zoom, remote screen
-resolution, or touch/click coordinate mapping. Desktop, landscape, and view-only
-sessions continue fitting the entire desktop. Private handoff restrictions are
-unchanged. Closing the Agent computer panel (close button, Escape, backdrop, or swipe) returns control if this session owns it, using the normal handback that clears the remote clipboard and completes a pending sign-in. Keep the browser session and website sign-ins; do not release another session’s private control. Wait for handback before dismissing, and keep the panel open with a retryable error if it fails.
-
-`bun run test:computer-viewport` checks the viewport with real Chromium/VNC
-using temporary data and the installed desktop dependencies.
+Connected Chrome is the only browser integration. Settings exposes profile/site
+scope and private handoff controls, not a managed browser or controller selector.
+Its human-only web VNC viewer fits the actual connected desktop on mobile and
+desktop; do not change website zoom, framebuffer resolution or input mapping.
+Closing an owned viewer must finish input cleanup and private handback before
+dismissal. Keep failures visible and retryable; never release another session's
+private control. Clipboard and file transfer are unavailable. See
+[Connected Chrome](CONNECTED-CHROME.md) for sharing and recovery requirements.
 
 ## Agent identity editing
 

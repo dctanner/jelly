@@ -53,20 +53,27 @@ are explicitly unavailable. See [architecture](docs/ARCHITECTURE.md#subagent-obs
 
 ## Browser and patch tools
 
-Settings → **Browser controller** offers **Playwright** and **AgentBrowser** (default).
-Existing sessions keep their controller until closed and reopened. Both reuse each
-agent's isolated persistent profile, retaining sign-ins without copying credentials.
-See [controller architecture and lifecycle](docs/BROWSER-CONTROLLERS.md).
+**Connected Chrome is the only browser integration.** Install the Chrome extension
+and native host, then select a profile and site scope in **Settings → Connected Chrome**.
+Agents use separate task tabs in your existing signed-in profile; cookies and accounts
+are shared. There is no managed Chromium, Playwright/AgentBrowser controller, or fallback.
+See [setup, privacy and limitations](docs/CONNECTED-CHROME.md).
 
-Agents can inspect bounded visible browser text and element references, click/fill non-secret fields, manage session-local tabs, scroll, wait for text/readiness, and read redacted error diagnostics. These share the existing per-agent isolation and private-control gate. References expire on new observations/navigation/handoff; snapshots cover the top-level DOM only. Reference actions use synthetic events, and secret-field detection is heuristic—always use private browser sign-in for credentials.
+Agents can inspect bounded visible text and exact element references, click/fill
+non-secret fields, manage their task tabs, scroll and wait for text/readiness.
+References expire on navigation, tab changes and handoff. Use private browser
+sign-in for credentials; coordinate clicks, free typing, uploads and diagnostics
+are not exposed as browser tools.
 
 `apply_patch` adds Codex-style multi-file add/update/delete/move patches on both OpenAI API and ChatGPT, alongside unchanged Pi `edit`/`write`. It requires exact unique context and rejects symlinks, hardlinked sources and unsupported text. Paths are not sandboxed. Preflight checks the whole patch, but filesystem writes are **not transactional**: failures can leave partial changes, reported in a mutation ledger. Limits are 1 MiB per patch/file, 64 operations and 16 MiB combined working set.
 
-See [tool APIs and limitations](docs/ARCHITECTURE.md#structured-browser-tools). `bun run check:full` includes structured-browser Chromium tests, patch filesystem tests and local provider-transport tests; `bun run test:desktop` additionally requires the Linux desktop runtime.
+`bun run check:full` includes Chrome bridge/tool tests, patch filesystem tests and
+local provider-transport tests. `bun run test:chrome` additionally exercises the
+extension in disposable Chrome profiles.
 
 ## Quick start
 
-Requires [Bun](https://bun.sh) **1.3.9+** and **Node.js 24+** (for subagent runners and CLI dependencies). Linux is required for the managed browser desktop and sudo handoffs.
+Requires [Bun](https://bun.sh) **1.3.9+** and **Node.js 24+** (for subagent runners and CLI dependencies). Connected Chrome supports Linux and macOS; sudo handoffs require Linux.
 
 ```sh
 git clone https://github.com/dctanner/jelly.git
@@ -131,17 +138,13 @@ native snapshot-bound background input according to available host permissions
 and capabilities. No Peekaboo rebuild is required. See
 [setup, privacy and recovery](docs/PEEKABOO.md).
 
-### Optional browser desktop
+### Connected Chrome private sign-in
 
-On Debian/Ubuntu x86-64, with Google Chrome or Chromium already installed:
-
-```sh
-bun run setup:desktop
-```
-
-Set `JELLY_BROWSER_PATH` if the browser is outside its usual system location.
-
-If browser control is stuck after a session expires or cookies are lost, open **Agent computer → Recover lost control…**. Confirming recovery disconnects the old controller, discards private tabs and the remote clipboard, and gives you a blank desktop. Website sign-ins remain stored. Agents stay paused until you explicitly return control.
+Follow [Connected Chrome setup](docs/CONNECTED-CHROME.md). Sign in privately in
+local Chrome, or use its human-only web VNC viewer on supported Linux desktops.
+The viewer controls the connected desktop, never exposes pixels or clipboard
+contents to agents, and requires explicit handback before browser tools resume.
+Native Mac desktop tools remain a separate, application-granted capability.
 
 ### Administrator commands
 
@@ -170,20 +173,6 @@ Tests use temporary data and deterministic fixtures; no paid model calls are req
 
 [MIT](LICENSE). Bundled fonts and dependencies retain their own licenses, including noVNC (MPL-2.0).
 
-### Clipboard during browser control
-
-In **Agent computer**, choose **Take control**. Once connected, **Paste to remote**
-reads this device's text clipboard and pastes into the focused remote field.
-**Copy from remote** copies the remote clipboard back to this device; first select
-and copy text inside the remote browser. If browser permissions or HTTP prevent
-clipboard access, Jelly provides a private manual paste/select-and-copy form.
-
-Clipboard transfers are text-only, limited to 12,000 characters, and available
-only to the controlling window. They are not sent to agents, chat history, or logs.
-Returning control clears the remote clipboard; it does not clear this device's
-clipboard. The desktop runtime now requires `xclip`; run `bun run setup:desktop`
-to update an older installation if it is not already installed on the host.
-
 ## Automatic agent names
 
 The top-left **+** immediately creates and opens **New Agent**, without a form.
@@ -202,21 +191,12 @@ change it back to **New Agent**. Editing only instructions or the avatar does no
 Existing agents retain their names. Naming failures/timeouts keep **New Agent** and
 do not stop the task or retry the naming request on subsequent messages.
 
-### Independent agent browsers
+### Agent browser sessions
 
-Each agent opens its own browser window, profile, and private desktop on demand.
-Normal runs reuse that agent's browser; other agents have separate tabs, focus,
-clipboard and human-control state. The Computer panel follows the selected agent;
-a login handoff opens the requesting agent's browser. Switching agents disconnects
-the old viewer and clears the panel's private clipboard text, but does not return
-human control. Return control explicitly when finished signing in.
+Agents have exclusive task-tab capabilities within the selected Connected Chrome
+profile, not independent cookies or browser profiles. Existing task sessions keep
+their selected profile and scope until closed. Disconnected profiles fail closed;
+Jelly never starts a managed browser as a fallback. Legacy managed-browser profile
+data is left untouched on disk, but is no longer opened or used.
 
-At most eight browser sessions can be allocated at once. **Close browser session**
-releases an agent's desktop resources (return human control first); opening it again
-reuses its profile. Server shutdown also closes all desktops. New isolated profiles
-live under `browser-sessions/<hashed-agent-id>/`; existing `browser-profile` and
-`browser-home` data is retained untouched, not copied. You may need to sign in again.
-
-Stop prevents queued browser actions from executing and discards cancelled results.
-An action already sent to Chromium may still finish; Stop cannot undo navigation,
-clicks, typing, or their website side effects.
+Stop cannot undo navigation, clicks or other website effects already issued.

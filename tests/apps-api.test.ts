@@ -117,7 +117,7 @@ test("Apps writes require existing CSRF; app origins cannot read API, bootstrap 
     "/api/events",
     "/api/apps",
     "/api/apps/capabilities",
-    "/api/computer/socket",
+    "/api/chrome/share/socket",
   ]) {
     expect(
       (await f.request(endpoint, "GET", undefined, { origin: appOrigin }))
@@ -146,13 +146,6 @@ test("Apps writes require existing CSRF; app origins cannot read API, bootstrap 
         { name: "evil" },
         { origin: appOrigin },
       )
-    ).status,
-  ).toBe(403);
-  expect(
-    (
-      await f.request("/api/apps", "GET", undefined, {
-        "x-jelly-managed-browser": "1",
-      })
     ).status,
   ).toBe(403);
   expect(

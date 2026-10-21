@@ -55,13 +55,10 @@ export interface Activity {
   data: Record<string, unknown>;
   createdAt: string;
 }
-export type BrowserBackend = "playwright" | "agent-browser";
 export interface ConnectionConfig {
-  browserTarget?: "managed" | "chrome";
   chromeProfile?: string;
   chromeOrigins?: string[];
   chromeSiteScope?: "approved" | "internet";
-  browserBackend?: BrowserBackend;
   selectedModel: ModelId;
   effort: Effort;
   mode: Mode;
@@ -101,7 +98,6 @@ export interface Snapshot {
   historyBefore: number | null;
   config: ConnectionConfig;
   interventions: Intervention[];
-  computer: ComputerState;
 }
 
 export interface Intervention {
@@ -122,13 +118,6 @@ export interface Intervention {
   result: Record<string, unknown> | null;
   createdAt: string;
   expiresAt: string;
-}
-export interface ComputerState {
-  status: "stopped" | "starting" | "ready" | "error";
-  control: "agent" | "human";
-  owned: boolean;
-  handoffId: string | null;
-  error: string | null;
 }
 export interface LoginFlow {
   userCode: string | null;

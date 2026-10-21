@@ -128,26 +128,25 @@ async function saveAgentProfile(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
 }
-test("Connected Chrome Computer controls open direct Take control, never the managed desktop", async () => {
+test("Computer actions are absent and Connected Chrome sharing is available in Settings", async () => {
   const a = await setup();
-  a.service.store.setBrowserSelection({
-    browserTarget: "chrome",
-    chromeProfile: crypto.randomUUID(),
-    chromeOrigins: ["https://example.com"],
-  });
   render(<App />);
   await waitForConnectedAgent();
-  expect(!!screen.queryByRole("button", { name: /^Computer$/ })).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: /^Computer$/ }));
-  await screen.findByRole("heading", { name: "Take control of Connected Chrome" });
-  expect(a.service.computer.state(a.store.agents()[0]!.id).status).toBe("stopped");
-  expect(a.service.chromeShare.state().status).toBe("idle");
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(!!screen.queryByRole("dialog", { name: "Connected Chrome desktop" })).toBe(false));
+  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   await screen.findByRole("button", { name: "Fresh Session" });
-  expect(screen.getAllByRole("button", { name: /^Computer$/ }).length > 0).toBe(true);
-  expect(!!document.querySelector("dialog.computer-panel")).toBe(false);
+  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+  expect(screen.queryByRole("button", { name: /Browser target|Browser controller/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Connected Chrome" }));
+  expect(screen.queryByLabelText("Browser target")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Connected Chrome web VNC…" }));
+  await screen.findByRole("heading", { name: "Take control of Connected Chrome" });
+  expect(a.service.chromeShare.state().status).toBe("idle");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connected Chrome desktop" })).toBeNull());
 });
 
 test("React client connects, creates an agent, sends through Pi, renders tool completion and restores history on remount", async () => {
@@ -244,7 +243,6 @@ test("floating agent identity keeps profile and workspace actions accessible", a
     }),
   ).toBeNull();
   for (const name of [
-    "Computer",
     "Edit agent profile",
     "Move to project",
     "Archive agent",
@@ -401,7 +399,6 @@ test("sudo approval card submits privately, clears its input, and reflects the c
     render(
       <InterventionCard
         item={item}
-        onComputer={() => {}}
         onChange={() => {
           changed = true;
         }}
@@ -1538,7 +1535,6 @@ test("settled sudo requests render compact tool rows, not password cards", async
     const ui = render(
       <InterventionCard
         item={{ ...item, status }}
-        onComputer={() => {}}
         onChange={() => {}}
       />,
     );
@@ -1551,7 +1547,6 @@ test("settled sudo requests render compact tool rows, not password cards", async
       <InterventionCard
         item={{ ...item, status }}
         hasInlineTool
-        onComputer={() => {}}
         onChange={() => {}}
       />,
     );
@@ -1618,7 +1613,6 @@ test("failed sudo submission restores an empty password form for retry", async (
         expiresAt: new Date().toISOString(),
       }}
       hasInlineTool
-      onComputer={() => {}}
       onChange={() => {}}
     />,
   );
@@ -1761,7 +1755,7 @@ test("mobile chat follows keyboard viewport height and panning, then restores fu
   }
 });
 
-test("browser login cards collapse after opening or settling, without duplicating tool history", async () => {
+test("browser login cards collapse after settling, without duplicating tool history", async () => {
   const { InterventionCard } = await import("../src/client/InterventionCard");
   const item = {
     id: "browser-test",
@@ -1774,34 +1768,7 @@ test("browser login cards collapse after opening or settling, without duplicatin
     createdAt: new Date().toISOString(),
     expiresAt: new Date().toISOString(),
   };
-  let opened = 0;
-  const onComputer = () => {
-    opened++;
-  };
   const onChange = () => {};
-  const ui = render(
-    <InterventionCard
-      item={item}
-      onComputer={onComputer}
-      onChange={onChange}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
-  expect(opened).toBe(1);
-  expect(screen.queryByText("Sign in through the browser")).toBeNull();
-  expect(
-    screen.getByText("Browser login in progress").closest(".tool-event"),
-  ).not.toBeNull();
-  ui.rerender(
-    <InterventionCard
-      item={item}
-      hasInlineTool
-      onComputer={onComputer}
-      onChange={onChange}
-    />,
-  );
-  expect(ui.container.textContent).toBe("");
-  ui.unmount();
   for (const status of [
     "completed",
     "denied",
@@ -1813,7 +1780,6 @@ test("browser login cards collapse after opening or settling, without duplicatin
     const settled = render(
       <InterventionCard
         item={{ ...item, status }}
-        onComputer={onComputer}
         onChange={onChange}
       />,
     );
@@ -1825,7 +1791,6 @@ test("browser login cards collapse after opening or settling, without duplicatin
       <InterventionCard
         item={{ ...item, status }}
         hasInlineTool
-        onComputer={onComputer}
         onChange={onChange}
       />,
     );
@@ -1859,7 +1824,6 @@ test("browser login dismissal hides immediately and failed dismissal restores th
         expiresAt: new Date().toISOString(),
       }}
       hasInlineTool
-      onComputer={() => {}}
       onChange={() => {
         changed = true;
       }}
@@ -3021,7 +2985,7 @@ test("in-chat forms use the shared iOS card with reviewable commands and accessi
       id: "card-layout", agentId: "agent", runId: "run", kind: "sudo", status: "pending",
       payload: { executable: "/usr/bin/bash", args: ["-c", command], cwd: "/tmp/fixture", reason: "Review a fixture command before approving." },
       result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
-    }} onComputer={() => {}} onChange={() => {}} />);
+    }} onChange={() => {}} />);
     const card = screen.getByRole("region", { name: "Sudo authentication" });
     expect(card.classList.contains("chat-form-card")).toBe(true);
     expect(within(card).getByRole("heading", { name: "Administrator password required" })).toBeDefined();
@@ -3051,20 +3015,21 @@ test("browser sign-in and future inline forms share the standard card shell", as
       id: "browser-card", agentId: "agent", runId: "run", kind: "browser_login", status: "pending",
       payload: { url: "https://example.com/sign-in", reason: "Sign in to continue." },
       result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
-    }} onComputer={() => {}} onChange={() => {}} />
+    }} onChange={() => {}} />
     <ChatFormCard title="Another inline form" icon={<span />} description="A shared form pattern." error="Try again.">
       <ChatFormActions><button type="button">Continue</button></ChatFormActions>
     </ChatFormCard>
   </>);
   const browser = screen.getByRole("region", { name: "Browser login" });
   expect(browser.classList.contains("chat-form-card")).toBe(true);
-  expect(within(browser).getByText("Private sign-in")).toBeDefined();
+  expect(within(browser).getByText("Preparing private sign-in")).toBeDefined();
   expect(within(browser).getByText("https://example.com/sign-in")).toBeDefined();
-  expect(within(browser).getByRole("button", { name: "Open browser" })).toBeDefined();
+  expect(within(browser).getByRole("button", { name: "Open in Chrome" })).toBeDefined();
   const generic = screen.getByRole("region", { name: "Another inline form" });
   expect(generic.classList.contains("chat-form-card")).toBe(true);
   expect(within(generic).getByRole("alert").textContent).toBe("Try again.");
   expect(within(generic).getByText("Needs your input")).toBeDefined();
+  await screen.findByText("Chrome disconnected or unavailable—do not enter credentials.");
 });
 
 test("profile activity ring does not opt out for reduced-motion preferences", () => {
@@ -3083,7 +3048,7 @@ test("Review command shows the supplied human summary while preserving exact com
       summary, reason: "Check capacity before planning a backup.",
     },
     result: null, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(),
-  }} onComputer={() => {}} onChange={() => {}} />);
+  }} onChange={() => {}} />);
   const card = screen.getByRole("region", { name: "Sudo authentication" });
   const details = card.querySelector<HTMLDetailsElement>(".chat-form-details")!;
   expect(details.open).toBe(false);
@@ -3096,214 +3061,6 @@ test("Review command shows the supplied human summary while preserving exact com
   expect(details.open).toBe(true);
   expect(details.querySelector("pre")!.textContent).toBe('"/usr/bin/printf" "fixture"');
   expect(within(details).getByText("/tmp/fixture")).toBeDefined();
-});
-
-test("remote clipboard transfers are explicit, private, and have HTTP paste/copy fallbacks", async () => {
-  const { RemoteClipboard } = await import("../src/client/RemoteClipboard");
-  await setup();
-  const priorClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-  const priorExec = document.execCommand;
-  const fetchBefore = globalThis.fetch;
-  const requests: { operation: string; text?: string }[] = [];
-  let copied = "", pasteCount = 0;
-  globalThis.fetch = (async (input: any, init: any) => {
-    if (input === "/api/computer/clipboard?agentId=test-agent") {
-      const value = JSON.parse(init.body); requests.push(value);
-      return Response.json(value.operation === "read" ? { text: "remote fixture 🦀" } : { success: true });
-    }
-    return fetchBefore(input, init);
-  }) as typeof fetch;
-  try {
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
-      readText: async () => "local fixture 🐙", writeText: async (text: string) => { copied = text; },
-    } });
-    const ui = render(<RemoteClipboard agentId="test-agent" paste={() => { pasteCount++; }} />);
-    expect(requests).toHaveLength(0); // never automatically synchronize private data
-    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
-    await waitFor(() => expect(pasteCount).toBe(1));
-    expect(requests[0]).toEqual({ operation: "write", text: "local fixture 🐙" });
-    expect(document.body.textContent).not.toContain("local fixture 🐙");
-    fireEvent.click(screen.getByRole("button", { name: "Copy from remote" }));
-    await waitFor(() => expect(copied).toBe("remote fixture 🦀"));
-    expect(requests[1]).toEqual({ operation: "read" });
-    expect(document.body.textContent).not.toContain("remote fixture 🦀");
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-    document.execCommand = () => false;
-    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
-    const input = await screen.findByRole("textbox", { name: "Text to paste" });
-    fireEvent.change(input, { target: { value: "manual private fixture" } });
-    expect(requests).toHaveLength(2);
-    fireEvent.click(screen.getByRole("button", { name: "Paste text" }));
-    await waitFor(() => expect(pasteCount).toBe(2));
-    expect(requests[2]).toEqual({ operation: "write", text: "manual private fixture" });
-    expect(screen.queryByRole("textbox")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Copy from remote" }));
-    const remote = await screen.findByRole("textbox", { name: "Remote clipboard text" }) as HTMLTextAreaElement;
-    expect(remote.readOnly).toBe(true);
-    expect(remote.value).toBe("remote fixture 🦀");
-    fireEvent.click(screen.getByRole("button", { name: "Select text" }));
-    expect(remote.selectionEnd).toBe(remote.value.length);
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    expect(screen.queryByRole("textbox")).toBeNull();
-    ui.rerender(<RemoteClipboard agentId="test-agent" disabled paste={() => { pasteCount++; }} />);
-    expect(screen.getByRole("button", { name: "Paste to remote" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
-  } finally {
-    document.execCommand = priorExec;
-    if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
-    else delete (navigator as any).clipboard;
-  }
-});
-
-test("switching agent sessions clears private clipboard and discards late paste results", async () => {
-  const { RemoteClipboard } = await import("../src/client/RemoteClipboard");
-  await setup();
-  const priorClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-  const fetchBefore = globalThis.fetch;
-  let release = () => {}, submitted = false, pasteCount = 0;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  globalThis.fetch = (async (input: any, init: any) => {
-    if (input === "/api/computer/clipboard?agentId=test-agent") { submitted = true; await gate; return Response.json({ success: true }); }
-    return fetchBefore(input, init);
-  }) as typeof fetch;
-  try {
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "private fixture" } });
-    const ui = render(<RemoteClipboard agentId="test-agent" paste={() => { pasteCount++; }} />);
-    fireEvent.click(screen.getByRole("button", { name: "Paste to remote" }));
-    await waitFor(() => expect(submitted).toBe(true));
-    expect(screen.getByRole("button", { name: "Copy from remote" }).hasAttribute("disabled")).toBe(true);
-    ui.rerender(<RemoteClipboard agentId="other-agent" paste={() => { pasteCount++; }} />); release();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    expect(pasteCount).toBe(0);
-    expect(document.body.textContent).not.toContain("private fixture");
-  } finally {
-    release();
-    if (priorClipboard) Object.defineProperty(navigator, "clipboard", priorClipboard);
-    else delete (navigator as any).clipboard;
-  }
-});
-
-test.each(["button", "escape", "backdrop"])("closing the browser panel via %s returns owned control before dismissing and completes login", async (method) => {
-  const app = await setup();
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  const agentId = app.store.agents()[0]!.id;
-  const run = app.store.createRun(agentId, crypto.randomUUID(), "Sign in", "api", "gpt-6-astra");
-  const login = app.service.interventions.request("browser_login", agentId, run.id, { url: "https://example.com" });
-  let state: import("../src/shared/types").ComputerState = {
-    status: "stopped", control: "human", owned: true, handoffId: login.request.id, error: null,
-  };
-  let releases = 0, closed = 0, changed = 0;
-  let finish!: () => void;
-  const releasing = new Promise<void>(resolve => { finish = resolve; });
-  const computer = app.service.computer.get(agentId);
-  computer.state = () => state;
-  computer.ensure = async () => {};
-  computer.release = async () => {
-    releases++;
-    await releasing;
-    state = { ...state, control: "agent", owned: false, handoffId: null };
-    return login.request.id;
-  };
-  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => { changed++; }} />);
-  await screen.findByRole("button", { name: "Return to agent" });
-  const panel = screen.getByRole("dialog", { name: "Agent computer" });
-  const dismiss = () => {
-    if (method === "button") fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
-    else if (method === "escape") fireEvent(panel, new window.Event("cancel", { cancelable: true }));
-    else fireEvent.click(panel, { clientX: -10, clientY: -10 });
-  };
-  dismiss();
-  await waitFor(() => expect(releases).toBe(1));
-  expect(closed).toBe(0);
-  expect(panel.classList.contains("is-open")).toBe(true);
-  expect(app.store.intervention(login.request.id)?.status).toBe("pending");
-  dismiss();
-  expect(releases).toBe(1);
-  finish();
-  expect(await login.promise).toMatchObject({ completed: true });
-  await waitFor(() => expect(closed).toBe(1));
-  expect(changed).toBe(1);
-  expect(state.control).toBe("agent");
-  expect(app.store.intervention(login.request.id)?.status).toBe("completed");
-});
-
-test("failed automatic browser release keeps the panel visible and retryable", async () => {
-  const app = await setup();
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  const agentId = app.store.agents()[0]!.id;
-  let state: import("../src/shared/types").ComputerState = {
-    status: "stopped", control: "human", owned: true, handoffId: null, error: null,
-  };
-  let releases = 0, closed = 0;
-  const computer = app.service.computer.get(agentId);
-  computer.state = () => state;
-  computer.ensure = async () => {};
-  computer.release = async () => {
-    if (++releases === 1) throw new Error("Fixture release failure");
-    state = { ...state, control: "agent", owned: false };
-    return null;
-  };
-  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => {}} />);
-  await screen.findByRole("button", { name: "Return to agent" });
-  const panel = screen.getByRole("dialog", { name: "Agent computer" });
-  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
-  await screen.findByText(/Could not return browser control/);
-  expect(panel.classList.contains("is-open")).toBe(true);
-  expect(closed).toBe(0);
-  expect(state.control).toBe("human");
-  fireEvent.click(within(panel).getByRole("button", { name: "Close dialog" }));
-  await waitFor(() => expect(closed).toBe(1));
-  expect(releases).toBe(2);
-  expect(state.control).toBe("agent");
-});
-
-test.each(["agent", "human"] as const)("closing a %s-controlled browser not owned by this session does not release or destroy it", async (controlMode) => {
-  const app = await setup();
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  const agentId = app.store.agents()[0]!.id;
-  const state: import("../src/shared/types").ComputerState = {
-    status: "stopped", control: controlMode, owned: false, handoffId: null, error: null,
-  };
-  let closed = 0, releases = 0;
-  const computer = app.service.computer.get(agentId);
-  computer.state = () => state;
-  computer.ensure = async () => {};
-  computer.release = async () => { releases++; return null; };
-  render(<ComputerPanel agentId={agentId} onClose={() => { closed++; }} onChange={() => {}} />);
-  fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
-  await waitFor(() => expect(closed).toBe(1));
-  expect(releases).toBe(0);
-  expect(state.control).toBe(controlMode);
-});
-
-test("lost browser control recovery requires explicit confirmation and keeps agents paused", async () => {
-  const app = await setup();
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  let state: import("../src/shared/types").ComputerState = {
-    status: "error", control: "human", owned: false, handoffId: null, error: "Session was lost",
-  };
-  let recoveries = 0;
-  const agentId = app.store.agents()[0]!.id;
-  const computer = app.service.computer.get(agentId);
-  computer.state = () => state;
-  computer.ensure = async () => {};
-  computer.recover = async () => {
-    recoveries++;
-    state = { ...state, status: "stopped", owned: true, error: null };
-    return state;
-  };
-  render(<ComputerPanel agentId={agentId} onClose={() => {}} onChange={() => {}} />);
-  const recover = await screen.findByRole("button", { name: "Recover lost control…" });
-  fireEvent.click(recover);
-  expect(recoveries).toBe(0);
-  expect(screen.getByText(/closes all private tabs/)).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(recoveries).toBe(0);
-  fireEvent.click(screen.getByRole("button", { name: "Recover lost control…" }));
-  fireEvent.click(screen.getByRole("button", { name: "Discard private tabs and take control" }));
-  await waitFor(() => expect(recoveries).toBe(1));
-  expect(await screen.findByRole("button", { name: "Return to agent" })).toBeDefined();
-  expect(state.control).toBe("human");
 });
 
 test("new agents default to New Agent and receive a sea-themed name after the first message", async () => {
@@ -3801,115 +3558,4 @@ test("render_file audio and video use native controls without autoplay, with dow
   await within(card).findByLabelText("Video: movie.mp4");
   ui.unmount(); render(<App />);
   await screen.findByLabelText("Audio: sound.wav"); await screen.findByLabelText("Video: movie.mp4");
-});
-
-test("switching ComputerPanel sessions ignores late startup and takeover responses", async () => {
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  await setup();
-  const fetchBefore = globalThis.fetch;
-  const state = { status: "ready", control: "human", owned: false, handoffId: null, error: null };
-  let finishTake!: () => void, took = false, changed = 0;
-  const taking = new Promise<void>(resolve => { finishTake = resolve; });
-  const paths: string[] = [];
-  globalThis.fetch = (async (input: any, init: any) => {
-    if (typeof input === "string" && input.startsWith("/api/computer")) {
-      paths.push(input);
-      if (input === "/api/computer/take?agentId=a") {
-        took = true;
-        await taking;
-        return Response.json({ ...state, owned: true });
-      }
-      return Response.json(state);
-    }
-    return fetchBefore(input, init);
-  }) as typeof fetch;
-  try {
-    const props = { onClose: () => {}, onChange: () => { changed++; } };
-    const ui = render(<ComputerPanel agentId="a" {...props} />);
-    const take = await screen.findByRole("button", { name: "Take control" });
-    await waitFor(() => expect(take.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(take);
-    await waitFor(() => expect(took).toBe(true));
-    ui.rerender(<ComputerPanel agentId="b" {...props} />);
-    await waitFor(() => expect(paths).toContain("/api/computer/start?agentId=b"));
-    finishTake();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-    expect(changed).toBe(0);
-    expect(screen.queryByRole("button", { name: "Return to agent" })).toBeNull();
-    expect(paths.some(path => path.includes("/ticket"))).toBe(false);
-    expect(screen.getByRole("button", { name: "Take control" }).hasAttribute("disabled")).toBe(false);
-  } finally {
-    finishTake();
-    globalThis.fetch = fetchBefore;
-  }
-});
-
-test("ComputerPanel disconnects old VNC and never attaches a late ticket to another agent", async () => {
-  const { mock } = await import("bun:test");
-  const connections: { url: string; disconnected: boolean }[] = [];
-  class FakeRfb extends EventTarget {
-    viewOnly = false;
-    scaleViewport = false;
-    resizeSession = false;
-    item: { url: string; disconnected: boolean };
-    constructor(_screen: HTMLElement, url: string) {
-      super();
-      this.item = { url, disconnected: false };
-      connections.push(this.item);
-    }
-    disconnect() { this.item.disconnected = true; }
-  }
-  mock.module("@novnc/novnc", () => ({ default: FakeRfb }));
-  const { ComputerPanel } = await import("../src/client/ComputerPanel");
-  await setup();
-  const fetchBefore = globalThis.fetch;
-  let finish!: () => void, requestedA = false;
-  const gate = new Promise<void>(resolve => { finish = resolve; });
-  globalThis.fetch = (async (input: any, init: any) => {
-    if (typeof input === "string" && input.startsWith("/api/computer")) {
-      const agentId = new URL(input, "http://localhost").searchParams.get("agentId");
-      if (input.includes("/ticket")) {
-        if (agentId === "a") { requestedA = true; await gate; }
-        return Response.json({ ticket: `ticket-${agentId}` });
-      }
-      return Response.json({ status: "ready", control: "agent", owned: false, handoffId: null, error: null });
-    }
-    return fetchBefore(input, init);
-  }) as typeof fetch;
-  try {
-    const props = { onClose: () => {}, onChange: () => {} };
-    const ui = render(<ComputerPanel agentId="a" {...props} />);
-    await waitFor(() => expect(requestedA).toBe(true));
-    ui.rerender(<ComputerPanel agentId="b" {...props} />);
-    await waitFor(() => expect(connections).toHaveLength(1));
-    expect(new URL(connections[0]!.url).searchParams.get("agentId")).toBe("b");
-    finish();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-    expect(connections).toHaveLength(1);
-    ui.rerender(<ComputerPanel agentId="c" {...props} />);
-    await waitFor(() => expect(connections).toHaveLength(2));
-    expect(connections[0]!.disconnected).toBe(true);
-    expect(new URL(connections[1]!.url).searchParams.get("agentId")).toBe("c");
-    ui.unmount();
-    expect(connections[1]!.disconnected).toBe(true);
-  } finally {
-    finish();
-    globalThis.fetch = fetchBefore;
-  }
-});
-
-
-test("global browser controller choices default to AgentBrowser and save Playwright", async () => {
-  const app = await setup();
-  render(<App />);
-  await waitFor(() => expect(screen.getByRole("button", { name: "Agent list menu" }).hasAttribute("disabled")).toBe(false));
-  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
-  fireEvent.click(screen.getByRole("button", { name: "Browser controller" }));
-  expect((screen.getByRole("radio", { name: "AgentBrowser" }) as HTMLInputElement).checked).toBe(true);
-  expect(screen.getByText(/Existing sessions keep their controller/)).toBeDefined();
-  fireEvent.click(screen.getByRole("radio", { name: "Playwright" }));
-  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-  await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
-  expect(app.service.snapshot().config.browserBackend).toBe("playwright");
 });

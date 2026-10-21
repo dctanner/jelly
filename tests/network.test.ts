@@ -72,15 +72,17 @@ try {
     const bootstrap = await fetch(origins[0] + "/api/control-session");
     const cookie = bootstrap.headers.get("set-cookie")!.split(";")[0]!;
     const { csrf } = await bootstrap.json();
-    const agentId = app.store.agents()[0]!.id;
-    const computer = app.service.computer.get(agentId);
-    const internal = computer as unknown as {
-      runtime: string | undefined;
-      generation: number;
-      tickets: Map<string, unknown>;
+    // Disposable Chrome-share endpoint exercises the real authenticated upgrade
+    // and native listener transport without capturing an actual desktop.
+    const runtime = join(dir, "vnc-fixture");
+    mkdirSync(runtime);
+    const tickets = new Set<string>();
+    app.service.chromeShare.consume = (ticket, session) => {
+      if (!tickets.delete(ticket)) throw new Error("Invalid fixture ticket");
+      return { path: join(runtime, "control.sock"), session, generation: 0 };
     };
-    internal.runtime = join(dir, "vnc-fixture");
-    mkdirSync(internal.runtime);
+    app.service.chromeShare.validConnection = () => true;
+    app.service.chromeShare.attach = () => () => {};
     const sockets = new Set<import("node:net").Socket>();
     const echo = createNetServer((socket) => {
       sockets.add(socket);
@@ -88,7 +90,7 @@ try {
       socket.on("close", () => sockets.delete(socket));
     });
     await new Promise<void>((resolve) =>
-      echo.listen(join(internal.runtime!, "view.sock"), resolve),
+      echo.listen(join(runtime, "control.sock"), resolve),
     );
     cleanups.push(() => {
       for (const socket of sockets) socket.destroy();
@@ -137,12 +139,7 @@ try {
         ).status,
       ).toBe(403);
       const ticket = crypto.randomUUID();
-      internal.tickets.set(ticket, {
-        session: cookie.split("=")[1],
-        mode: "view",
-        generation: internal.generation,
-        expires: Date.now() + 60000,
-      });
+      tickets.add(ticket);
       await context.addCookies([
         {
           url: origin + "/api",
@@ -154,11 +151,11 @@ try {
       ]);
       await page.goto(origin + "/api/health");
       const echoed = await page.evaluate(
-        ({ agentId, ticket }) =>
+        ({ ticket }) =>
           new Promise<string>((resolve, reject) => {
             const ws = new WebSocket(
               location.origin.replace("http", "ws") +
-                `/api/computer/socket?agentId=${agentId}&ticket=${ticket}`,
+                `/api/chrome/share/socket?ticket=${ticket}`,
             );
             ws.binaryType = "arraybuffer";
             ws.onopen = () =>
@@ -170,7 +167,7 @@ try {
             ws.onerror = () =>
               reject(new Error("Native WebSocket fixture failed"));
           }),
-        { agentId, ticket },
+        { ticket },
       );
       expect(echoed).toBe("native-websocket");
       const controller = new AbortController();

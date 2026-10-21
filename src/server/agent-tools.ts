@@ -2,7 +2,6 @@ import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BrowserPort } from "./browser-sessions";
 import type { Interventions } from "./interventions";
-import { resolve } from "node:path";
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
   details: {},
@@ -10,16 +9,15 @@ const result = (value: unknown) => ({
 const define = <T extends TSchema>(tool: ToolDefinition<T>): ToolDefinition =>
   tool as ToolDefinition;
 export function interventionTools(
-  sessions: { target?: "managed" | "chrome"; get(id: string): BrowserPort },
+  sessions: { target?: "chrome"; get(id: string): BrowserPort },
   requests: Interventions,
   agentId: string,
   runId: string,
   cwd: string,
   beforePrivateBrowser?: () => Promise<void>,
 ): ToolDefinition[] {
-  const computer = () => sessions.get(agentId);
-  const chrome = sessions.target === "chrome";
-  const tools = [
+  const browser = () => sessions.get(agentId);
+  return [
     define({
       name: "request_sudo",
       label: "Run sudo",
@@ -46,14 +44,14 @@ export function interventionTools(
       name: "request_browser_login",
       label: "Request browser login",
       description:
-        "Open a website in this agent’s browser session and wait for the user to sign in privately and return control. Never ask for login credentials in chat.",
+        "Pause the Connected Chrome task for private sign-in in the user’s existing Chrome profile. Never ask for credentials. The user returns control through Settings → Connected Chrome → This agent’s pinned Chrome session → Resume, or the Chrome sign-in card.",
       parameters: Type.Object({
         url: Type.String(),
         reason: Type.String({ maxLength: 2000 }),
       }),
       execute: async (_id, args, signal) => {
         signal?.throwIfAborted();
-        const browser = computer();
+        const session = browser();
         // No private-entry card is published until desktop admission is closed
         // and all previously accepted desktop work is known to have drained.
         await beforePrivateBrowser?.();
@@ -62,32 +60,32 @@ export function interventionTools(
           "browser_login",
           agentId,
           runId,
-          { ...args, browserTarget: browser.target ?? "managed" },
+          args,
           signal,
         );
         void pending.promise.catch(() =>
-          browser.cancelLogin(pending.request.id),
+          session.cancelLogin(pending.request.id),
         );
         try {
-          await browser.reserveLogin(pending.request.id, args.url, signal);
+          await session.reserveLogin(pending.request.id, args.url, signal);
           return result(await pending.promise);
         } catch (e) {
           requests.cancel(pending.request.id);
           throw e;
         } finally {
-          browser.cancelLogin(pending.request.id);
+          session.cancelLogin(pending.request.id);
         }
       },
     }),
     define({
       name: "browser_keep_tab",
       label: "Keep Chrome deliverable",
-      description: "Keep the current Connected Chrome task tab after settlement: deliverable releases control; handoff retains a paused reservation for a follow-up run with explicit user resume. Unavailable for managed browsers.",
+      description: "Keep the current Connected Chrome task tab after settlement: deliverable releases control; handoff retains a paused reservation for a follow-up run with explicit user resume.",
       parameters: Type.Object({ mark: Type.Optional(Type.Union([Type.Literal("deliverable"), Type.Literal("handoff")])) }),
       execute: async (_id, args) => {
-        const browser = computer();
-        if (browser.target !== "chrome" || !browser.keepTab) throw new Error("Deliverable marking is only available in Connected Chrome.");
-        return result(await browser.keepTab(args.mark));
+        const session = browser();
+        if (!session.keepTab) throw new Error("Deliverable marking is unavailable.");
+        return result(await session.keepTab(args.mark));
       },
     }),
     define({
@@ -96,8 +94,7 @@ export function interventionTools(
       description: "Set a short non-sensitive task label on this agent's Connected Chrome groups. Never include credentials or personal details. Connected Chrome only.",
       parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 55 }) }),
       execute: async (_id, args, signal) => {
-        if (computer().target !== "chrome") throw new Error("Task naming requires Connected Chrome.");
-        return result(await computer().action("name", args, signal));
+        return result(await browser().action("name", args, signal));
       },
     }),
     define({
@@ -106,8 +103,7 @@ export function interventionTools(
       description: "Select an option value on an exact snapshot select-element reference. Connected Chrome only.",
       parameters: Type.Object({ ref: Type.String(), value: Type.String({ maxLength: 1000 }) }),
       execute: async (_id, args, signal) => {
-        if (computer().target !== "chrome") throw new Error("Referenced selection requires Connected Chrome.");
-        return result(await computer().action("select", args, signal));
+        return result(await browser().action("select", args, signal));
       },
     }),
     define({
@@ -117,7 +113,7 @@ export function interventionTools(
         "Navigate this agent’s browser session. Blocked during human control.",
       parameters: Type.Object({ url: Type.String() }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("open", args, signal)),
+        result(await browser().action("open", args, signal)),
     }),
     define({
       name: "browser_screenshot",
@@ -126,7 +122,7 @@ export function interventionTools(
         "Inspect this agent’s browser session viewport. Blocked during human control.",
       parameters: Type.Object({}),
       execute: async (_id, _args, signal) => {
-        const value = (await computer().action("screenshot", {}, signal)) as {
+        const value = (await browser().action("screenshot", {}, signal)) as {
           image: string;
         };
         return {
@@ -141,16 +137,10 @@ export function interventionTools(
       name: "browser_click",
       label: "Click browser",
       description:
-        "Click a browser_snapshot reference OR viewport coordinates in this agent’s browser session.",
-      // Responses function tools require an object root, not a top-level union.
-      // Computer.action enforces reference XOR a complete coordinate pair.
-      parameters: Type.Object({
-        x: Type.Optional(Type.Number()),
-        y: Type.Optional(Type.Number()),
-        ref: Type.Optional(Type.String()),
-      }),
+        "Click an exact browser_snapshot reference in Connected Chrome. Coordinate clicks are unavailable.",
+      parameters: Type.Object({ ref: Type.String() }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("click", args, signal)),
+        result(await browser().action("click", args, signal)),
     }),
     define({
       name: "browser_snapshot",
@@ -159,7 +149,7 @@ export function interventionTools(
         "Observe bounded visible text and up to 100 element references; no form values. References expire on navigation, tab changes and handoff.",
       parameters: Type.Object({}),
       execute: async (_id, args, signal) =>
-        result(await computer().action("snapshot", {}, signal)),
+        result(await browser().action("snapshot", {}, signal)),
     }),
     define({
       name: "browser_fill",
@@ -171,25 +161,7 @@ export function interventionTools(
         text: Type.String({ maxLength: 24000 }),
       }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("fill", args, signal)),
-    }),
-    define({
-      name: "browser_upload",
-      label: "Upload browser files",
-      description:
-        "Select local files in this agent's browser using a fresh browser_snapshot reference to a file input or the button that opens its file chooser. Call this instead of clicking the upload button first; it handles hidden inputs without an OS dialog. Paths resolve from the agent working directory. Only upload files authorized for this website, never credentials. Maximum 10 files and 50 MiB total per call. Blocked during human control. Selection does not prove the website finished uploading; inspect it before saving or publishing.",
-      parameters: Type.Object({
-        ref: Type.String({ minLength: 1 }),
-        paths: Type.Array(
-          Type.String({ minLength: 1, maxLength: 4096 }),
-          { minItems: 1, maxItems: 10 },
-        ),
-      }),
-      execute: async (_id, args, signal) =>
-        result(await computer().action("upload", {
-          ref: args.ref,
-          paths: args.paths.map(path => resolve(cwd, path)),
-        }, signal)),
+        result(await browser().action("fill", args, signal)),
     }),
     define({
       name: "browser_tabs",
@@ -207,7 +179,7 @@ export function interventionTools(
         url: Type.Optional(Type.String()),
       }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("tabs", args, signal)),
+        result(await browser().action("tabs", args, signal)),
     }),
     define({
       name: "browser_scroll",
@@ -218,7 +190,7 @@ export function interventionTools(
         y: Type.Number({ minimum: -10000, maximum: 10000 }),
       }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("scroll", args, signal)),
+        result(await browser().action("scroll", args, signal)),
     }),
     define({
       name: "browser_wait_for",
@@ -235,59 +207,16 @@ export function interventionTools(
         timeoutMs: Type.Optional(Type.Number({ minimum: 0, maximum: 10000 })),
       }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("wait_for", args, signal)),
-    }),
-    define({
-      name: "browser_diagnostics",
-      label: "Browser diagnostics",
-      description:
-        "Return up to 50 redacted console/page errors and request failure events. No raw messages or URLs. Blocked during human control.",
-      parameters: Type.Object({}),
-      execute: async (_id, args, signal) =>
-        result(await computer().action("diagnostics", {}, signal)),
-    }),
-    define({
-      name: "browser_type",
-      label: "Type in browser",
-      description:
-        "Insert non-secret text in this agent’s focused browser field. For credentials request_browser_login instead.",
-      parameters: Type.Object({ text: Type.String({ maxLength: 24000 }) }),
-      execute: async (_id, args, signal) =>
-        result(await computer().action("type", args, signal)),
+        result(await browser().action("wait_for", args, signal)),
     }),
     define({
       name: "browser_key",
       label: "Press browser key",
       description:
-        "Managed browser: press a key or shortcut. Connected Chrome: requires an exact button/select reference and only Enter, Space, arrows or Escape; no global shortcuts or credential typing.",
-      parameters: Type.Object({ key: Type.String({ maxLength: 100 }), ref: Type.Optional(Type.String()) }),
+        "Connected Chrome: requires an exact button/select reference and only Enter, Space, arrows or Escape; no global shortcuts or credential typing.",
+      parameters: Type.Object({ key: Type.String({ maxLength: 100 }), ref: Type.String() }),
       execute: async (_id, args, signal) =>
-        result(await computer().action("key", args, signal)),
+        result(await browser().action("key", args, signal)),
     }),
   ];
-  const chromeOnly = new Set(["browser_keep_tab", "browser_name_task", "browser_select"]);
-  const managedOnly = new Set(["browser_type", "browser_upload", "browser_diagnostics"]);
-  return tools
-    .filter(tool => chrome ? !managedOnly.has(tool.name) : !chromeOnly.has(tool.name))
-    .map(tool => {
-      if (tool.name === "browser_key")
-        return { ...tool,
-          description: chrome
-            ? "Connected Chrome: requires an exact button/select reference and only Enter, Space, arrows or Escape; no global shortcuts or credential typing."
-            : "Press a key or shortcut in the managed browser.",
-          parameters: chrome
-            ? Type.Object({ key: Type.String({ maxLength: 100 }), ref: Type.String() })
-            : Type.Object({ key: Type.String({ maxLength: 100 }) }),
-        };
-      if (tool.name === "browser_click" && chrome)
-        return { ...tool,
-          description: "Click an exact browser_snapshot reference in Connected Chrome. Coordinate clicks are unavailable.",
-          parameters: Type.Object({ ref: Type.String() }),
-        };
-      if (tool.name === "request_browser_login" && chrome)
-        return { ...tool, description: "Pause the Connected Chrome task for private sign-in in the user's existing Chrome profile. Never ask for credentials. The user returns control through Settings → Browser target → This agent’s pinned Chrome session → Resume, or the Chrome sign-in card. There is no managed browser viewer or Computer panel." };
-      if (tool.name === "browser_keep_tab")
-        return { ...tool, description: tool.description.replace(" Unavailable for managed browsers.", "") };
-      return tool;
-    });
 }

@@ -118,7 +118,6 @@ async function fixture() {
   }
   const share = new ChromeShare(chrome, dir, async () => {});
   const selection = (profile: string) => ({
-    browserTarget: "chrome" as const,
     chromeProfile: profile,
     chromeOrigins: ["https://example.com"],
   });

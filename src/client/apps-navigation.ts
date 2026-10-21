@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { requestId } from "./request-id";
 import { readPreference, savePreference } from "./theme";
 
@@ -53,55 +53,14 @@ export function readAppsLocation(): AppsLocation {
   };
 }
 
-export function useAppsNavigation(
-  instanceId: string,
-  privateSheetOpen = false,
-) {
+export function useAppsNavigation(instanceId: string) {
   const [location, setLocation] = useState(readAppsLocation);
   const [restored, setRestored] = useState("");
-  const [navigationNotice, setNavigationNotice] = useState("");
-  const pending = useRef<{
-    url: string;
-    state: Record<string, unknown>;
-  } | null>(null);
-  const lastAgents = useRef({
-    url: window.location.pathname + window.location.search,
-    state: window.history.state,
-  });
-  if (location.destination === "agents")
-    lastAgents.current = {
-      url: window.location.pathname + window.location.search,
-      state: window.history.state,
-    };
-  function defer(url: string, state: Record<string, unknown>) {
-    pending.current = { url, state };
-    setNavigationNotice(
-      "Close Agent computer to return control safely before navigating. Your requested destination will open after handback succeeds.",
-    );
-  }
   useEffect(() => {
-    const pop = () => {
-      const next = readAppsLocation();
-      if (privateSheetOpen) {
-        defer(window.location.pathname, { ...window.history.state });
-        window.history.replaceState(
-          lastAgents.current.state,
-          "",
-          lastAgents.current.url,
-        );
-      } else setLocation(next);
-    };
+    const pop = () => setLocation(readAppsLocation());
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
-  }, [privateSheetOpen]);
-  useEffect(() => {
-    if (privateSheetOpen || !pending.current) return;
-    const requested = pending.current;
-    pending.current = null;
-    setNavigationNotice("");
-    window.history.pushState(requested.state, "", requested.url);
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-  }, [privateSheetOpen]);
+  }, []);
   useEffect(() => {
     if (!instanceId || restored === instanceId) return;
     setRestored(instanceId);
@@ -110,13 +69,10 @@ export function useAppsNavigation(
       readPreference(`jelly.destination.${instanceId}`, "agents") === "apps"
     ) {
       const next = { ...window.history.state, jellyDestination: "apps" };
-      if (privateSheetOpen) defer("/apps", next);
-      else {
-        window.history.replaceState(next, "", "/apps");
-        setLocation(readAppsLocation());
-      }
+      window.history.replaceState(next, "", "/apps");
+      setLocation(readAppsLocation());
     }
-  }, [instanceId, restored, location.explicit, privateSheetOpen]);
+  }, [instanceId, restored, location.explicit]);
   useEffect(() => {
     if (instanceId && restored === instanceId)
       savePreference(
@@ -136,10 +92,6 @@ export function useAppsNavigation(
       jellyDestination: destination,
       jellyFocusAppId: focusAppId,
     };
-    if (privateSheetOpen) {
-      defer(`/${destination}`, next);
-      return;
-    }
     window.history.pushState(next, "", `/${destination}`);
     setLocation(readAppsLocation());
   }
@@ -149,10 +101,6 @@ export function useAppsNavigation(
       jellyAppNavigationId: navigationId,
     };
     const url = `/apps/${encodeURIComponent(appId)}`;
-    if (privateSheetOpen) {
-      defer(url, next);
-      return;
-    }
     window.history.pushState(next, "", url);
     setLocation(readAppsLocation());
   }
@@ -160,7 +108,6 @@ export function useAppsNavigation(
     location,
     navigate,
     viewer,
-    navigationNotice,
     destinationReady:
       location.explicit || (!!instanceId && restored === instanceId),
   };

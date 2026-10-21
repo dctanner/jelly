@@ -141,39 +141,31 @@ Outstanding implementation and validation are tracked in [plans/](../plans/READM
 - Snapshot history is paginated and replay retention is bounded. Raw conversation/timeline archives remain on disk and can grow with use.
 - Runs are limited to 1,000 turns or five hours, whichever comes first. Reaching either limit stops the run and its background subagent work; model token limits can also terminate a run.
 - Remote access, remote server authentication, TLS and hosted multi-user isolation are outstanding. Local model credential management is available in the settings UI.
-- The browser desktop requires Linux, Xvfb, x11vnc, Python 3, and sandbox-capable Chrome/Chromium. Each agent has an isolated browser desktop, created lazily.
+- Connected Chrome is the only browser integration, using an extension/native host on Linux or macOS. Optional human-only desktop sharing has additional Linux/X11 requirements; see [Connected Chrome](CONNECTED-CHROME.md).
 - Sudo depends on the host sudo policy and askpass support; automatic execution and password entry do not sandbox the program.
 
 ## Human interventions and desktop transport
 
-Schema version 2 adds immutable intervention payloads with requesting agent/run, kind, status, creation/expiry times, and non-secret results. Pending requests keep their Pi tool call open while the agent status is `waiting`. Sudo first attempts non-interactive execution. Only an OS password requirement opens a handoff; its single-use request is consumed synchronously before password-authenticated execution. Denial, expiry, stop, and shutdown settle the waiting tool; executing requests abort their child and settle only after it exits. Startup interrupts pending/executing records rather than replaying them. Activity boundaries add `intervention_requested`, `intervention_updated`, and `computer_changed`.
+Schema version 2 adds immutable intervention payloads with requesting agent/run, kind, status, creation/expiry times, and non-secret results. Pending requests keep their Pi tool call open while the agent status is `waiting`. Sudo first attempts non-interactive execution. Only an OS password requirement opens a handoff; its single-use request is consumed synchronously before password-authenticated execution. Denial, expiry, stop, and shutdown settle the waiting tool; executing requests abort their child and settle only after it exits. Startup interrupts pending/executing records rather than replaying them. Activity boundaries add `intervention_requested` and `intervention_updated`.
 
 The sudo executor first launches an absolute executable and argument array with non-interactive `sudo -n`. When a password is required, it uses `sudo -k -A -- …` for the authentication handoff; it does not interpolate a shell command or retry ordinary command failures. A temporary owner-only directory contains an askpass helper and Unix socket. The password travels only through that socket and the helper's pipe to sudo, once. Command stdin is `/dev/null`, including when sudo grants NOPASSWD. Password buffers are cleared on completion; JavaScript/HTTP runtime copies are transient and cannot be guaranteed to be immediately erased. The executor redacts literal password occurrences before truncating captured command output. No password-bearing request bodies are logged or persisted. Execution has a two-minute limit; detached privileged children may outlive a command and cannot be generically rolled back.
 
-`ComputerSessions` validates agent identities and keeps up to eight lazily allocated `Computer` sessions. Each `Computer` owns a private Xvfb display protected by Xauthority, two Unix-only x11vnc endpoints (server-enforced view-only and control), and a persistent Playwright browser context. Browser debugging uses a private pipe. Chrome keeps its sandbox enabled. A Python parent-death wrapper terminates desktop services if Bun dies. Browser state lives under `browser-sessions/<sha256(agentId)>/browser-profile` and `browser-home`; runtime binaries remain under the original data directory’s `runtime`. Legacy profiles are retained without copying or deletion; isolated sessions may need fresh sign-in. Profiles survive explicit session close and server shutdown; it is sensitive local data and is excluded from Git.
+`BrowserSessions` routes exclusively to `ChromeSessions`. The selected extension profile and site scope are captured per run and pinned after a successful task allocation. Browser tools bind agent/run identity server-side and operate only on owned task tabs and exact snapshot references. Profiles share existing cookies and signed-in accounts; task capabilities are not independent account isolation. Missing/disconnected profiles fail closed, without launching Chromium or choosing an alternate backend. Stale managed settings are ignored; legacy browser-profile directories remain untouched and unused.
 
-Browser identity follows the stable agent ID, not a run, Pi session, or viewing window. Ordinary turns, compaction, and Fresh Session reuse the same browser; browser close/reopen and service restart reuse its on-disk profile. Chromium session restoration retains session-only cookies as well as persistent cookies and origin storage, without exporting credentials into tool results or a separate cookie file. Explicit logout remains effective. Websites may still expire or revoke authentication and require sign-in again.
+Private sign-in pauses browser tools until explicit human handback in Chrome or its supported human-only sharing viewer. Native Mac desktop tools remain separate. Connected Chrome sharing retains its privacy latch, input cleanup and fixed Unix-socket VNC transport; there is no managed Computer panel, coordinate browser input, upload, diagnostics or clipboard API.
 
-Actions serialize within each session while different sessions run concurrently. Tools bind agent/run identity server-side; models do not supply a target agent. AbortSignal is checked before queueing and effects, and cancelled results are discarded. Already-issued Playwright effects cannot be rolled back. Explicit close rejects queued work, drains in-flight work, revokes sockets/tickets, and cleans up only ephemeral desktop resources.
-
-The browser control gate closes immediately when human control is requested. In-flight agent operations finish before an interactive VNC ticket can be granted, and their results are discarded if control changed. All subsequent browser actions/screenshots in that agent’s session fail while human control is held; other sessions continue on independent displays. A login request also disconnects viewers before navigating. Control belongs to a browser session, not a socket: refresh/disconnect does not return control. Agent runs waiting for sign-in resume when the controlling session explicitly returns it. An expired/cancelled login keeps human control if already claimed. State is in memory; restarting Jelly interrupts pending login runs and ends control sessions.
-
-Control sessions use HttpOnly, SameSite=Strict cookies plus CSRF headers on mutations. The server also checks Host, Origin, and Fetch Metadata. VNC tickets are single-use, expire after 60 seconds, and bind to the agent browser instance, control session, permission, and ownership generation. Ownership changes revoke tickets and disconnect sockets. WebSocket upgrades require an allowed Origin and session cookie, and proxy only the fixed private Unix endpoint. There is no arbitrary host/port proxy. The managed browser blocks direct navigation, requests, and WebSockets to Jelly’s own control origins. All outgoing HTTP requests also carry a server-rejected managed-browser marker, enforced by the request interceptor and preserved through redirects, so a redirected page cannot open the approval interface. Service workers are disabled to keep that request boundary enforced. These controls protect the local browser boundary; operating-system user isolation and authenticated remote access remain separate concerns.
-
-Every `/api/computer` route (including the WebSocket upgrade) requires `?agentId=…` (or `&agentId=…` alongside a ticket). The server validates it against stored agents; paths are derived from a hash, never interpolated from client input. Snapshot computer state is for the selected agent. UI panels are keyed by agent identity, disposing the previous VNC connection and clipboard state and rejecting late async results on switches.
+Control sessions use HttpOnly, SameSite=Strict cookies plus CSRF headers on mutations. Host, Origin and Fetch Metadata checks remain in force. Chrome-share tickets are single-use, expire after 30 seconds and bind to the owning control session and sharing generation. WebSocket forwarding rechecks authority in both directions and never proxies an arbitrary host/port. See [Connected Chrome security and lifecycle](CONNECTED-CHROME.md).
 
 | Method | Route                            | Behavior                                                           |
 | ------ | -------------------------------- | ------------------------------------------------------------------ |
 | GET    | `/api/control-session`           | Establish browser session; return CSRF token                       |
 | POST   | `/api/interventions/:id/approve` | Submit transient `{password}` for exactly one pending sudo request |
 | POST   | `/api/interventions/:id/deny`    | Deny a pending handoff                                             |
-| GET    | `/api/computer`                  | Read desktop state and whether this session owns control           |
-| POST   | `/api/computer/close`            | Close this agent desktop after human control is returned             |
-| POST   | `/api/computer/start`            | Start managed desktop on demand                                    |
-| POST   | `/api/computer/take`             | Claim exclusive human control                                      |
-| POST   | `/api/computer/release`          | Return control and resolve a pending login request                 |
-| POST   | `/api/computer/ticket`           | Request a one-time `{mode: "view" or "control"}` ticket            |
-| GET/WS | `/api/computer/socket?ticket=…`  | Upgrade to the authorized VNC transport                            |
+| GET    | `/api/chrome`                   | Read connected profiles and the selected agent's task              |
+| POST   | `/api/chrome/settings`          | Save the connected profile and site scope                          |
+| GET    | `/api/chrome/share`             | Read human-only sharing state                                     |
+| POST   | `/api/chrome/share/:operation`  | Explicit private sharing, tickets and handback                      |
+| GET/WS | `/api/chrome/share/socket`      | Upgrade to the authorized Chrome desktop transport                 |
 
 See [human intervention verification](../plans_done/02-interventions.md).
 
@@ -187,11 +179,11 @@ Credentials remain outside SQLite and durable events. Only the selected mode cha
 
 ## Private native HTTP listeners
 
-Production `startApp` owns loopback and optional discovered Tailscale Bun HTTP listeners on one port. All listeners share the service, authentication/session store, exact host/origin checks, streaming events and computer WebSocket handlers. Partial startup failure closes every acquired listener and service. `scripts/serve.ts` supervises the backend only; no raw TCP piping is involved.
+Production `startApp` owns loopback and optional discovered Tailscale Bun HTTP listeners on one port. All listeners share the service, authentication/session store, exact host/origin checks, streaming events and Chrome-share WebSocket handlers. Partial startup failure closes every acquired listener and service. `scripts/serve.ts` supervises the backend only; no raw TCP piping is involved.
 
 `bun run dev:tailscale` discovers this node's Tailscale IPs and DNS names and starts separate native Vite HTTP listeners on loopback and those explicit IPs at port 5173. The API stays on loopback at `JELLY_PORT` (3100 by default); Vite's existing HTTP/WebSocket `/api` proxy reaches it. Each Vite listener owns its native HMR WebSocket endpoint. There is no arbitrary TCP destination, LAN or wildcard listener.
 
-The dev supervisor passes discovered origins through `JELLY_PUBLIC_ORIGINS`. Vite accepts exact configured hostnames and serves only frontend assets/SPA routes, not private data. Jelly accepts only the exact corresponding control origins and protects them from its managed browser. Session/CSRF checks remain intact; app URL registration never changes those origins. Request IDs support HTTP browsers lacking `crypto.randomUUID`. HTTP Tailscale is not a browser secure context; privately provisioned HTTPS aliases can be configured explicitly but Jelly does not provision TLS. Tailnet reachability from this host is not separate-device verification.
+The dev supervisor passes discovered origins through `JELLY_PUBLIC_ORIGINS`. Vite accepts exact configured hostnames and serves only frontend assets/SPA routes, not private data. Jelly accepts only the exact corresponding control origins and denies them to Connected Chrome tools. Session/CSRF checks remain intact; app URL registration never changes those origins. Request IDs support HTTP browsers lacking `crypto.randomUUID`. HTTP Tailscale is not a browser secure context; privately provisioned HTTPS aliases can be configured explicitly but Jelly does not provision TLS. Tailnet reachability from this host is not separate-device verification.
 
 ## Trusted Apps registry
 
@@ -317,33 +309,6 @@ failed downloads/retries, and asynchronous content growth above the viewport. It
 uses temporary data and no model requests. Chrome defaults to `/usr/bin/google-chrome`
 (or `CHROME_PATH`). Unit and component coverage also runs in `bun run check`.
 
-## Private remote clipboard
-
-The connected desktop owner gets explicit paste/copy controls. There is no
-background clipboard synchronization. `POST /api/computer/clipboard` accepts
-`operation: read|write`, requires the control cookie and CSRF token, and checks
-human ownership and generation both before and after serialized clipboard I/O.
-Responses are no-store; text never becomes timeline activity or model input.
-The managed-browser origin block still applies. VNC view/control servers retain
-`-nosel`: clipboard transfer uses this narrower human-only API, not VNC broadcasts.
-
-`xclip` accesses only the managed X display using its private Xauthority and UTF-8
-selection. Text uses stdin/stdout, not shell arguments, temporary files, or logs.
-Transfers have a 12,000-character bound and five-second deadline. The UI sends VNC
-Ctrl+V after the clipboard write succeeds, preserving the actual focused desktop
-field and paste behavior. Remote copy reads the clipboard the person has explicitly
-populated. On returning control, input sockets close first, the remote selection
-is cleared, and only then are agent browser tools re-enabled. Failed clearing
-leaves human ownership intact.
-
-Fallback forms use ChatFormCard/ChatFormActions and uncontrolled textareas; clipboard
-payloads are not React state. Fields clear before submission, on dismissal, or on
-loss of the connected owner panel. Late responses cannot paste after unmount.
-`bun run test:desktop` includes an actual X11/Chrome/VNC Unicode clipboard test;
-its older general handoff/shutdown test currently times out with Bun's server-closed
-WebSocket shutdown behavior, including with the prior release implementation. The
-clipboard test explicitly closes its VNC client before teardown.
-
 ## First-message agent naming
 
 Schema v9 adds `agent_naming`, with persistent pending/manual/attempted/generated
@@ -365,25 +330,13 @@ and builds the actual task session with the current name.
 
 ## Structured browser tools
 
-`interventionTools` binds these tools to the running agent's `Computer`; callers cannot select another agent. The same registration is used for OpenAI API and ChatGPT. Existing screenshot, coordinate click, typing and key tools remain available.
+`interventionTools` binds browser tools exclusively to the running agent's Connected Chrome session. Callers cannot select another agent. OpenAI API and ChatGPT use the same registration.
 
-| Tool | Arguments | Result |
-| --- | --- | --- |
-| `browser_snapshot` | `{}` | `{pageId, observationId, text, truncated, viewport, elements:[{ref,tag,type,label}]}` |
-| `browser_click` | `{ref}` OR `{x,y}` | `{ok:true}` |
-| `browser_fill` | `{ref,text}` | `{ok:true}` |
-| `browser_tabs` | `{operation:"list"\|"new"\|"select"\|"close",pageId?,url?}` | `{tabs:[{pageId,active}],truncated}` |
-| `browser_scroll` | `{x?:number,y:number}` | `{ok:true}` |
-| `browser_wait_for` | `{condition:"text"\|"text_absent"\|"ready",text?,timeoutMs?}` | `{matched:boolean}` |
-| `browser_diagnostics` | `{}` | `{entries:[{pageId,kind,detail}],limit:50,redacted:true}` |
+Supported tools are `browser_open`, `browser_screenshot`, `browser_snapshot`, reference-only `browser_click`, `browser_fill`, `browser_select`, bounded `browser_key`, task-local `browser_tabs`, `browser_scroll`, `browser_wait_for`, `browser_name_task`, `browser_keep_tab` and `request_browser_login`. There are no coordinate clicks, free typing, upload or diagnostics tools.
 
-Snapshots expose viewport-visible top-level DOM text (12,000 characters, at most 10,000 scanned nodes), not an accessibility tree, shadow-root traversal or cross-origin frame contents. They exclude form values and retain at most 100 opaque element-handle references from 500 candidates. `viewport` contains width, height, deviceScaleFactor, scrollX and scrollY. New observations (including wait polling), navigation, tab changes, handoff, recovery and abort revoke references; detached/replaced nodes fail rather than retargeting. Reference click/fill use synthetic DOM events, not trusted pointer/keyboard input; some applications require the existing coordinate/type tools.
+Snapshots expose bounded visible text and opaque element references without form values. References expire on navigation, tab changes and handoff; stale/foreign references fail rather than retargeting. Site-visible text can itself contain sensitive information. Never supply credentials as tool arguments: use private sign-in and explicit human handback.
 
-Fill accepts at most 24,000 characters in editable text inputs/textarea; sensitive field identities (password, token, OTP, payment-like names) are rejected with private-login guidance. This is a conservative heuristic, not universal secret detection. Site-rendered visible text may itself contain sensitive data. Never supply credentials as tool arguments; use `request_browser_login`.
-
-Tabs have session-local IDs and omit titles/URLs. New URLs use existing HTTP(S), credential and protected-origin checks. Tool-created tabs and host observers are bounded at 20; excess site popups evict old host tracking without closing human-owned pages, and lists report truncation. Scroll deltas are bounded to ±10,000 pixels. Wait text is 1–200 characters; timeout defaults to 5 seconds, maximum 10 seconds, with 100ms polling. Text absence cannot succeed on truncated extraction; ready means the document is no longer loading. Timeout bounds polling, not a renderer call already in flight.
-
-Diagnostics retain at most 50 console-error, pageerror and requestfailed events with fixed redacted details and allowlisted resource types. They never read arbitrary error messages, console arguments, URLs, headers, cookies, storage or payloads. Ownership/navigation changes clear diagnostics, and human control disables collection. All actions retain serialized ownership/generation and cancellation gates. Already-submitted renderer effects cannot be undone; changed-owner or aborted results are discarded and subsequent stages stop.
+The extension enforces profile generations, task-tab authority, site scope and exact Jelly control-origin denial. Operations already issued cannot be undone. See [Connected Chrome](CONNECTED-CHROME.md) for the current observation limits, input semantics, privacy boundary and cleanup behavior.
 
 ## Codex-style apply_patch
 

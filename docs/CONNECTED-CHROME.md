@@ -1,11 +1,12 @@
 # Connected Chrome — shared-profile local implementation
 
-**Connected Chrome** is a separate browser target, not a managed controller.
-Choose one explicitly connected profile and site access **globally for every
-persistent Jelly agent**. Agents use separate task groups and exclusive tab
-capabilities but share that profile's cookies and signed-in accounts. Managed
-Playwright/AgentBrowser profiles, SOCKS egress and VNC remain available and
-unchanged. Existing sessions remain pinned until explicitly closed.
+**Connected Chrome is Jelly's only browser integration.** Choose one explicitly
+connected profile and site access **globally for every persistent Jelly agent**.
+Agents use separate task groups and exclusive tab capabilities but share that
+profile's cookies and signed-in accounts. Managed Chromium controllers, private
+managed profiles, SOCKS egress and the Computer panel have been removed. Existing
+Connected Chrome sessions remain pinned until explicitly closed; legacy managed
+profile directories are left untouched and are no longer used.
 
 The local implementation has real headed-Chrome coverage, including two agents,
 two profiles/instances, frames and handoffs. It is still experimental: **this is
@@ -80,11 +81,9 @@ after review; tests never modify the normal profile or live Jelly settings.
    record at all, however, that new intent cannot be guaranteed across restart: repair
    storage and preserve the disconnect decision before restarting. Hardware/filesystem
    failures that lose even synchronized writes are also outside the guarantee.
-5. In **Settings → Browser target**, choose Connected Chrome, the exact connected
-   profile, and **Site access**. Choose **Approved sites only** with exact HTTP/HTTPS
+5. In **Settings → Connected Chrome**, choose the exact connected profile and **Site access**. Choose **Approved sites only** with exact HTTP/HTTPS
    origins (one per line), or **Unrestricted web (HTTP and HTTPS)** with no
-   origin list, then **Save browser target
-   and site scope**. This is a global setting, not per-agent setup. Every
+   origin list, then **Save Chrome profile and site scope**. This is a global setting, not per-agent setup. Every
    persistent agent's next unpinned browser session uses it.
 
    Approved-site scope accepts exact canonical HTTP/HTTPS origins, including local
@@ -223,9 +222,9 @@ old per-tab rule targets until cleanup rather than assuming they are safe.
 
 ## Human-only web VNC (Linux local X11)
 
-The sign-in card, **Settings → Browser target → Connected Chrome web VNC…**, and
-**Computer** open the shared viewer. The viewer resolves the agent's pinned
-browser target, not just the current global setting. Opening the panel does not
+The sign-in card and **Settings → Connected Chrome → Connected Chrome web VNC…**
+open the shared viewer. The viewer resolves the agent's pinned Chrome profile,
+not just the current global setting. Opening the panel does not
 start capture; its normal **Take control** action starts sharing.
 
 **Current user direction supersedes the earlier consent-form design:** this is
@@ -289,7 +288,7 @@ launches Chrome/Xvfb, copies a profile, changes website zoom, resizes or focuses
 Chrome. Tickets expire after 30 seconds, are single-use, owner/epoch/profile-
 generation bound, and require the existing cookie/CSRF/origin controls. RFB
 forwarding rechecks authority in both directions. The viewer fits the actual
-framebuffer; the managed browser's fixed 1280×800 mobile crop is not applied.
+framebuffer on both mobile and desktop.
 
 **Return control**, or closing the owning panel (Escape/backdrop/swipe included),
 drops old VNC sockets/input and confirms graceful process exit plus key/button
@@ -349,7 +348,7 @@ and standard Openbox window manager plus ordinary headed Chrome using the
 there is no Playwright, CDP/debugging port or AgentBrowser controller attached to
 this Chrome. Browser automation still uses only Jelly's extension/native host.
 The existing GNOME/Wayland session is unchanged. Existing unowned-X11 admission
-and managed desktop paths remain separate.
+remains a separate, explicitly selected sharing source.
 
 The display, window manager and Chrome persist across viewer close and Jelly
 server restart. Only the disposable VNC/input and optional OS-auth helper belong
@@ -438,9 +437,9 @@ Chrome session or the OS compositor.
 
 ### Pre-pair private entry and handback
 
-Open **Settings → Browser target → Connected Chrome web VNC…**. The installed
-owned desktop can offer **Take control with zero paired profiles**, independently
-of the current managed-browser selection. No capture starts on polling/opening.
+Open **Settings → Connected Chrome → Connected Chrome web VNC…**. The installed
+owned desktop can offer **Take control with zero paired profiles**, even before
+Chrome profile configuration. No capture starts on polling/opening.
 Take itself authorizes the operation—no extra checkbox. If a selected profile
 and the installed owned desktop both exist, the informational **Desktop source**
 selector explicitly identifies the target; unavailable selected-profile Take
@@ -555,15 +554,12 @@ inherited-listener bindings, including positive owned-stale disk reopen and the
 actual erased-environ predecessor listener test. Standalone private OS-auth exits
 **0** (45 s); targeted bridge/share/native/API/client/owned tests **62 pass, 0 fail**
 (130 s, plus eight synthetic unit-data cases inside a test); existing X11/noVNC
-exits **0** (190 s); managed viewport exits **0** (120 s); TypeScript exits **0**;
+exits **0** (190 s); TypeScript exits **0**;
 `check:full` exits **0** (600 s), **594 tests pass plus both builds**.
 
-The separate optional managed `test:desktop` remains failing: latest bounded
-isolated run exits **1**, **4 pass, 2 fail** (AgentBrowser action rejection and
-login-persistence 30000ms timeout). Earlier runs also had spawn/Xvfb failures.
-These are unresolved; this is not an all-green managed-suite claim, and no
-managed controller/test code was changed to hide them. Optional noVNC/auth suites
-are not part of `check:full` and were actually run separately. Two intermediate
+The legacy managed controllers and their standalone desktop/viewport suites have
+since been removed. Optional Connected Chrome noVNC/auth suites are not part of
+`check:full` and are run separately. Two intermediate
 review-fix runs safely refused handback while the stricter fences exposed an old
 viewer-disconnect status overwrite and missing restored-orphan provider lease;
 both now have deterministic regressions and the final real fixtures pass.
@@ -574,8 +570,8 @@ No new native-Wayland experiments were run in this follow-up.
 The existing X11 backend above does **not** capture a GNOME Wayland desktop.
 An inherited XWayland `DISPLAY` is not evidence of native desktop ownership;
 Jelly does not use it as a fallback, restart Chrome, move/copy its profile, switch
-sessions, or enable a remote-debugging port. Managed-browser VNC is a different
-desktop and cannot unlock the existing profile's OS keyring.
+sessions, or enable a remote-debugging port. There is no managed-browser VNC
+fallback to unlock the existing profile's OS keyring.
 
 An isolated GNOME Shell/Mutter **50.1** qualification fixture now exercises the
 real same-user `org.gnome.Mutter.RemoteDesktop` and associated `ScreenCast`
@@ -720,6 +716,17 @@ extension prevents every site-initiated download.
 
 ## Validation
 
+### Chrome-only browser removal
+
+`bun run check:full` passes: 583 tests, zero failures, TypeScript, client build and
+extension build. `bun run test:chrome` also passes 74 targeted tests and the real
+headed extension/native-host fixture. Both `bun tests/chrome-share.browser.ts`
+and `bun tests/owned-chrome-desktop.ts` pass: actual disposable X11/noVNC input,
+private handback, owner isolation, mobile fit, cleanup and existing-profile
+persistence remain covered. Tests never use the normal signed-in profile or
+change live Jelly settings. Service activation and a real remote-device check
+are separate from these this-host fixtures.
+
 ### Earlier independent-review rerun (diagnostic-only Wayland delta)
 
 This subsection records the earlier diagnostic lane; the later owned-X11
@@ -736,14 +743,12 @@ rerun rather than treating their observations as a production certificate.
 | --- | --- | --- |
 | `bun run test:chrome-wayland-qualification` | 90 s | Exit 0; synthetic native capture/input and monitor lifecycle assertions pass; `second_frame_proves_stage_consumer_drain: false`, `production_cleanup_qualified: false`. |
 | `bun run test:chrome-vnc` | 180 s | Exit 0; actual disposable two-display X11 refusal and noVNC capture/input/private-control/cleanup assertions pass; fixture browsers, VNC processes, X servers and HTTP listener revoked. |
-| `bun run test:desktop` | 240 s | Exit 1; 4 pass, 2 fail. VNC/private-handoff regression fails with redacted `AgentBrowser action failed`; login persistence times out at its internal 30000 ms limit. These previously reported managed failures remain unresolved. |
-| `bun run test:computer-viewport` | 120 s | Exit 0; actual managed noVNC mobile panning/pointer mapping, landscape/desktop fit and handback assertions pass. |
 | `bun run check` | 120 s | Exit 0; TypeScript passes. |
 | `bun run check:full` | 600 s | Exit 0; 578 tests pass, 0 fail, plus client and extension builds. |
 
-**`check:full` does not include the optional `test:desktop`, native Wayland,
-Chrome noVNC or managed viewport commands above.** Its passing managed API/browser
-coverage does not erase the two standalone managed failures. There is still no native-Wayland RFB/viewer path to test, no host-compositor/
+**`check:full` does not include optional native Wayland or Chrome noVNC commands
+above.** Legacy managed commands are no longer available. There is still no
+native-Wayland RFB/viewer path to test, no host-compositor/
 PipeWire attestation or native-Wayland pre-pair bootstrap, and no qualified
 native-Wayland process-death/restart fencing. These are this-host
 fixtures only: production Wayland control remains blocked and no personal-desktop

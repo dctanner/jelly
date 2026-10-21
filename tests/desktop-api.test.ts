@@ -90,7 +90,7 @@ test("desktop configuration and controls require private sessions, CSRF and same
     expect(view.owner).toBeNull();
     expect(view.handoff).toBeNull();
     expect(view.capabilities.foreground).toBe(false);
-    expect(f.app.store.browserSelection().browserTarget).toBe("managed");
+    expect(f.app.store.browserSelection().chromeProfile).toBe("");
     expect((await f.request("arbitrary-provider-method")).status).toBe(404);
   } finally {
     await f.close();

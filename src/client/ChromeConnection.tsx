@@ -4,7 +4,6 @@ import type { Snapshot } from "../shared/types";
 import type { ChromeProfile } from "../shared/chrome-protocol";
 import { ChromeSharePanel } from "./ChromeSharePanel";
 export interface ChromeStatus {
-  browserTarget?: "managed" | "chrome";
   selectedProfile?: string;
   desktopShared?: boolean;
   profiles: ChromeProfile[];
@@ -37,7 +36,6 @@ export function ChromeConnection({
     view?.agentId === agentId ? view.status : { profiles: [], task: null };
   type Scope = { agentId: string; request: number; controlling: boolean };
   const scopeRef = useRef<Scope | null>(null);
-  const [target, setTarget] = useState(data.config.browserTarget ?? "managed");
   const [profile, setProfile] = useState(data.config.chromeProfile ?? "");
   const [origins, setOrigins] = useState(
     (data.config.chromeOrigins ?? []).join("\n"),
@@ -113,7 +111,6 @@ export function ChromeConnection({
         `/chrome/${operation}`,
         operation === "settings"
           ? {
-              browserTarget: target,
               chromeProfile: profile,
               chromeOrigins: origins.split(/\s+/).filter(Boolean),
               chromeSiteScope: siteScope,
@@ -137,12 +134,12 @@ export function ChromeConnection({
   }
   return (
     <section className="settings-section">
-      <h3>Browser target</h3>
+      <h3>Connected Chrome</h3>
       <p className="settings-footnote">
-        One global choice for all persistent Jelly agents. Connected Chrome uses
+        Connected Chrome uses
         your explicitly selected Chrome profile; all agents share its signed-in
         accounts, with separate task groups and exclusive tab permissions. Local
-        machine only; not a network sandbox. Managed browsers remain available.
+        machine only; not a network sandbox.
         Signed-in rollout still requires the safety review in
         docs/CONNECTED-CHROME.md.
       </p>
@@ -170,16 +167,6 @@ export function ChromeConnection({
           </li>
         </ol>
       </details>
-      <label className="chat-form-field">
-        <span>Browser target</span>
-        <select
-          value={target}
-          onChange={(e) => setTarget(e.target.value as "managed" | "chrome")}
-        >
-          <option value="managed">Managed browser (default)</option>
-          <option value="chrome">Connected Chrome · experimental</option>
-        </select>
-      </label>
       <label className="chat-form-field">
         <span>Chrome profile</span>
         <select value={profile} onChange={(e) => setProfile(e.target.value)}>
@@ -228,7 +215,7 @@ export function ChromeConnection({
       )}
       <p className="chat-form-hint">
         Global scope applies to new sessions for every persistent agent.
-        Existing sessions keep their target, profile and approved sites until
+        Existing sessions keep their profile and site scope until
         closed. Grant existing user tabs explicitly in the extension popup;
         their groups are preserved and they are never automatically closed.
         Paused handoffs require a follow-up browser run and explicit Resume.
@@ -240,11 +227,11 @@ export function ChromeConnection({
         disabled={busy}
         onClick={() => void act("settings")}
       >
-        Save browser target and site scope
+        Save Chrome profile and site scope
       </button>
       {!status.task && data.selectedAgentId && (
         <button disabled={busy} onClick={() => void act("close")}>
-          Reset pinned target (when idle)
+          Reset pinned session (when idle)
         </button>
       )}
       {shareAgent && <button disabled={busy} onClick={() => setShareOpen(true)}>Connected Chrome web VNC…</button>}
