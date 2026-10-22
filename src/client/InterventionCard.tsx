@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import {
   ShieldCheck,
   Monitor,
@@ -9,11 +9,10 @@ import {
   ChevronRight,
 } from "lucide-react";
 import type { Intervention } from "../shared/types";
-import { api, control } from "./api";
-import type { ChromeStatus } from "./ChromeConnection";
+import { control } from "./api";
 import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
 import { DesktopHandoffCard } from "./DesktopConnection";
-import { ChromeSharePanel } from "./ChromeSharePanel";
+import { ComputerControlPanel } from "./ComputerControlPanel";
 export function InterventionCard({
   item,
   onChange,
@@ -36,79 +35,16 @@ export function InterventionCard({
   const status =
     item.status === "pending" ? (submitted ?? item.status) : item.status;
   const pending = status === "pending";
-  const browserLogin = item.kind === "browser_login";
-  const [chromeTask, setChromeTask] = useState<ChromeStatus["task"]>(null);
-  const [chromeUnavailable, setChromeUnavailable] = useState(false);
-  const [chromeSharing, setChromeSharing] = useState(false);
-  const chromeRevision = useRef(0);
-  const chromeControlling = useRef(false);
-  useEffect(() => {
-    if (!browserLogin || !pending) return;
-    let disposed = false,
-      loading = false;
-    const load = async () => {
-      if (loading || chromeControlling.current) return;
-      loading = true;
-      const revision = ++chromeRevision.current;
-      try {
-        await api("/control-session");
-        const state = await api<ChromeStatus>(
-          `/chrome?agentId=${encodeURIComponent(item.agentId)}`,
-        );
-        if (!disposed && revision === chromeRevision.current) {
-          setChromeTask(state.task);
-          setChromeSharing(!!state.desktopShared);
-          setChromeUnavailable(false);
-        }
-      } catch {
-        if (!disposed && revision === chromeRevision.current) {
-          setChromeTask(null);
-          setChromeUnavailable(true);
-        }
-      } finally {
-        loading = false;
-      }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 1000);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
-  }, [browserLogin, pending, item.agentId, item.id]);
-  const chromeReady =
-    !busy &&
-    !!chromeTask?.connected &&
-    chromeTask.paused &&
-    chromeTask.pauseState === "paused" &&
-    chromeTask.handoff === item.id;
-  const chromeWarning =
-    chromeUnavailable || chromeTask?.connected === false
-      ? "Chrome disconnected or unavailable—do not enter credentials."
-      : chromeTask?.pauseState === "failed"
-        ? "Pause failed—do not enter credentials."
-        : chromeTask?.pauseState === "resuming"
-          ? "Resuming—do not enter credentials."
-          : "Pausing—do not enter credentials yet";
-  async function chromeControl(operation: "focus" | "resume") {
-    if (!chromeReady || chromeSharing || chromeControlling.current) return;
-    chromeControlling.current = true;
-    ++chromeRevision.current;
-    setChromeTask(null);
+  async function chromeDone() {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
-      await control(`/chrome/${operation}`, { agentId: item.agentId });
-      if (operation === "resume") setSubmitted("completed");
+      await control("/chrome/done", { agentId: item.agentId, handoff: item.id });
+      setSubmitted("completed");
       onChange();
-    } catch (e) {
-      setError((e as Error).message);
-      setChromeTask(null);
-      setChromeUnavailable(true);
-    } finally {
-      chromeControlling.current = false;
-      setBusy(false);
-    }
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
   }
   async function act(approve: boolean, e?: FormEvent) {
     e?.preventDefault();
@@ -183,9 +119,7 @@ export function InterventionCard({
       status={
         item.kind === "sudo"
           ? "Needs your approval"
-          : !chromeReady
-            ? "Preparing private sign-in"
-            : "Private sign-in"
+          : "Needs your sign-in"
       }
       description={String(item.payload.reason ?? "")}
       error={error}
@@ -263,38 +197,15 @@ export function InterventionCard({
             <dd>{String(item.payload.url)}</dd>
           </dl>
           <p className="chat-form-hint">
-            {chromeReady
-              ? "Connected Chrome is paused and its debugger detached. Open locally in Chrome, or use full-desktop web VNC. Never enter credentials in chat; return control when finished."
-              : chromeWarning}
+            Sign in on the computer, never in chat. Other browser work may continue.
+            Done tells the requesting agent you’ve finished.
           </p>
           <ChatFormActions>
-            <button
-              type="button"
-              className="chat-form-secondary"
-              disabled={busy}
-              onClick={() => void act(false)}
-            >
-              Deny
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || !chromeReady || chromeSharing}
-              onClick={() => void chromeControl("focus")}
-            >
-              Open in Chrome
-            </button>
-            <button type="button" disabled={busy || !chromeReady} onClick={() => setShareOpen(true)}>Open web VNC…</button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || !chromeReady || chromeSharing}
-              onClick={() => void chromeControl("resume")}
-            >
-              Return control to agent
-            </button>
+            <button type="button" disabled={busy} onClick={() => void act(false)}>Cancel</button>
+            <button type="button" disabled={busy} onClick={() => setShareOpen(true)}>Take control</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void chromeDone()}>Done</button>
           </ChatFormActions>
-          {shareOpen && <ChromeSharePanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
+          {shareOpen && <ComputerControlPanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
         </>
       )}
     </ChatFormCard>

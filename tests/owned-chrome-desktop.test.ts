@@ -28,8 +28,8 @@ async function pendingFixture(acknowledge = true) {
   const config = JSON.parse(await Bun.file(join(chrome.bridge.directory, "pairing.json")).text());
   writeFileSync(join(chrome.bridge.directory, "extension-id"), "a".repeat(32), { mode: 0o600 });
   // Fixture-only attestor: production requires exact owned launcher/native parent.
-  chrome.bridge.deferDesktop = (_d, parent) => parent === "fixture-owned-parent" ? { available: true, display: ":3998", auth } : null;
-  chrome.lockDesktop();
+  chrome.bridge.attestDesktop = (_d, parent) => parent === "fixture-owned-parent" ? { available: true, display: ":3998", auth } : null;
+  chrome.setHumanDesktop(true);
   const profile = crypto.randomUUID(), generation = crypto.randomUUID(), messages: any[] = [];
   const frames = new ChromeFrames();
   const socket = connect(config.socket);
@@ -47,46 +47,26 @@ async function pendingFixture(acknowledge = true) {
   return { chrome, socket, profile, generation, messages, close: async () => { socket.destroy(); await chrome.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
-test("owned deferred hello has no published profile/RPC/task authority before verified handback", async () => {
+test("owned native attestation pairs immediately during human use without browser freeze or publication handback", async () => {
   const f = await pendingFixture();
   try {
-    expect(f.messages[0].type).toBe("pending");
-    expect(f.chrome.bridge.profiles()).toEqual([]);
-    await expect(f.chrome.bridge.call(f.profile, f.generation, "s", "r", "open", { url: "https://example.com" })).rejects.toThrow("disconnected");
-    expect(() => f.chrome.assertAutomationAllowed()).toThrow("paused");
-    await f.chrome.freezeDesktop();
-    await expect(f.chrome.unlockDesktop(() => false)).rejects.toThrow("authority changed");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(f.chrome.bridge.profiles()).toEqual([]);
-    await f.chrome.unlockDesktop();
-    await until(() => f.messages.some(m => m.type === "paired"));
+    expect(f.messages[0].type).toBe("paired");
     expect(f.chrome.bridge.profiles().map(p => p.id)).toEqual([f.profile]);
-    expect(f.chrome.sharingDesktop).toBe(false);
-    expect(f.messages.filter(m => m.method)).toEqual([]); // no queued action replay
+    expect(() => f.chrome.allocate("a", "run", { chromeProfile: f.profile, chromeOrigins: ["https://example.com"] }, "A")).not.toThrow();
+    expect(f.chrome.humanState()).toBe(true);
+    expect(f.messages.filter(m => m.method)).toEqual([]);
+    expect(f.chrome.bridge.desktop(f.profile, f.generation).available).toBe(true);
   } finally { await f.close(); }
 });
 
-test("pending peer cannot inject RPC results before publication; loss retains private admission", async () => {
+test("a newly paired owned peer still rejects forged-generation events", async () => {
   const f = await pendingFixture();
-  let lost = false;
-  f.chrome.bridge.onDesktopLoss = () => { lost = true; };
   try {
-    f.socket.write(chromeFrame({ jsonrpc: "2.0", id: "forged", generation: f.generation, result: { frozen: true } }));
-    await until(() => lost);
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(f.chrome.bridge.profiles()).toEqual([]);
+    f.socket.write(chromeFrame({ jsonrpc: "2.0", id: "forged", generation: "foreign", result: {} }));
+    await until(() => f.chrome.bridge.profiles().length === 0);
+    expect(f.chrome.humanState()).toBe(true);
   } finally { await f.close(); }
 });
-
-test("missing pending-peer acknowledgement fails handback closed without publication", async () => {
-  const f = await pendingFixture(false);
-  try {
-    await expect(f.chrome.unlockDesktop()).rejects.toThrow("Pending Chrome");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(f.chrome.bridge.profiles()).toEqual([]);
-    expect(f.messages.some(m => m.type === "paired")).toBe(false);
-  } finally { await f.close(); }
-}, 10000);
 
 test("owned private records refuse unsafe permissions and do not read public path parameters", () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-owned-config-test-"));
@@ -158,7 +138,7 @@ test("pre-pair Take requires private cookie/CSRF/origin and accepts no executabl
     for (const key of ["root", "profile", "binary", "display", "auth", "bus"])
       expect((await post({ cookie, "x-jelly-csrf": csrf }, { agentId, [key]: "/arbitrary" })).status).toBe(400);
     expect(app.service.chromeShare.state().status).toBe("idle");
-    expect(app.service.chrome.sharingDesktop).toBe(false);
+    expect(app.service.chrome.humanState()).toBe(false);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

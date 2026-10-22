@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { connect, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { EventEmitter } from "node:events";
 import {
   mkdtempSync,
@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { localX11Desktop } from "../src/server/chrome-desktop";
+import { bindChromeDesktop, localX11Desktop } from "../src/server/chrome-desktop";
+import { COMPUTER_CLIPBOARD_BODY_BYTES, validClipboardText } from "../src/shared/computer-clipboard";
 import { ChromeSessions } from "../src/server/chrome-sessions";
 import { ChromeShare } from "../src/server/chrome-share";
 import {
@@ -171,121 +172,86 @@ test("local desktop binding accepts only explicitly local Linux X11 with private
   }
 });
 
-test("global desktop latch fences two profiles, cached ports, delayed begin/results, resume, new peers and settlement", async () => {
-  const f = await fixture();
-  const pending = gate(),
-    freeze = gate();
+test("human-use status never revokes in-flight results or blocks cached and newly allocated ports", async () => {
+  const f = await fixture(), ack = gate();
   try {
-    const a = await f.peer(),
-      b = await f.peer();
-    const pa = f.chrome.allocate("a", "run-a", f.selection(a.profile), "A");
-    const pb = f.chrome.allocate("b", "run-b", f.selection(b.profile), "B");
-    await pb.action("open", { url: "https://example.com" });
-    a.onCall(async (r) => {
-      if (r.method === "begin") await pending.promise;
-      if (r.method === "freeze") await freeze.promise;
-      return r.method === "freeze" ? { frozen: true } : { ok: true };
-    });
-    const delayed = pa.action("snapshot").catch((e) => e.message);
-    await waitFor(() => a.requests.some((r) => r.method === "begin"));
-    f.chrome.lockDesktop();
-    const draining = f.chrome.freezeDesktop();
-    let acknowledged = false;
-    void draining.then(() => {
-      acknowledged = true;
-    });
-    expect(f.chrome.state("b").task?.paused).toBe(false);
-    expect(() =>
-      f.chrome.allocate("new", "run", f.selection(a.profile), "New"),
-    ).toThrow("paused");
-    expect(await pb.action("snapshot").catch((e) => e.message)).toContain(
-      "paused",
-    );
-    expect(await f.chrome.control("b", "resume").catch((e) => e.status)).toBe(
-      409,
-    );
-    const rejected = await f.peer();
-    expect(rejected.socket.destroyed).toBe(true);
-    pending.resolve();
-    expect(await delayed).toContain("revoked");
-    expect(acknowledged).toBe(false);
-    freeze.resolve();
-    await draining;
-    expect(a.frozen() && b.frozen()).toBe(true);
-    expect(f.chrome.state("b").task?.paused).toBe(true);
-    await f.chrome.settle("b", "run-b");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    await f.chrome.unlockDesktop();
-    expect(f.chrome.state("a").task?.paused).toBe(true);
-    expect(f.chrome.state("b").task?.paused).toBe(true);
-    expect(await pa.action("snapshot").catch((e) => e.message)).toContain(
-      "paused",
-    );
-  } finally {
-    pending.resolve();
-    freeze.resolve();
-    await f.close();
-  }
+    const a = await f.peer(), b = await f.peer();
+    a.onCall(async r => { if (r.method === "snapshot") await ack.promise; return { ok: true }; });
+    const browser = f.chrome.allocate("a", "run", f.selection(a.profile), "A");
+    const delayed = browser.action("snapshot");
+    await waitFor(() => a.requests.some(r => r.method === "snapshot"));
+    f.chrome.setHumanDesktop(true);
+    const fresh = f.chrome.allocate("b", "run-b", f.selection(b.profile), "B");
+    expect(await fresh.action("snapshot")).toMatchObject({ humanUsing: true });
+    const peer = await f.peer(); expect(peer.requests[0].type).toBe("paired");
+    ack.resolve(); expect(await delayed).toMatchObject({ humanUsing: true });
+    f.chrome.setHumanDesktop(false);
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+  } finally { ack.resolve(); await f.close(); }
 });
 
-test("direct take freezes first; failed/delayed detach cannot capture or falsely hand back; stale/concurrent owners fail", async () => {
-  const f = await fixture(),
-    ack = gate();
+test("taking computer control is advisory during delayed capture; owner and stale generations remain isolated", async () => {
+  const f = await fixture(), ready = gate();
   try {
     const p = await f.peer();
-    p.onCall(async (r) => {
-      if (r.method === "freeze") {
-        await ack.promise;
-        throw new Error("detach rejected");
-      }
-      return { ok: true };
+    const browser = f.chrome.allocate("a", "run", f.selection(p.profile), "A");
+    await browser.action("open", { url: "https://example.com" });
+    Object.assign(f.share, { startCapture: async () => { await ready.promise; (f.share as any).status = "sharing"; } });
+    const taking = f.share.take("owner", "a", p.profile, p.generation);
+    expect(f.chrome.humanState()).toBe(true);
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(() => f.share.ticket("owner", 0)).toThrow();
+    await expect(f.share.take("other", "a", p.profile, p.generation)).rejects.toThrow();
+    await expect(f.share.release("other", f.share.state().generation)).rejects.toThrow("private");
+    await expect(f.share.release("owner", -1)).rejects.toThrow("Stale");
+    ready.resolve(); await taking;
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    await f.share.release("owner", f.share.state().generation);
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(p.requests.some(r => ["freeze", "unfreeze", "pause", "resume"].includes(r.method))).toBe(false);
+  } finally { ready.resolve(); await f.close(); }
+});
+
+test("Done binds one Take and one computer, survives socket churn/failure, and rejects a replaced Take", async () => {
+  const f = await fixture();
+  try {
+    const p = await f.peer(), other = await f.peer();
+    const a = f.chrome.allocate("a", "run-a", f.selection(p.profile), "A");
+    const b = f.chrome.allocate("b", "run-b", f.selection(other.profile), "B");
+    await a.reserveLogin("login-a", "https://example.com");
+    await b.reserveLogin("login-b", "https://example.com");
+    Object.assign(f.share, { startCapture: async () => { (f.share as any).status = "sharing"; } });
+    const completed: string[] = [];
+    f.share.onDone = handoffs => {
+      for (const h of handoffs) { f.chrome.done(h.agent, h.id); completed.push(h.id); }
+    };
+    const first = await f.share.take("owner", "a", p.profile, p.generation);
+    const stop = (f.share as any).stopCapture.bind(f.share);
+    Object.assign(f.share, {
+      generation: first.generation + 3,
+      status: "failed",
+      stopCapture: async () => { throw new Error("uncertain cleanup"); },
     });
-    const take = f.share
-      .take("owner", "a", p.profile, p.generation)
-      .catch((e) => e.status);
-    expect(f.share.state("owner").status).toBe("pausing");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(
-      await f.share
-        .take("other", "a", p.profile, p.generation)
-        .catch((e) => e.status),
-    ).toBe(409);
-    expect(() => f.share.ticket("owner", f.share.state().generation)).toThrow(
-      "not ready",
-    );
-    expect(
-      await f.share
-        .release("other", f.share.state().generation)
-        .catch((e) => e.status),
-    ).toBe(403);
-    expect((f.share as any).runtime).toBeNull();
-    ack.resolve();
-    expect(await take).toBe(409);
-    expect(f.share.state().status).toBe("failed");
-    expect(
-      existsSync(join(f.chrome.bridge.directory, "desktop-share.json")),
-    ).toBe(true);
-    expect(
-      await f.share
-        .release("owner", f.share.state().generation, true)
-        .catch((e) => e.status),
-    ).toBe(409);
-    expect(f.chrome.sharingDesktop).toBe(true);
-    p.onCall(async () => ({ frozen: true }));
-    await f.share.release("owner", f.share.state().generation, true);
-    expect(f.chrome.sharingDesktop).toBe(false);
-  } finally {
-    ack.resolve();
-    await f.close();
-  }
+    await expect(f.share.release("owner", first.generation, false, first.controlId)).rejects.toThrow();
+    expect(completed).toEqual(["login-a"]);
+    expect(f.chrome.state("b").task?.handoff).toBe("login-b");
+    expect(f.chrome.state("a").task?.humanUsing).toBe(false);
+    Object.assign(f.share, { stopCapture: stop });
+    await f.share.release("owner", first.generation, true, first.controlId);
+    const second = await f.share.take("owner", "b", other.profile, other.generation);
+    expect(second.controlId).not.toBe(first.controlId);
+    await expect(f.share.release("owner", second.generation, false, first.controlId)).rejects.toThrow("Stale");
+    await expect(f.share.reconnect("owner", second.generation, first.controlId)).rejects.toThrow();
+    expect(f.chrome.state("b").task?.handoff).toBe("login-b");
+    await f.share.release("owner", second.generation, false, second.controlId);
+    expect(completed).toEqual(["login-a", "login-b"]);
+  } finally { await f.close(); }
 });
 
 test("single-use expiring tickets bind owner and epoch; forwarding/reconnect and owner expiry revoke old connections", async () => {
   const f = await fixture();
   try {
     const p = await f.peer();
-    f.chrome.lockDesktop();
-    await f.chrome.freezeDesktop();
     Object.assign(f.share, {
       status: "sharing",
       owner: "owner",
@@ -316,30 +282,20 @@ test("single-use expiring tickets bind owner and epoch; forwarding/reconnect and
   }
 });
 
-test("bridge-generation loss revokes viewer/tickets and stays latched after late freeze ACK", async () => {
-  const f = await fixture(),
-    ack = gate();
+test("target connection loss revokes viewer tickets without blocking other browser profiles", async () => {
+  const f = await fixture();
   try {
-    const p = await f.peer();
-    p.onCall(async (r) => {
-      if (r.method === "freeze") await ack.promise;
-      return { frozen: true };
-    });
-    const take = f.share
-      .take("owner", "a", p.profile, p.generation)
-      .catch(() => {});
-    await waitFor(() => p.requests.some((r) => r.method === "freeze"));
+    const p = await f.peer(), other = await f.peer();
+    Object.assign(f.share, { startCapture: async () => { (f.share as any).status = "sharing"; } });
+    await f.share.take("owner", "a", p.profile, p.generation);
+    const ticket = f.share.ticket("owner", f.share.state().generation);
     p.socket.destroy();
     await waitFor(() => f.share.state().status === "failed");
-    ack.resolve();
-    await take;
-    expect(f.share.state().status).toBe("failed");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect((f.share as any).process).toBeNull();
-  } finally {
-    ack.resolve();
-    await f.close();
-  }
+    expect(() => f.share.consume(ticket.ticket, "owner")).toThrow();
+    const browser = f.chrome.allocate("b", "run", f.selection(other.profile), "B");
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(f.chrome.humanState()).toBe(true);
+  } finally { await f.close(); }
 });
 
 test("restart latch permits only explicit cleanup-without-viewing, never restores tasks or old owner", async () => {
@@ -367,7 +323,7 @@ test("restart latch permits only explicit cleanup-without-viewing, never restore
     p.socket.destroy();
     await waitFor(() => !f.chrome.bridge.profiles().length);
     await restarted.release("new", restarted.state().generation, true);
-    expect(f.chrome.sharingDesktop).toBe(false);
+    expect(f.chrome.humanState()).toBe(false);
     expect(restarted.state().status).toBe("idle");
   } finally {
     await restarted?.close();
@@ -434,19 +390,16 @@ test("Chrome share API protects reads, direct take, tickets, stale profiles and 
       await fetch(`${origin}/api/chrome/share`, { headers })
     ).text();
     expect(publicState).not.toMatch(/DISPLAY|XAUTHORITY|\/tmp\//);
-    app.service.chrome.lockDesktop();
+    Object.assign(app.service.chromeShare, { status: "failed" });
     for (const route of [
       "desktop/connect",
       "desktop/settings",
-      "desktop/resume",
-      "desktop/foreground",
-      "desktop/handback",
     ])
       expect((await post(route)).status).toBe(409);
     expect(
       (await post("chrome/resume", { agentId: app.store.agents()[0]!.id }))
         .status,
-    ).toBe(409);
+    ).toBe(400);
     expect((await post("chrome/share/ticket", { generation: 0 })).status).toBe(
       403,
     );
@@ -456,47 +409,22 @@ test("Chrome share API protects reads, direct take, tickets, stale profiles and 
   }
 });
 
-test("owner expiry during a delayed handback ACK cannot reopen global browser authority", async () => {
-  const f = await fixture(),
-    ack = gate();
+test("owner expiry during delayed viewer cleanup retains cleanup obligation, never browser permission", async () => {
+  const f = await fixture(), ack = gate();
   try {
     const p = await f.peer();
-    f.chrome.lockDesktop();
-    await f.chrome.freezeDesktop();
-    Object.assign(f.share, {
-      status: "disconnected",
-      owner: "owner",
-      profile: p.profile,
-      profileGeneration: p.generation,
-      frozen: true,
-    });
-    writeFileSync(
-      join(f.chrome.bridge.directory, "desktop-share.json"),
-      JSON.stringify({ runtime: null }),
-      { mode: 0o600 },
-    );
-    p.onCall(async (r) => {
-      if (r.method === "unfreeze") await ack.promise;
-      return { ok: true };
-    });
+    Object.assign(f.share, { status: "disconnected", owner: "owner", profile: p.profile, profileGeneration: p.generation,
+      stopCapture: () => ack.promise });
+    (f.share as any).persist();
     let valid = true;
     f.share.ownerValid = () => valid;
-    const release = f.share
-      .release("owner", f.share.state().generation)
-      .catch((e) => e.status);
-    await waitFor(() => p.requests.some((r) => r.method === "unfreeze"));
-    valid = false;
-    ack.resolve();
+    const release = f.share.release("owner", f.share.state().generation).catch(e => e.status);
+    valid = false; ack.resolve();
     expect(await release).toBe(409);
-    expect(f.chrome.sharingDesktop).toBe(true);
     expect(f.share.state().status).toBe("orphaned");
-    expect(() =>
-      f.chrome.allocate("fresh", "run", f.selection(p.profile), "Fresh"),
-    ).toThrow("paused");
-  } finally {
-    ack.resolve();
-    await f.close();
-  }
+    expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
+    expect(await f.chrome.allocate("fresh", "run", f.selection(p.profile), "Fresh").action("snapshot")).toMatchObject({ humanUsing: false });
+  } finally { ack.resolve(); await f.close(); }
 });
 
 test("unavailable exact X11 backend fails closed without leaking native paths or display metadata", async () => {
@@ -509,7 +437,7 @@ test("unavailable exact X11 backend fails closed without leaking native paths or
         .catch((e) => e.status),
     ).toBe(409);
     expect(f.share.state().status).toBe("failed");
-    expect(f.chrome.sharingDesktop).toBe(true);
+    expect(f.chrome.humanState()).toBe(true);
     expect(f.share.state().error).not.toMatch(
       /\/tmp|Xauthority|3999|ENOENT|grant/,
     );
@@ -552,7 +480,7 @@ test("app shutdown closes the real Chrome bridge after share cleanup rejects and
   };
   try {
     expect(await canConnect()).toBe(true);
-    app.service.chrome.lockDesktop();
+    Object.assign(app.service.chromeShare, { status: "failed" });
     writeFileSync(latch, JSON.stringify({ runtime: null }), { mode: 0o600 });
     Object.assign(app.service.chromeShare, {
       status: "failed",
@@ -564,161 +492,70 @@ test("app shutdown closes the real Chrome bridge after share cleanup rejects and
     expect(chromeClosed).toBe(true);
     expect(await canConnect()).toBe(false);
     expect(existsSync(latch)).toBe(true);
-    expect(app.service.chrome.sharingDesktop).toBe(true);
+    expect(app.service.chromeShare.state().status).not.toBe("idle");
   } finally {
     await app.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("cleanup-only handback after native disconnect ACKs current peers after input cleanup, never revives lost tasks", async () => {
-  const f = await fixture(),
-    cleanup = gate();
+test("cleanup after target disconnect never revives lost tabs or waits for unrelated Chrome peers", async () => {
+  const f = await fixture(), cleanup = gate();
   try {
-    const a = await f.peer(),
-      b = await f.peer();
+    const a = await f.peer(), b = await f.peer();
     const old = f.chrome.allocate("a", "run-a", f.selection(a.profile), "A");
-    await old.action("name", { name: "Old task" });
-    await f.chrome
-      .allocate("b", "run-b", f.selection(b.profile), "B")
-      .action("name", { name: "Current task" });
+    await old.action("open", { url: "https://example.com" });
     await f.share.take("owner", "a", a.profile, a.generation).catch(() => {});
     a.socket.destroy();
-    await waitFor(
-      () => f.chrome.state("a").task?.pauseState === "disconnected",
-    );
-    expect(f.share.state().status).toBe("failed");
-    await expect(f.chrome.freezeDesktop()).rejects.toThrow("disconnected");
-    await expect(
-      f.share.release("owner", f.share.state().generation),
-    ).rejects.toThrow("failed share");
-    let cleaned = false;
-    const stopCapture = (f.share as any).stopCapture.bind(f.share);
-    (f.share as any).stopCapture = async (repair: boolean) => {
-      await stopCapture(repair);
-      await cleanup.promise;
-      cleaned = true;
-    };
-    const before = b.requests.length;
-    b.onCall(async (r) => {
-      if (r.method === "freeze") expect(cleaned).toBe(true);
-      return r.method === "freeze" ? { frozen: true } : { ok: true };
-    });
+    await waitFor(() => f.chrome.state("a").task?.connected === false);
+    const browser = f.chrome.allocate("b", "run-b", f.selection(b.profile), "B");
+    Object.assign(f.share, { stopCapture: () => cleanup.promise });
     const handback = f.share.release("owner", f.share.state().generation, true);
-    await Bun.sleep(10);
-    expect(b.requests.length).toBe(before);
-    expect(f.chrome.sharingDesktop).toBe(true);
-    cleanup.resolve();
-    await handback;
-    expect(f.share.state().status).toBe("idle");
-    expect(f.chrome.sharingDesktop).toBe(false);
-    expect(f.chrome.state("a").task?.pauseState).toBe("disconnected");
-    expect(f.chrome.state("a").task?.paused).toBe(false);
-    expect(f.chrome.state("b").task?.paused).toBe(true);
-    expect(b.requests.slice(before).map((r) => r.method)).toEqual([
-      "freeze",
-      "unfreeze",
-    ]);
-    expect((f.share as any).process).toBeNull();
-    expect((f.share as any).connections.size).toBe(0);
-    expect(() => f.share.ticket("owner", f.share.state().generation)).toThrow();
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    cleanup.resolve(); await handback;
     await expect(old.action("snapshot")).rejects.toThrow("expired");
-    await expect(f.chrome.control("a", "resume")).rejects.toThrow();
-  } finally {
-    cleanup.resolve();
-    await f.close();
-  }
+    expect(b.requests.some(r => ["freeze", "unfreeze"].includes(r.method))).toBe(false);
+  } finally { cleanup.resolve(); await f.close(); }
 });
 
-test("cleanup-only native-disconnect recovery stays latched if any current peer fails its freeze ACK", async () => {
+test("failed viewer cleanup clears advisory status and notifies bound handoffs once, while preserving repair", async () => {
   const f = await fixture();
   try {
-    const a = await f.peer(),
-      b = await f.peer();
-    await f.chrome
-      .allocate("a", "run-a", f.selection(a.profile), "A")
-      .action("name", { name: "Lost task" });
-    await f.share.take("owner", "a", a.profile, a.generation).catch(() => {});
-    a.socket.destroy();
-    await waitFor(
-      () => f.chrome.state("a").task?.pauseState === "disconnected",
-    );
-    b.onCall(async () => {
-      throw new Error("Fixture current-peer detach failed");
-    });
-    await expect(
-      f.share.release("owner", f.share.state().generation, true),
-    ).rejects.toThrow();
-    expect(f.share.state().status).toBe("failed");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(
-      existsSync(join(f.chrome.bridge.directory, "desktop-share.json")),
-    ).toBe(true);
-    expect((f.share as any).process).toBeNull();
-    expect(() =>
-      f.chrome.allocate("new", "run", f.selection(b.profile), "New"),
-    ).toThrow("paused");
+    const p = await f.peer();
+    const browser = f.chrome.allocate("a", "run", f.selection(p.profile), "A");
+    await browser.reserveLogin("login", "https://example.com");
+    Object.assign(f.share, { startCapture: async () => { (f.share as any).status = "sharing"; } });
+    await f.share.take("owner", "a", p.profile, p.generation);
+    const done: unknown[] = [];
+    f.share.onDone = handoffs => { done.push(...handoffs); for (const h of handoffs) f.chrome.done(h.agent, h.id); };
+    const stop = (f.share as any).stopCapture.bind(f.share);
+    Object.assign(f.share, { stopCapture: async () => { throw new Error("cleanup failed"); } });
+    await expect(f.share.release("owner", f.share.state().generation)).rejects.toThrow();
+    expect(done).toEqual([{ agent: "a", id: "login" }]);
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
     expect(() => f.share.ticket("owner", f.share.state().generation)).toThrow();
-  } finally {
-    await f.close();
-  }
+    Object.assign(f.share, { stopCapture: stop });
+    await f.share.release("owner", f.share.state().generation, true);
+    expect(done).toHaveLength(1);
+  } finally { await f.close(); }
 });
 
-test("expired-owner cleanup cannot bypass a failed current-peer freeze ACK", async () => {
+test("orphaned human-use status does not block current or newly allocated browser tasks", async () => {
   const f = await fixture();
   try {
-    const a = await f.peer();
-    const browser = f.chrome.allocate(
-      "a",
-      "run-a",
-      f.selection(a.profile),
-      "A",
-    );
-    await browser.action("name", { name: "Retained task" });
-    a.onCall(async (r) => {
-      if (r.method === "freeze") throw new Error("Fixture failed detach");
-      return { ok: true };
-    });
-    await expect(
-      f.share.take("expired-owner", "a", a.profile, a.generation),
-    ).rejects.toThrow();
-    f.share.ownerValid = (session) => session === "new-owner";
-    expect(f.share.state("new-owner").status).toBe("orphaned");
-    await expect(
-      f.share.release("new-owner", f.share.state().generation, true),
-    ).rejects.toThrow();
-    expect(a.requests.filter((r) => r.method === "freeze")).toHaveLength(2);
-    expect(a.requests.some((r) => r.method === "unfreeze")).toBe(false);
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(f.share.state().status).toBe("orphaned");
-    expect(
-      existsSync(join(f.chrome.bridge.directory, "desktop-share.json")),
-    ).toBe(true);
-    expect((f.share as any).process).toBeNull();
-    expect(() =>
-      f.share.ticket("new-owner", f.share.state().generation),
-    ).toThrow();
-    expect(() =>
-      f.chrome.allocate("new", "new-run", f.selection(a.profile), "New"),
-    ).toThrow("paused");
-    await expect(browser.action("snapshot")).rejects.toThrow("paused");
-
-    // Only a new, successful acknowledgement can reopen admission. Cleanup does
-    // not start capture or resume the task, even for a valid replacement owner.
-    a.onCall(async (r) =>
-      r.method === "freeze" ? { frozen: true } : { ok: true },
-    );
-    await f.share.release("new-owner", f.share.state().generation, true);
-    expect(a.requests.filter((r) => r.method === "freeze")).toHaveLength(3);
-    expect(a.requests.filter((r) => r.method === "unfreeze")).toHaveLength(1);
-    expect(f.share.state().status).toBe("idle");
-    expect(f.chrome.sharingDesktop).toBe(false);
-    expect(f.chrome.state("a").task?.paused).toBe(true);
-    await expect(browser.action("snapshot")).rejects.toThrow("paused");
-    expect((f.share as any).process).toBeNull();
-  } finally {
-    await f.close();
-  }
+    const p = await f.peer();
+    const browser = f.chrome.allocate("a", "run", f.selection(p.profile), "A");
+    await browser.action("open", { url: "https://example.com" });
+    await f.share.take("expired", "a", p.profile, p.generation).catch(() => {});
+    f.share.ownerValid = s => s === "new";
+    expect(f.share.state("new").status).toBe("orphaned");
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await f.chrome.allocate("b", "run-b", f.selection(p.profile), "B").action("snapshot")).toMatchObject({ humanUsing: true });
+    await f.share.release("new", f.share.state().generation, true);
+    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(p.requests.some(r => r.method === "freeze")).toBe(false);
+  } finally { await f.close(); }
 });
 
 test("overlapping viewer loss and handback stop the capture process only once", async () => {
@@ -767,39 +604,25 @@ test("overlapping viewer loss and handback stop the capture process only once", 
   }
 });
 
-test("deferred admit/drop ABA during delayed unfreeze preserves failed share epoch and durable latch", async () => {
+test("unrelated profile admission and loss during viewer cleanup cannot revoke the target computer", async () => {
   const f = await fixture(), ack = gate();
-  let pending: Socket | undefined;
   try {
     const p = await f.peer();
-    f.chrome.lockDesktop();
-    await f.chrome.freezeDesktop();
-    Object.assign(f.share, { status: "sharing", owner: "owner", frozen: true });
+    Object.assign(f.share, { status: "sharing", owner: "owner", profile: p.profile, profileGeneration: p.generation, stopCapture: () => ack.promise });
     (f.share as any).persist();
-    p.onCall(async r => { if (r.method === "unfreeze") await ack.promise; return { ok: true }; });
-    const release = f.share.release("owner", f.share.state().generation).catch(e => e.status);
-    await waitFor(() => p.requests.some(r => r.method === "unfreeze"));
-    const config = JSON.parse(readFileSync(join(f.chrome.bridge.directory, "pairing.json"), "utf8"));
-    f.chrome.bridge.deferDesktop = () => ({ available: true, display: ":3999", auth: f.auth });
-    pending = connect(config.socket); pending.on("error", () => {});
-    pending.write(chromeFrame({ type: "hello", version: CHROME_PROTOCOL, capabilities: CHROME_METHODS,
-      instance: "share-test", grant: config.grant, extensionId: "a".repeat(32), profile: crypto.randomUUID(),
-      generation: crypto.randomUUID(), desktop: { available: false } }));
-    await waitFor(() => f.chrome.bridge.deferredProfiles().length === 1);
-    pending.destroy();
-    await waitFor(() => f.share.state().status === "failed" && !f.chrome.bridge.deferredProfiles().length);
+    const release = f.share.release("owner", f.share.state().generation);
+    const other = await f.peer();
+    expect(other.requests[0].type).toBe("paired");
+    other.socket.destroy(); await waitFor(() => f.chrome.bridge.profiles().length === 1);
     ack.resolve();
-    expect(await release).toBe(409);
-    expect(f.share.state().status).toBe("failed");
-    expect(f.chrome.sharingDesktop).toBe(true);
-    expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
-  } finally { ack.resolve(); pending?.destroy(); await f.close(); }
+    expect((await release).status).toBe("idle");
+  } finally { ack.resolve(); await f.close(); }
 });
 
 test("viewer-disconnect cleanup cannot overwrite a newer stopping handback with disconnected", async () => {
   const f = await fixture(), stopped = gate();
   try {
-    await f.peer(); f.chrome.lockDesktop(); await f.chrome.freezeDesktop();
+    await f.peer();
     Object.assign(f.share, { status: "sharing", owner: "owner", frozen: true, stopCapture: () => stopped.promise });
     (f.share as any).persist();
     const disconnect = f.share.attach(() => {});
@@ -807,7 +630,7 @@ test("viewer-disconnect cleanup cannot overwrite a newer stopping handback with 
     const release = f.share.release("owner", f.share.state().generation);
     stopped.resolve();
     expect((await release).status).toBe("idle");
-    expect(f.chrome.sharingDesktop).toBe(false);
+    expect(f.chrome.humanState()).toBe(false);
     expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(false);
   } finally { stopped.resolve(); await f.close(); }
 });
@@ -816,13 +639,13 @@ test("cleanup-only orphan acquires native privacy exclusion without viewing befo
   const f = await fixture();
   let safe = false, drained = 0;
   try {
-    await f.peer(); f.chrome.lockDesktop();
+    await f.peer();
     Object.assign(f.share, { status: "orphaned", owner: null, drainDesktop: async () => { drained++; safe = true; } });
     f.share.privacyValid = () => safe;
     (f.share as any).persist();
     expect((await f.share.release("fresh-owner", f.share.state().generation, true)).status).toBe("idle");
     expect(drained).toBe(1);
-    expect(f.chrome.sharingDesktop).toBe(false);
+    expect(f.chrome.humanState()).toBe(false);
     expect((f.share as any).process).toBeNull();
   } finally { await f.close(); }
 });
@@ -832,7 +655,6 @@ for (const restored of [false, true]) test(`already-clean owned Chrome death ret
   let share = f.share;
   try {
     const peer = await f.peer();
-    f.chrome.lockDesktop();
     Object.assign(share, { status: "disconnected", owner: "owner", ownedGeneration: crypto.randomUUID(), binding: { fixture: true }, frozen: true });
     (share as any).persist();
     if (restored) {
@@ -845,14 +667,11 @@ for (const restored of [false, true]) test(`already-clean owned Chrome death ret
     (share as any).verifyOwnedAuth = async () => { throw new Error("must not replay auth"); };
     await expect(share.release("owner", share.state().generation)).rejects.toThrow();
     await expect(share.reconnect("owner", share.state().generation)).rejects.toThrow();
-    // A fresh current-peer ACK is mandatory, even with a cached frozen flag.
-    peer.onCall(async () => { throw new Error("no ACK"); });
-    await expect(share.release("owner", share.state().generation, true)).rejects.toThrow();
-    expect(f.chrome.sharingDesktop).toBe(true);
-    peer.onCall(async r => r.method === "freeze" ? { frozen: true } : { ok: true });
+    // Browser peer failures cannot prevent native viewer cleanup.
+    peer.onCall(async () => { throw new Error("unrelated browser fault"); });
     await share.release("owner", share.state().generation, true);
     expect(share.state().status).toBe("idle");
-    expect(peer.requests.slice(-2).map(r => r.method)).toEqual(["freeze", "unfreeze"]);
+    expect(peer.requests.some(r => r.method === "freeze" || r.method === "unfreeze")).toBe(false);
     expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(false);
   } finally { if (share !== f.share) await share.close(); await f.close(); }
 });
@@ -867,7 +686,7 @@ for (const field of ["inputCleanupRequired", "authUncertain"]) for (const value 
       restored = new ChromeShare(f.chrome, f.dir, async () => {});
       restored.ownedDesktop.record = () => { throw new Error("dead Chrome"); };
       await expect(restored.release("new", 0, true)).rejects.toThrow();
-      expect(f.chrome.sharingDesktop).toBe(true);
+      expect(f.chrome.humanState()).toBe(false);
       expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
     } finally {
       // Synthetic unresolved obligations have no native process to clean.
@@ -876,17 +695,17 @@ for (const field of ["inputCleanupRequired", "authUncertain"]) for (const value 
     }
   });
 
-test("clean owned record replacement during peer ACK cannot publish authority", async () => {
+test("clean owned record replacement during native cleanup cannot retire the latch", async () => {
   const f = await fixture();
   try {
-    const peer = await f.peer(); f.chrome.lockDesktop();
+    const peer = await f.peer();
     Object.assign(f.share, { status: "failed", owner: "owner", ownedGeneration: crypto.randomUUID(), binding: {} });
     (f.share as any).persist();
     let stamp = "original";
     f.share.ownedDesktop.cleanupRecord = () => ({ stamp }) as any;
-    peer.onCall(async () => { stamp = "replacement"; return { frozen: true }; });
+    Object.assign(f.share, { stopCapture: async () => { stamp = "replacement"; } });
     await expect(f.share.release("owner", 0, true)).rejects.toThrow("revoked");
-    expect(f.chrome.sharingDesktop).toBe(true);
+    expect(f.chrome.humanState()).toBe(false);
     expect(peer.requests.some(r => r.method === "unfreeze")).toBe(false);
   } finally { await f.close(); }
 });
@@ -894,7 +713,6 @@ test("clean owned record replacement during peer ACK cannot publish authority", 
 test("clean owned recovery refuses missing runtime and changed durable completion evidence", async () => {
   const f = await fixture();
   try {
-    f.chrome.lockDesktop();
     Object.assign(f.share, { status: "failed", owner: "owner", ownedGeneration: crypto.randomUUID(), binding: {} });
     f.share.ownedDesktop.cleanupRecord = () => ({ retained: true }) as any;
     for (const patch of [{ runtime: undefined }, { inputCleanupRequired: null }, { authUncertain: "false" }, { ownedGeneration: crypto.randomUUID() }]) {
@@ -903,8 +721,83 @@ test("clean owned recovery refuses missing runtime and changed durable completio
       const saved = JSON.parse(readFileSync(path, "utf8"));
       writeFileSync(path, JSON.stringify({ ...saved, ...patch }), { mode: 0o600 });
       await expect(f.share.release("owner", f.share.state().generation, true)).rejects.toThrow("evidence");
-      expect(f.chrome.sharingDesktop).toBe(true);
+      expect(f.chrome.humanState()).toBe(false);
       expect(existsSync(path)).toBe(true);
     }
   } finally { await f.close(); }
+});
+
+test("human clipboard requires owner, connected exact Take/generation and unchanged native binding before and after async transfer", async () => {
+  const f = await fixture(), ack = gate();
+  const display = `:${100000000 + Math.floor(Math.random() * 100000000)}`;
+  const native = createServer();
+  await new Promise<void>(resolve => native.listen(`/tmp/.X11-unix/X${display.slice(1)}`, resolve));
+  try {
+    const p = await f.peer();
+    const binding = bindChromeDesktop({ available: true, display, auth: f.auth });
+    Object.assign(f.share, { status: "sharing", owner: "owner", controlId: "take", generation: 7,
+      profile: p.profile, profileGeneration: p.generation, binding, connections: new Set([() => {}]) });
+    const calls: unknown[] = [];
+    const backend = (f.share as any).clipboard;
+    backend.transfer = async (_binding: unknown, current: () => void, text: string) => {
+      calls.push(text); await ack.promise; current(); return { text: "private-response" };
+    };
+    const identity = { controlId: "take", generation: 7 };
+    for (const [owner, input] of [["foreign", identity], ["owner", { ...identity, generation: 6 }], ["owner", { ...identity, controlId: "old" }]] as const)
+      await expect(f.share.transferClipboard(owner, input, false)).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+    await expect(f.share.transferClipboard("owner", { ...identity, text: "🪼".repeat(65537) }, true)).rejects.toThrow("256 KiB");
+    await expect(f.share.transferClipboard("owner", { ...identity, display: ":0" }, false)).rejects.toThrow("options");
+    const pending = f.share.transferClipboard("owner", { ...identity, text: "雪\n🪼" }, true);
+    (f.share as any).generation++;
+    ack.resolve(); await expect(pending).rejects.toThrow("connection changed");
+    expect(calls).toEqual(["雪\n🪼"]);
+    (f.share as any).generation = 7;
+    (f.share as any).connections.clear();
+    await expect(f.share.transferClipboard("owner", identity, false)).rejects.toThrow();
+    (f.share as any).connections.add(() => {});
+    writeFileSync(f.auth, "changed", { mode: 0o600 });
+    await expect(f.share.transferClipboard("owner", identity, false)).rejects.toThrow();
+  } finally {
+    ack.resolve(); Object.assign(f.share, { status: "idle" }); await f.close();
+    await new Promise<void>(resolve => native.close(() => resolve()));
+  }
+});
+
+test("clipboard HTTP routes require cookie/CSRF/same-origin and scope the expanded escaped JSON limit only to send", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jelly-clipboard-http-"));
+  const app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
+  const origin = app.server.url.origin;
+  try {
+    const session = await fetch(`${origin}/api/control-session`);
+    const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+    const { csrf } = await session.json() as { csrf: string };
+    const headers = { cookie, "x-jelly-csrf": csrf, "content-type": "application/json" };
+    const post = (route: string, raw = "{}", h: Record<string, string> = headers) => fetch(`${origin}/api/chrome/share/${route}`, { method: "POST", headers: h, body: raw });
+    for (const route of ["clipboard/send", "clipboard/receive"]) {
+      expect((await post(route, "{}", { "content-type": "application/json" })).status).toBe(401);
+      expect((await post(route, "{}", { cookie, "content-type": "application/json" })).status).toBe(403);
+      expect((await post(route, "{}", { ...headers, origin: "https://evil.example" })).status).toBe(403);
+      expect((await post(route)).status).toBe(403); // no active owner
+    }
+    let input: any;
+    app.service.chromeShare.transferClipboard = async (_session, value) => { input = value; return { ok: true }; };
+    const malformed = Buffer.concat([Buffer.from('{"text":"'), Buffer.from([0xff]), Buffer.from('"}')]);
+    for (const route of ["clipboard/send", "clipboard/receive"]) {
+      const result = await fetch(`${origin}/api/chrome/share/${route}`, { method: "POST", headers, body: malformed });
+      expect(result.status).toBe(400);
+      expect(await result.json()).toEqual({ error: "Invalid JSON object." });
+      expect(input).toBeUndefined();
+    }
+    const escaped = '{"text":"' + "\\u0001".repeat(256 * 1024) + '"}';
+    expect((await post("clipboard/send", escaped)).status).toBe(200);
+    expect(input.text.length).toBe(256 * 1024);
+    expect((await post("clipboard/receive", escaped)).status).toBe(413);
+    expect((await post("take", escaped)).status).toBe(413);
+    expect((await post("clipboard/send", " ".repeat(COMPUTER_CLIPBOARD_BODY_BYTES + 1))).status).toBe(413);
+    expect(validClipboardText("\uFEFF雪\n🪼\r\n")).toBe(true);
+    expect(validClipboardText("\ud800")).toBe(false);
+    expect(validClipboardText("🪼".repeat(65536))).toBe(true);
+    expect(validClipboardText("🪼".repeat(65537))).toBe(false);
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });

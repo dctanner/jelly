@@ -4,7 +4,7 @@
 connected profile and site access **globally for every persistent Jelly agent**.
 Agents use separate task groups and exclusive tab capabilities but share that
 profile's cookies and signed-in accounts. Managed Chromium controllers, private
-managed profiles, SOCKS egress and the Computer panel have been removed. Existing
+managed profiles and SOCKS egress have been removed. Computer control is the human’s remote full-desktop viewer, not a browser backend. Existing
 Connected Chrome sessions remain pinned until explicitly closed; legacy managed
 profile directories are left untouched and are no longer used.
 
@@ -56,7 +56,7 @@ after review; tests never modify the normal profile or live Jelly settings.
    per Chrome user-data root; use separate roots for separate instances.
 
 4. The extension connects automatically on load and browser startup, without opening
-   the popup. The popup shows Connecting, pending private handback, Connected, or a
+   the popup. The popup shows Connecting, Connected, or a
    bounded safe failure category. Unavailable hosts retry using MV3 alarms (30 seconds
    up to five minutes between attempts). **Disconnect** persists across browser restarts;
    only **Reconnect to installed Jelly instance** clears it. Legacy `#connect` URLs
@@ -98,7 +98,7 @@ after review; tests never modify the normal profile or live Jelly settings.
    same-origin/CSRF protections do not prevent all cross-site side effects. A
    disconnected selected profile never falls back to another profile or managed
    browser. Already allocated sessions keep their target/profile/sites; stop the
-   agent and **Close / Reset pinned target** to change those choices, including
+   agent and use **agent menu → Computer control → Advanced → Close session** to change those choices, including
    switching between approved-site and unrestricted access. Existing settings
    without a site-access mode retain approved-site behavior.
 
@@ -110,9 +110,8 @@ transport; local native messaging cannot bridge machines.
 
 - `browser_name_task` gives groups a short task label:
   `🔎 Jelly · Agent · Task`. Agent colors are stable; groups are per task/window.
-  New task tabs are background tabs. Only explicit **Open in Chrome** focuses a
-  tab/window; Jelly enables it only after acknowledged pause. Human regrouping/
-  group deletion never grants or transfers a lease.
+  New task tabs are background tabs. Use Computer control to select a tab on the
+  remote computer. Human regrouping/group deletion never transfers a lease.
 - `browser_open`, `browser_tabs`, `browser_snapshot`, `browser_screenshot`, exact
   `browser_click`/`browser_fill`, bounded `browser_scroll`, `browser_select`,
   referenced `browser_key` and `browser_wait_for` are supported. Keys are semantic
@@ -144,59 +143,33 @@ transport; local native messaging cannot bridge machines.
   task and does not disclose its content. **Chrome can start popup networking
   before its creation notification**; see the rollout gate below.
 
-## Pause, private handoffs, settlement and recovery
+## Human use, sign-in and settlement
 
-`request_browser_login` opens a scoped task tab, marks it for retained handoff,
-pauses and detaches before waiting. During reservation/open/mark/drain the inline
-`ChatFormCard` says **Pausing—do not enter credentials yet**. **Open in Chrome**
-and **Return control to agent** stay disabled until live task state confirms the
-matching handoff's reservation and extension pause acknowledgement. Failure and
-disconnection never advertise private-safe state. **Open in Chrome** focuses the
-real local task tab; **Open web VNC…** opens the full-desktop viewer described
-below, with a normal **Take control** action. Neither launches or copies Chrome.
-Enter credentials only after the relevant pause acknowledgement. Approved site
-restrictions remain during handoff. Resume invalidates observations; secret-field
-pages remain blocked until the fields disappear.
+Human computer control is **advisory**, not an automation permission latch.
+Browser results (including screenshot context) report `humanUsing`. A human may
+be signing in or using the computer, but agents can continue useful browser work.
+A disconnected viewer, failed native cleanup, an orphaned share after restart,
+or stale human-use status cannot block browser tools. Agents should re-observe
+pages changed by the human. Connection loss, explicit Disconnect, revoked tabs,
+site scope, stale references and secret-field protections remain enforced.
 
-The extension popup always offers **Pause all agents locally** and **Disconnect**.
-Local pause revokes authority before notifying Jelly, drains already-dispatched
-isolated scripts/captures/tab mutations and waits for debugger attachment/detachment. An action
-already admitted before pause may complete before acknowledgement; its result is
-revoked and it is never replayed. **Wait for paused status before entering
-credentials.** Server authority revocation is separate from acknowledged pause;
-settings and the extension popup show **Pausing—do not enter credentials yet**
-while draining, not **Paused**. Jelly's settings also expose per-task
-pause/resume/focus/disconnect.
-Debugger attachment is cleared only after confirmed detach or tab removal;
-rejected detach reports **Pause failed**, never acknowledged **Paused**. Retry
-pause explicitly or close the affected tab; do not enter credentials after a
-failed or uncertain transition. Resume removes the human-safe indicator before
-dispatch and displays **Resuming—do not enter credentials** until acknowledgement.
-Late responses cannot undo a newer pause, and failed resume never restores a safe
-indicator. Settings, cards and the packaged popup discard superseded status reads.
-Native pause/end preempt queued work; cancellation/timeouts disconnect, making
-in-flight mutation outcomes indeterminate. Debugger conflict/cancellation pauses,
-with no automatic reattachment until explicit resume.
+`request_browser_login` opens a scoped tab and waits for its explicit request.
+Its card offers Computer control and **Done** / **Cancel**, without credentials
+in chat or a claimed debugger-detached privacy lock. Done resolves that exact
+request and tells the requesting agent the human has finished. It works without
+an active run or Chrome connection. Stale cards cannot complete a newer request;
+late open/mark responses cannot resurrect cancelled status.
 
-After the complete Jelly run settles and children are disposed:
+On settlement, temporary tabs normally close. While human-use status is set,
+owned tabs are retained so settlement does not close tabs the human is using.
+`browser_keep_tab` deliverables are released open; handoff tabs remain reserved.
+Later runs can use valid retained tabs without mandatory Resume. Real debugger
+cleanup failures remain security faults, not human-use status; reconnect/close
+the affected session rather than blindly reenabling invalid tabs. Personal tabs
+are never automatically closed. Advanced Close session is available when idle.
 
-- Temporary agent tabs close.
-- Deliverables (`browser_keep_tab`, default `mark: "deliverable"`) remain open
-  without a lease/debugger and with task restrictions removed.
-- Agent tabs marked `handoff` remain reserved and paused across follow-up runs.
-  All private-control pauses, including protective pauses after debugger conflicts
-  or tab replacement, preserve temporary agent tabs if the run settles before
-  resume, so settlement cannot close a tab during private human work. The human
-  can keep using the open tab while agent observations and input stay revoked.
-  Resuming restores those implicitly preserved tabs' normal temporary cleanup.
-  The same task/profile persists but the next run gets new run authority. Start
-  a follow-up browser run, then explicitly **Resume**; old-run tools are rejected.
-  A follow-up that never uses the browser does not discard a retained handoff.
-- User tabs always remain open and are released, even during automatic cleanup.
-- Closing an idle retained session releases retained tabs as well; it does not
-  silently retarget another active session.
-- Human closure of the last idle retained tab removes the extension session, so
-  repeated Close/Reset cycles do not exhaust its task capacity.
+Native Mac desktop private handoffs remain a separate exclusive security system;
+Computer control does not make native desktop automation permissive.
 
 Disconnect, worker termination, browser/server restart and tab replacement revoke
 capabilities; there is no mutation replay or automatic authority reconstruction
@@ -220,124 +193,116 @@ detach rejection is not treated as success; another attached debugger may cause
 conservative refusal. Legacy installations lacking this metadata quarantine their
 old per-tab rule targets until cleanup rather than assuming they are safe.
 
-## Human-only web VNC (Linux local X11)
+## Computer control (Linux local X11)
 
-The sign-in card and **Settings → Connected Chrome → Connected Chrome web VNC…**
-open the shared viewer. The viewer resolves the agent's pinned Chrome profile,
-not just the current global setting. Opening the panel does not
-start capture; its normal **Take control** action starts sharing.
+**Settings → Computer control**, the individual **agent menu → Computer control**,
+and Connected Chrome settings open the same `ComputerControlPanel`, with one
+global viewer state and owner. Agent context only selects its pinned computer;
+it does not create a per-agent computer session. Global settings work without a
+selected agent. With no configured/pinned profile, an installed owned desktop
+can be used before pairing. A pinned/unavailable computer never silently switches
+to another desktop. When only the global configured profile is disconnected,
+**Use installed computer** explicitly selects the installed desktop before
+**Take control**; it does not change browser configuration or an agent’s pin.
+Browser profile/site configuration remains separate.
 
-**Current user direction supersedes the earlier consent-form design:** this is
-the user's owned machine, so the deliberate authenticated **Take control** action
-is sufficient authorization. There is no extra consent checkbox, approval dialog,
-confirmation token or “approve whole desktop” step. The capture-scope and input-
-cleanup descriptions are informational, not another permission gate. Settings
-polling never starts a share.
+Opening the panel does not capture anything. **Take control** starts the remote
+viewer; **Done** stops local input and notifies sign-in requests on that computer
+bound when control was taken. Newer requests and requests on another computer are
+never completed by an older viewer action. A stable Take identity binds Done,
+reconnect and unmount independently of rotating socket/ticket generations.
+Reconnect and cleanup retry appear only when relevant. No local-machine “Open in
+Chrome” path or tab-capability/pause/resume controls are exposed. The agent entry
+adds a collapsed Advanced browser-session recovery section; Close session is
+server-enforced idle-only and does not close the computer viewer.
 
-**This captures and controls the entire existing X11 desktop, not only Chrome or
-its authorized task tabs. Other windows, accounts, notifications and unrelated
-private content may be visible and controllable.** Only the owning Jelly
-control-session cookie can receive a viewer ticket. Other sessions cannot view,
-control, recover or take over the private screen. No desktop pixels, OS clipboard
-or file-transfer channel are exposed to models. Clipboard transfer is disabled
-in x11vnc and there is no clipboard/file UI for this viewer. Native X11 input can
-still operate ordinary desktop applications. Disconnect/handback cleanup releases
-held keys and pointer buttons and can also release keys/buttons held on the
-physical keyboard or mouse; do not hold physical inputs during cleanup.
+**The viewer covers the full computer, including other windows and notifications,
+not just a browser tab. Browser agents may continue; this is not an exclusive
+privacy lock.** No file transfer. Viewer pixels are not sent to the model, but
+normal scoped browser tools remain usable and their existing secret-field
+suppression still applies.
 
-Requirements:
+**Mobile viewer:** portrait phones get a height-filled desktop and a **Pan**
+slider above it to reach the left and right edges. The slider supports touch and
+keyboard input without sending those actions to the computer. It uses the actual
+desktop aspect ratio; desktop and landscape layouts fit the whole screen.
+This changes only the local view, not the remote resolution or website zoom.
+Held viewer keys are released when focus moves to local controls; the slider
+must not leave modifiers or ordinary keys held on the computer. Panning resets
+on disconnect or Done. Clipboard controls remain outside the clipped desktop.
 
-- Chrome, native host and Jelly must run on the same Linux machine/OS user with
-  an actual local **X11** session. The native host must inherit
-  `XDG_SESSION_TYPE=x11`, local `DISPLAY=:N[.screen]`, and an absolute
-  `XAUTHORITY` pointing to an owner-only authorization file (0600). These are
-  checked against the native host's same-user direct Chrome browser parent using
-  Linux `/proc` executable, command-line and environment evidence, never supplied
-  by the model, extension or HTTP request. Browser and native host must agree on
-  those environment values. A bounded same-executable descendant GPU/renderer
-  must explicitly report the resolved `x11` Ozone backend. Unknown parent wrappers,
-  missing/inaccessible process evidence, headless Chrome, conflicting/duplicate
-  backend switches, backend environment overrides, auto/Wayland backend hints,
-  noncanonical backend flags and **every `--display` / `-display` override**
-  are unavailable. Chromium can flatten its command line and lose argument
-  boundaries, so overrides are rejected rather than inferred—even a valid local
-  override. Use Chrome's existing inherited X11 display; Jelly never relaunches
-  it to change this. Missing authorization/display/backend is not guessed from
-  HOME, Jelly's server environment or unrelated displays. The authorization must
-  open that exact display, or sharing fails closed.
-- **Wayland/XWayland, remote DISPLAY, macOS and Windows are unavailable** for web
-  VNC. Local **Open in Chrome** remains available wherever Connected Chrome works;
-  there is no automatic managed-browser or alternate-display fallback.
-- Install `x11vnc`, `/usr/bin/python3` and `/usr/bin/flock` separately on this
-  machine, with `libX11`, `libXtst` and `libXi` (XInput2). Input cleanup requires
-  one enabled master pointer; multi-master/multiseat input is unavailable rather
-  than guessed. x11vnc may be in `/usr/bin`, `/usr/local/bin`, or this instance's
-  `runtime/usr/bin` (the existing desktop dependency bundle). No dependency is
-  installed automatically and no normal signed-in profile is modified by tests.
-  Reload/reconnect the unpacked extension after upgrading protocol versions.
+**Compact mobile controls and keyboard:** while connected, the phone toolbar
+uses accessible icon buttons and keeps Done visible; the information button
+reopens the full-computer access notice. The notice is always shown before Take.
+The viewer fills the space left below the compact controls and adjusts to the
+phone keyboard's visible viewport without reconnecting.
 
-Take control first reserves an exclusive, persisted instance-wide privacy latch.
-All connected profiles freeze, drain observations/input and acknowledge confirmed
-extension debugger detachment before x11vnc starts. New allocations, cached tools,
-begins, resumes and new profile connections remain blocked for this instance;
-Jelly desktop-provider work must also drain and stay excluded. Unrelated model
-work may continue. x11vnc uses one 0600 Unix socket in a 0700 private runtime,
-with both IPv4/IPv6 RFB TCP listeners disabled, `-norc`, `-nosel` and
-`-clear_keys`. It never
-launches Chrome/Xvfb, copies a profile, changes website zoom, resizes or focuses
-Chrome. Tickets expire after 30 seconds, are single-use, owner/epoch/profile-
-generation bound, and require the existing cookie/CSRF/origin controls. RFB
-forwarding rechecks authority in both directions. The viewer fits the actual
-framebuffer on both mobile and desktop.
+**Show keyboard** opens the device keyboard for the focused remote field.
+Tap the remote computer to choose another field without dismissing that keyboard.
+Committed Unicode/composition text, Backspace and Enter are sent as balanced
+remote key events; Esc, Tab and arrow buttons provide common non-text keys.
+**Hide keyboard** (or Escape on a physical keyboard) closes the local keyboard.
+Shift+Tab returns to local controls. Typed text has no Jelly API, transcript,
+storage or React-state path; temporary input is cleared on commit and dismissal.
+Device keyboards and remote applications may retain text independently.
+Disconnect or Take replacement discards unfinished composition; it is never
+replayed. For clipboard or long text, use **Paste to computer** instead.
+Actual OS-keyboard behavior still requires device-specific Safari/Android checks.
 
-**Return control**, or closing the owning panel (Escape/backdrop/swipe included),
-drops old VNC sockets/input and confirms graceful process exit plus key/button
-cleanup before unfreezing. A fixed bounded packaged X11 helper releases and
-verifies held keyboard and XInput pointer-button state; it never reads typed
-text, screenshots or clipboard contents. It binds only to the previously native-
-attested display, authorization hash and X-server socket identity.
-Only the selected current valid task may resume; all other tasks remain paused
-and need their own explicit Resume. Idle/settled retained tasks need a new
-browser run before Resume. Website sign-ins, the Chrome process/profile and
-user tabs are preserved. A network disconnect stops x11vnc, clears held keys AND
-buttons, and leaves the latch and tasks paused. **Reconnect desktop** explicitly
-starts a fresh VNC process only after confirmed cleanup; it never replays input.
-Unexpected process death or uncertain input cleanup requires **End failed share
-without viewing**, which cannot resume the old task. After confirmed VNC/input
-cleanup, this cleanup-only path freezes and checks every still-connected profile
-generation, but does not demand acknowledgements from already-disconnected/lost
-tasks. Lost tasks remain revoked and require ordinary Close/Reset before future
-use; no old task resumes. A current peer's failed freeze acknowledgement still
-keeps the privacy latch. Normal Take control/Reconnect never use this exception.
-If the original display or
-authorization binding changed, tools stay latched and operator repair is required;
-no unrelated/reused display is guessed. Failed handback keeps
-the panel open with a retryable error. Detach failure, profile loss, privacy-
-exclusion loss and stale requests never create a human-safe state or silently
-resume automation. If cleanup is uncertain, tools stay blocked and operator
-repair may be required; do not enter credentials after a failed transition.
+**Human-only text transfer:** the connected toolbar offers **Paste to computer**
+and **Copy from computer**. Paste reads this device’s clipboard only on that
+click, transfers UTF-8 text, confirms it by native readback, then sends Ctrl+V to
+the still-connected computer. A real Ctrl/Command+V paste into the focused viewer
+uses the paste event’s text without requesting clipboard permission. Ctrl+Shift+V
+(or **Paste into a terminal** in **Text options**) deliberately uses the terminal
+shortcut. No text is typed through keyboard emulation. **Send without pasting**
+updates only the computer clipboard. There is no automatic synchronization or
+paste on reconnect; remote apps still decide how a paste is handled.
 
-The latch survives a Jelly restart and control-cookie expiry. An orphaned share
-has **no viewing or takeover path**. A fresh authenticated session may explicitly
-choose **End orphaned desktop share without viewing**. Cleanup proves the old
-VNC process has ended using the parent-death child shim and an inherited
-private lock, never by killing a saved/reused numeric PID. The fixed cleanup
-helper then verifies/releases held keys/buttons against the original persisted
-native display binding. A changed X-server socket or authorization refuses
-cleanup rather than touching another desktop. If either proof fails, the
-latch remains. Successful orphan cleanup cannot restore old tabs, task authority
-or auto-resume an old run; future connections require normal fresh authorization.
-Owner expiry does not bypass freeze acknowledgement: cleanup must confirm every
-currently connected peer before reopening automation admission. A restart with no
-connected peers can complete without restoring any old authority.
-It does not reset or close the user's real Chrome. Do not delete the latch or
-runtime to bypass a failed cleanup check.
+Transfers support empty text, newlines and Unicode, up to **256 KiB UTF-8**;
+images/files, invalid UTF-8 and oversized contents are rejected, never truncated.
+The native dependencies are `/usr/bin/xclip` for foreground ownership and the
+existing Python/libX11 runtime for an on-demand reader, using only `CLIPBOARD` /
+`UTF8_STRING` on the original attested X11 display. The reader validates actual
+SelectionNotify success and exact property type/format, including bounded INCR
+chunks, before emitting any UTF-8 text. Failed conversion is never treated as
+empty text. Every helper verifies the expected Jelly parent before and after
+installing SIGKILL parent-death protection.
+No PRIMARY selection, polling or passive RFB clipboard export is enabled;
+x11vnc retains `-nosel`. Both directions are explicit cookie/CSRF-protected POSTs
+bound to the active owner, Take identity and exact connected generation. Helpers
+are size/time bounded, writes serialized and confirmed, and helpers are killed
+and drained when the viewer is revoked. Clipboard failure does not block browser
+tools or bypass held-key cleanup.
 
-This privacy barrier governs Jelly-provided Connected Chrome and desktop-provider
-authority **in this instance**. It is not isolation from unrestricted same-user
-shell/filesystem access, unrelated X clients, other applications or other Jelly
-instances. It cannot prevent OS actions available through the shared desktop.
-No real personal desktop or remote device is claimed verified.
+Where browser permissions or plain HTTP prevent clipboard APIs, **Text options**
+provides local textareas for manual paste/send and select/copy. Safari-style copy
+starts a promised ClipboardItem in the click gesture; a denied write leaves a
+manual-copy result instead. Text is not logged, stored by Jelly, sent to models,
+or placed in chats/status/events. Drafts survive retries but transfer fields clear
+on disconnect, Done, Take replacement and panel unmount. This does **not** erase
+native OS clipboards: computer apps and clipboard managers may retain copied
+text. Copying text into a remote page can of course make it visible to that page
+and its existing scoped browser tools. No agent clipboard tool is provided.
+
+Only the owning authenticated control-session cookie can receive single-use,
+short-lived generation-bound tickets. CSRF and same-origin checks remain. Other
+control sessions cannot view, reconnect, take over, or end its viewer. The native
+host attests the exact local X11 display and private authorization. Wayland,
+remote displays, macOS and Windows are not supported by this viewer; no fallback
+or public listener is opened. Native RFB is Unix-socket only. The separate native
+Mac desktop automation controls are not a Computer control destination.
+
+Closing an owned viewer stops input and sends Done. Cleanup failure does not trap
+the panel or block agents: the durable native cleanup obligation is retained and
+shown as **Retry cleanup** next time. Disconnect/owner expiry revoke old tickets
+and input; reconnect requires verified teardown. Cleanup verifies process exit,
+private runtime/guard locks, original display authorization and held key/button
+release. It may release physical keys/buttons on that display too. A restarted
+share is orphaned and permits cleanup without viewing, never ownership transfer.
+Uncertain native authentication or input cleanup still requires operator repair;
+never delete the latch/runtime to bypass it. These obligations gate **viewer
+reuse**, not browser automation. Native Mac private-work exclusion stays intact.
 
 ## Optional owned virtual-X11 desktop — existing profile, extension-only automation
 
@@ -435,20 +400,14 @@ Chrome changes to the existing profile persist. Session restoration is not an
 unsaved-state guarantee. This is not a command to restart the user's general
 Chrome session or the OS compositor.
 
-### Pre-pair private entry and handback
+### Pre-pair computer access and cleanup
 
-Open **Settings → Connected Chrome → Connected Chrome web VNC…**. The installed
-owned desktop can offer **Take control with zero paired profiles**, even before
-Chrome profile configuration. No capture starts on polling/opening.
-Take itself authorizes the operation—no extra checkbox. If a selected profile
-and the installed owned desktop both exist, the informational **Desktop source**
-selector explicitly identifies the target; unavailable selected-profile Take
-stays disabled until a different available source is explicitly chosen. The
-label, enabled state and request route always match; there is no silent switch.
-Cookie/CSRF/origin,
-owner/generation tickets, one viewer, Unix-only RFB, all-Connected-Chrome and
-native-desktop freeze/drain, no model pixels/input, and no clipboard/file export
-remain the existing share boundary.
+Open **Settings → Computer control**. With no configured/pinned profile, the
+installed owned desktop offers **Take control** even with zero paired profiles.
+Opening/polling never starts capture. The viewer uses the same cookie, CSRF,
+origin, owner/generation, Unix-only transport and input cleanup protections as
+an already paired computer. Browser work is not frozen and profiles are not
+withheld from publication. Native Mac desktop exclusion is separate.
 
 When configured and locked, a small native GTK password entry appears **inside
 that owned private X11 desktop only**, never in a transcript/web form. The human
@@ -471,7 +430,7 @@ kernel listener. Unreadable executable metadata, a missing listener or another
 recorded PID refuses authentication; this is not a same-user fallback.
 Service and D-Bus owner must already be active **before Unix connect**; no
 Start/activation is requested. Kernel endpoint and generations are rechecked
-before/after native auth and at handback, including after delayed unfreeze ACKs.
+before/after native auth and at viewer cleanup.
 The protected path uses process stamps plus trusted unit Exec metadata, never
 protected memory/environ, dumpability changes or elevation. GTK's live watcher
 and exact boundary checks perform full proofs; RFB chunks use cached attestation
@@ -487,20 +446,14 @@ collection or ambiguous response refuses; no authentication is replayed. This
 qualifies login-keyring authentication, not arbitrary OS/portal prompts on the
 original GNOME desktop.
 
-Click **Connect** once in Chrome's extension popup. An owned connection can stay
-authenticated but **unpublished**, with no instance/RPC/task/lease authority,
-until verified handback. It must acknowledge debugger cleanup; a missing/refused
-pending-peer acknowledgement cannot publish it or bypass the privacy latch.
-Return control first closes viewer admission, drains/stops the auth helper,
-confirms helper/VNC process and input cleanup, verifies the daemon/owned display
-binding and current peer acknowledgements, then publishes pending connections
-and reopens automation admission without replay. Monotonic deferred-admission,
-failure and share/owner/generation epochs fence every async handback boundary;
-an admitted-then-dropped peer cannot disappear from a list and erase failure.
-Failed/closed/revoked stopping transitions retain the durable latch. No old task
-resumes implicitly.
+Chrome connects automatically (or use Reconnect after an intentional Disconnect).
+An attested owned profile is published immediately after normal authenticated
+pairing and debugger cleanup, including while the human viewer is open. Done
+revokes viewer admission and stops/cleans up the native helpers. It does not
+freeze/unfreeze browser profiles or restore invalid task authority. Owner and
+viewer-generation changes still fence asynchronous native cleanup.
 
-Network/owner loss stays private. Normal shutdown uses a queued GTK main-context
+Network/owner loss revokes viewer access. Normal shutdown uses a queued GTK main-context
 stop, allowing an already-admitted bounded native unlock to finish before helper
 exit. Unknown auth outcome or forced helper death remains durably latched for
 operator repair. A hard Jelly crash with a surviving auth cleanup obligation is
@@ -520,50 +473,12 @@ fixture-only `JELLY_FIXTURE_OPENBOX`, `JELLY_FIXTURE_WM_LIBRARY` and
 install. No package is installed automatically. `bun run test:chrome-os-auth`
 separately exercises wrong/correct synthetic passwords and identity refusal.
 
-The real fixture covers zero-profile Take, native GTK authentication through VNC,
-explicit deferred pairing, held-input/helper/socket/process cleanup, native
-extension navigation with a synthetic retained cookie, owned Chrome/Xvfb
-persistence across Jelly restart, controlled owned-stale stop/relaunch with the
-same disk cookie/extension profile ID but new owned/connection generations,
-cleanup-only orphan recovery, conflicting lock/runner refusal, and private daemon
-loss retaining the latch. No Chrome lock is manually removed. Unit/client tests cover unpublished/no-RPC authority,
-missing pending ACK, owner expiry, CSRF/origin/arbitrary-path refusal and no web
-password form. No actual owner's normal profile, real keyring, systemd unit,
-personal desktop, remote device or live activation was used or claimed verified.
-Stable Chrome is the production default but the extension-loading end-to-end
-fixture uses Chrome for Testing; actual normal-profile activation remains a
-separate parent/operator review and validation step.
-
-**Actual first migration remains unqualified:** disposable owned-record stale
-recovery now passes after SIGTERM leaves all three Singleton artifacts and every
-original owned PID disappears. Synthetic cookie metadata is observed committed
-before stop; the reopened ordinary browser then sends that cookie. The new
-read-only initial-unit attestor now also proves an actual private Chrome's
-selected-root kernel listener with erased/flattened initial environment and
-synthetic unit metadata. No host unit query or real-profile action was performed.
-The auth fixture covers both foreground and genuinely inherited listener modes
-with private D-Bus/systemd metadata simulation, including protected-exe refusal
-simulation, wrong/correct native passwords, changed generations and inactive
-service refusal **before any control connect**. Parent must still qualify actual
-metadata on the exact recorded setup unit and active keyring socket/service
-before any migration/authentication; private simulations are not host acceptance.
-
-Latest independent-review-fix checks: owned native/noVNC/private-auth fixture
-exit **0** (230 s bound), twice through the full workflow: v1 direct and v2
-inherited-listener bindings, including positive owned-stale disk reopen and the
-actual erased-environ predecessor listener test. Standalone private OS-auth exits
-**0** (45 s); targeted bridge/share/native/API/client/owned tests **62 pass, 0 fail**
-(130 s, plus eight synthetic unit-data cases inside a test); existing X11/noVNC
-exits **0** (190 s); TypeScript exits **0**;
-`check:full` exits **0** (600 s), **594 tests pass plus both builds**.
-
-The legacy managed controllers and their standalone desktop/viewport suites have
-since been removed. Optional Connected Chrome noVNC/auth suites are not part of
-`check:full` and are run separately. Two intermediate
-review-fix runs safely refused handback while the stricter fences exposed an old
-viewer-disconnect status overwrite and missing restored-orphan provider lease;
-both now have deterministic regressions and the final real fixtures pass.
-No new native-Wayland experiments were run in this follow-up.
+The disposable fixtures cover zero-profile Take, native GTK authentication,
+existing-profile persistence, exact native bindings, owner/CSRF/origin isolation,
+and native cleanup. The human-use simplification requires rerunning these
+optional headed fixtures before deployment; earlier exclusive-lock/publication
+results do not qualify the new advisory behavior. No real-device result is
+implied by this-host fixtures.
 
 ## GNOME Wayland qualification — not enabled
 
@@ -716,102 +631,32 @@ extension prevents every site-initiated download.
 
 ## Validation
 
-### Chrome-only browser removal
+The advisory-control change passes `bun run check:full` in an isolated source
+snapshot (TypeScript, the complete test suite, and client/extension builds).
+The disposable headed Chrome/native-host fixture and actual X11 viewer fixture
+pass, including browser operations during human use, mobile fit, held-key/button
+cleanup, disconnect/reconnect, failed-cleanup dismissal, ownership and orphan
+recovery. The owned-desktop fixture also passes both direct and systemd-socket
+private-authentication variants, existing-profile persistence and native teardown.
+Independent source review's handover/identity/retention findings were corrected
+and covered by regressions. These checks do not activate the live service or
+qualify a real remote device.
 
-`bun run check:full` passes: 583 tests, zero failures, TypeScript, client build and
-extension build. `bun run test:chrome` also passes 74 targeted tests and the real
-headed extension/native-host fixture. Both `bun tests/chrome-share.browser.ts`
-and `bun tests/owned-chrome-desktop.ts` pass: actual disposable X11/noVNC input,
-private handback, owner isolation, mobile fit, cleanup and existing-profile
-persistence remain covered. Tests never use the normal signed-in profile or
-change live Jelly settings. Service activation and a real remote-device check
-are separate from these this-host fixtures.
+Run targeted unit/client checks for `chrome-bridge`, `chrome-api`, `chrome-share`,
+`chrome-client`, `chrome-share-client`, `owned-chrome-desktop`, browser tools and
+native desktop boundaries, plus `bun run check`. Before deployment run
+`bun run check:full`. Optional disposable headed qualification:
 
-### Earlier independent-review rerun (diagnostic-only Wayland delta)
+- `bun tests/chrome-extension.browser.ts`: actual extension/native bridge,
+  scope/refs, secret fields, debugger/security cleanup and retained tabs.
+- `bun run test:chrome-vnc`: actual X11/noVNC input, owner isolation, advisory
+  browser operation, mobile fit and teardown.
+- `bun run test:chrome-owned-vnc`: owned desktop/authentication/persistence.
 
-This subsection records the earlier diagnostic lane; the later owned-X11
-implementation and its separate qualification are described above.
-
-All commands below were actually run with external time bounds; none restarted
-Jelly or accessed the personal desktop/profile. The review found no actionable
-defect in the retained diagnostic delta. No production Wayland integration or
-new handback workaround was added, and no new regression was needed for a review
-fix. The existing real input-delay, mapping-change and teardown regressions were
-rerun rather than treating their observations as a production certificate.
-
-| Command | Bound | Actual result |
-| --- | --- | --- |
-| `bun run test:chrome-wayland-qualification` | 90 s | Exit 0; synthetic native capture/input and monitor lifecycle assertions pass; `second_frame_proves_stage_consumer_drain: false`, `production_cleanup_qualified: false`. |
-| `bun run test:chrome-vnc` | 180 s | Exit 0; actual disposable two-display X11 refusal and noVNC capture/input/private-control/cleanup assertions pass; fixture browsers, VNC processes, X servers and HTTP listener revoked. |
-| `bun run check` | 120 s | Exit 0; TypeScript passes. |
-| `bun run check:full` | 600 s | Exit 0; 578 tests pass, 0 fail, plus client and extension builds. |
-
-**`check:full` does not include optional native Wayland or Chrome noVNC commands
-above.** Legacy managed commands are no longer available. There is still no
-native-Wayland RFB/viewer path to test, no host-compositor/
-PipeWire attestation or native-Wayland pre-pair bootstrap, and no qualified
-native-Wayland process-death/restart fencing. These are this-host
-fixtures only: production Wayland control remains blocked and no personal-desktop
-or remote-device acceptance or activation is claimed.
-
-The VNC fixture verifies OS process and listener revocation before reporting
-successful completion. Its test-only teardown bounds Playwright shutdown and may
-terminate only the original disposable Chrome PID after rechecking process start
-time, user, executable and temporary profile. This is not production behavior:
-Connected Chrome handback never closes or terminates the user's Chrome. After
-all assertions and cleanup proofs pass, the fixture exits explicitly to avoid
-Bun retaining phantom Playwright/WebSocket handles.
-
-`bun run check` runs TypeScript only. `bun run check:full` runs TypeScript,
-server/client/managed regressions and both builds before deployment.
-`bun run test:chrome` runs protocol/native/API/share-latch tests and real **headed Chrome for
-Testing** via extension → native host → private socket. It uses only temporary
-profiles, temporary host installs and local fixture sites. Playwright's private
-pipe provides fixture/human inspection and worker termination, not Jelly browser
-actions. `JELLY_EXTENSION_BROWSER_PATH` can select a compatible executable;
-Xvfb or DISPLAY is required on Linux; macOS uses its normal headed display.
-Disposable fixtures use production address policy; no local-address bypass is compiled.
-
-`bun run test:chrome-vnc` builds the client and exercises disposable authenticated
-Xvfb + existing headed Chrome + native host + x11vnc + actual noVNC. It verifies
-two-display regressions (Chrome on `--display=:B` or `-display=:B` while inheriting
-`DISPLAY=:A` refuses capture of either desktop), normal same-display native attestation,
-direct Take control without an extra approval step, real desktop pixels/pointer/keyboard input, all-task
-blocking, private owner exclusion, no RFB TCP listeners/clipboard export, actual
-framebuffer fit on mobile, disconnect/reconnect, failed Escape handback, stale
-generations, process loss, held Shift AND mouse-button cleanup after abrupt
-WebSocket loss and unexpected kill, confirmed input cleanup before reconnect or
-selected-task resume, and
-unchanged Chrome PID/profile/cookies. A real killed-parent fixture verifies the
-inherited cleanup lock refuses a live process and permits cleanup-only orphan
-handback after parent death, including refusal when the old authorization binding
-has changed. It requires the local Linux desktop dependencies
-plus Chrome for Testing and xclip; it never uses a personal profile or restarts
-Jelly. `bun run test:computer-viewport` separately checks the managed VNC/mobile
-behavior. These this-host fixtures do not replace personal-desktop or real
-phone/Tailscale/HTTPS-device validation.
-
-The live suite covers simultaneous agents and profiles/instances, foreign tab
-and reference rejection, rejected personal-tab grants preserving groups, group deletion,
-exact fill/click/select/key, bounded waits, native PNG, same-process and verified
-OOPIF actions, secret fields in child frames, popup adoption, retained handoff
-across runs, stale run rejection, zero-hit denied redirect destination, human
-closure, local pause racing real queued renderer observations/screenshots/fill/
-click, native version mismatch, worker termination/reconnect, native bridge
-restart, stale generations, cleanup and disconnect. Closed-root secret, nonempty
-and contenteditable fields are real-extension rejection regressions, including
-closed secret/nonempty fields in an independently verified OOPIF. A drain test
-holds delivery of real capture/fill API responses in the disposable worker with
-an already-attached extension debugger: pause cannot acknowledge until released,
-revoked results are suppressed, and the extension can no longer issue debugger
-commands after acknowledgement. That deterministic response-delivery hold is not
-a claim that admitted mutations had no side effects or that capture is atomic.
-Unit/client tests additionally cover delayed open/mark/pause acknowledgement,
-private-control gating, distinct failed/disconnected states, global persistence/pinning,
-retained handoff routing, unsupported child identity, framing/slow peers,
-installer preservation, tool-image content and handoff/settings UI. See the plan
-matrix for what remains unverified; no synthetic event is presented as a real
-browser replacement or signed-in-profile test.
+Tests use disposable profiles, not the normal Chrome profile. Full-desktop
+fixture success is not remote-device validation. Reload the unpacked extension
+to update popup controls; protocol 7 is unchanged, so this UI/coordination update
+does not itself require a Chrome/profile restart. Preserve intentional Disconnect.
 
 ## Uninstall and activation
 
@@ -837,9 +682,9 @@ Do not restart Jelly inline from an agent run. Tests do not perform activation.
 Closing Chrome can stop its owned X11 service/display. It is not automatically
 restarted. If capture and input cleanup already completed (`runtime: null`,
 `inputCleanupRequired: false`) and authentication has a known completed outcome
-(`authUncertain: false`), **End failed share without viewing** can retire the
+(`authUncertain: false`), **Retry cleanup** can retire the
 remaining latch even after that original Chrome/display has gone. This also
-works for a restored clean orphan. Ordinary Return control and Reconnect still
+works for a restored clean orphan. Ordinary Done and Reconnect still
 require the original live desktop; this exception grants no viewing authority.
 
 Recovery requires explicit persisted completion fields, no outstanding helper
@@ -849,9 +694,9 @@ or record, unresolved input, or uncertain authentication remain blocked for
 operator repair. It never replays input or authentication, guesses a native
 outcome, or touches a replacement display. Private same-user files are the trust
 boundary, not protection against a malicious process rewriting files as that
-same OS user. Current peers must freshly acknowledge cleanup; owner/privacy and
-bridge-generation checks still apply, deferred peers cannot bypass admission,
-and lost tasks are not resumed.
+same OS user. Viewer owner/generation and native privacy checks still apply.
+Browser peers do not participate in viewer cleanup, and lost browser tasks are
+not resumed.
 
 After reviewed code activation, first explicitly finish cleanup without viewing.
 Do not delete the latch or restart owned Chrome first: the launcher refuses an

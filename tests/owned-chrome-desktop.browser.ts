@@ -22,8 +22,8 @@ const owned = new OwnedChromeDesktop(dir, instance);
 let runner: ReturnType<typeof Bun.spawn> | undefined;
 let viewer: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let cookieSeen = false, siteRequests = 0, nativeClaims = 0, acceptedClaims = 0, phase = "setup";
-const nativeAttestor = app.service.chrome.bridge.deferDesktop;
-app.service.chrome.bridge.deferDesktop = (...args) => {
+const nativeAttestor = app.service.chrome.bridge.attestDesktop;
+app.service.chrome.bridge.attestDesktop = (...args) => {
   nativeClaims++;
   const result = nativeAttestor(...args);
   if (result) acceptedClaims++;
@@ -76,7 +76,6 @@ try {
   runner = Bun.spawn([join(owned.directory, "launch")], { stdout: "ignore", stderr: "inherit" });
   await until(() => owned.available());
   let original = owned.record();
-  expect(app.service.chrome.bridge.profiles()).toEqual([]);
   expect(app.service.chromeShare.state().ownedDesktopAvailable).toBe(true);
   expect(await keyringLocked()).toBe(true);
   const launchAgain = Bun.spawn([join(owned.directory, "launch")], { stdout: "ignore", stderr: "ignore" });
@@ -93,15 +92,17 @@ try {
   await page.goto(app.server.url.origin);
   await page.getByTitle(`${agent.name} · idle`).click();
   await openChromeViewer(page);
-  await page.getByText(/Owned virtual-X11 desktop is ready/).waitFor();
+  // The configured profile is unavailable. Choose the installed computer
+  // explicitly; never silently retarget a configured/pinned desktop.
+  await page.getByRole("button", { name: "Use installed computer" }).click();
+  await page.getByText(/installed computer is available before Chrome connects/).waitFor();
   expect(await page.locator('input[type="password"]').count()).toBe(0);
   expect(await page.locator("canvas").count()).toBe(0);
   const unauthorized = await fetch(new URL("/api/chrome/share/take-owned", app.server.url), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agentId: agent.id }) });
   expect(unauthorized.status).toBe(401);
   await page.getByRole("button", { name: "Take control", exact: true }).click();
-  await page.getByText(/You control the full desktop/).waitFor({ timeout: 20000 });
-  expect(app.service.chrome.sharingDesktop).toBe(true);
-  expect(app.service.chrome.bridge.profiles()).toEqual([]);
+  await page.getByText(/You’re using the computer/).waitFor({ timeout: 20000 });
+  expect(app.service.chrome.humanState()).toBe(true);
   await page.waitForFunction(() => (document.querySelector(".chrome-share-screen canvas") as HTMLCanvasElement)?.width === 1280);
   const remoteClick = async (x: number, y: number) => {
     const point = await page.locator(".chrome-share-screen canvas").boundingBox();
@@ -139,10 +140,9 @@ try {
     const d = c?.getContext("2d")?.getImageData(0, 0, c.width, c.height).data;
     return d && d.some((_, i) => i % 4 === 0 && d[i] === 51 && d[i + 1] === 204 && d[i + 2] === 51);
   });
-  phase = "automatic-deferred-connect";
-  await until(() => app.service.chrome.bridge.deferredProfiles().length === 1);
-  expect(app.service.chrome.bridge.profiles()).toEqual([]);
-  expect(() => app.service.chrome.assertAutomationAllowed()).toThrow("paused");
+  phase = "automatic-connect-during-human-use";
+  await until(() => app.service.chrome.bridge.profiles().length === 1);
+  expect(app.service.chrome.humanState()).toBe(true);
   await humanNavigate(site.url.href);
   await page.waitForFunction(() => {
     const c = document.querySelector(".chrome-share-screen canvas") as HTMLCanvasElement;
@@ -163,11 +163,11 @@ try {
   // verifies their release after all old input/socket/auth processes have ended.
   await page.keyboard.down("Shift");
   await page.mouse.move(500, 500); await page.mouse.down();
-  await page.getByRole("button", { name: "Return control", exact: true }).click({ force: true });
+  await page.getByRole("button", { name: "Done", exact: true }).click({ force: true });
   await page.keyboard.up("Shift"); await page.mouse.up();
   await page.getByRole("button", { name: "Take control", exact: true }).waitFor();
   await until(() => app.service.chrome.bridge.profiles().length === 1);
-  expect(app.service.chrome.sharingDesktop).toBe(false);
+  expect(app.service.chrome.humanState()).toBe(false);
   expect((app.service.chromeShare as any).authProcess).toBeNull();
   expect((app.service.chromeShare as any).process).toBeNull();
   expect((app.service.chromeShare as any).runtime).toBeNull();
@@ -222,12 +222,13 @@ try {
   await page.goto(app.server.url.origin);
   await page.getByTitle(`${agent.name} · idle`).click();
   await openChromeViewer(page);
+  await page.getByRole("button", { name: "Use installed computer" }).click();
   await page.getByRole("button", { name: "Take control", exact: true }).click();
-  await page.getByText(/You control the full desktop/).waitFor();
+  await page.getByText(/You’re using the computer/).waitFor();
   await humanNavigate(new URL("/check", site.url).href);
   await until(() => cookieSeen);
-  await until(() => app.service.chrome.bridge.deferredProfiles().length === 1);
-  await page.getByRole("button", { name: "Return control", exact: true }).click();
+  await until(() => app.service.chrome.bridge.profiles().length === 1);
+  await page.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByRole("button", { name: "Take control", exact: true }).waitFor();
   expect(app.service.chrome.bridge.profiles()[0]!.id).toBe(profile.id);
   expect(app.service.chrome.bridge.profiles()[0]!.generation).not.toBe(profile.generation);
@@ -242,7 +243,7 @@ try {
   await runner!.exited; // clean obligations already persisted; original display is now gone
   app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
   expect(app.service.chromeShare.state().status).toBe("orphaned");
-  expect(app.service.chrome.sharingDesktop).toBe(true);
+  expect(app.service.chrome.humanState()).toBe(true);
   expect([original.runner, original.chrome, original.server].some(sameOwnedProcess)).toBe(false);
   const cleanupSession = await fetch(new URL("/api/control-session", app.server.url));
   const cleanupCookie = cleanupSession.headers.get("set-cookie")!.split(";")[0]!, cleanupCsrf = (await cleanupSession.json()).csrf;
@@ -263,10 +264,10 @@ try {
   const failedRelease = await fetch(new URL("/api/chrome/share/release", app.server.url), { method: "POST", headers: finalHeaders,
     body: JSON.stringify({ generation: app.service.chromeShare.state().generation, cleanupOnly: true }) });
   expect(failedRelease.status).toBe(409);
-  expect(app.service.chrome.sharingDesktop).toBe(true);
+  expect(app.service.chrome.humanState()).toBe(false); // Done is independent of native cleanup.
   expect(app.service.chromeShare.state().status).toBe("failed");
   expect(errors).toEqual([]);
-  console.log(`PASS: auth binding v${original.auth?.version}/${original.auth?.kind}; actual private Chrome erased/flattened-environ predecessor listening-kernel proof; private keyring OS authentication via actual noVNC; zero paired profiles/direct Take; deferred automatic pairing published only after auth/VNC/input teardown; ordinary native Chrome existing-cookie/profile/PID persistence across Jelly restart; private bus loss stops exact owned tree, refuses old generation and permits explicit stale relaunch; conflicting lock/refused paths; already-clean orphan recovery after owned Chrome/Xvfb death then explicit owned relaunch; private daemon loss retains latch; controlled owned-stale relaunch retains disk cookie and extension profile identity with new owned/connection generation, no lock deletion.`);
+  console.log(`PASS: auth binding v${original.auth?.version}/${original.auth?.kind}; actual private Chrome erased/flattened-environ predecessor listening-kernel proof; private keyring OS authentication via actual noVNC; zero paired profiles/direct Take; automatic pairing during advisory human use; ordinary native Chrome existing-cookie/profile/PID persistence across Jelly restart; private bus loss stops exact owned tree, refuses old generation and permits explicit stale relaunch; conflicting lock/refused paths; already-clean orphan recovery after owned Chrome/Xvfb death then explicit owned relaunch; private daemon loss retains latch; controlled owned-stale relaunch retains disk cookie and extension profile identity with new owned/connection generation, no lock deletion.`);
 } catch (error) {
   console.error("Disposable fixture phase:", phase);
   console.error("Disposable share state:", app.service.chromeShare.state(), "native claim attempts/accepted:", nativeClaims, acceptedClaims);

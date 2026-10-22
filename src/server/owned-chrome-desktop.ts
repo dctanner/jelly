@@ -184,7 +184,7 @@ export class OwnedChromeDesktop {
         !/^[a-f0-9]{64}$/.test(binding.authHash) ||
         ![binding.socketDev, binding.socketIno, binding.socketCtime].every(v => typeof v === "string" && /^[0-9]+$/.test(v)) ||
         JSON.stringify(r.binding) !== JSON.stringify(binding))
-      throw new ChromeDesktopError("Original owned desktop cleanup evidence changed. Keep tools paused.");
+      throw new ChromeDesktopError("Original owned desktop cleanup evidence changed. Keep the viewer closed.");
     return r;
   }
   assertNoShareLatch() {
@@ -223,7 +223,7 @@ export class OwnedChromeDesktop {
       // Unowned Chrome continues to require the separate full native attestation.
       return r;
     } catch {
-      throw new ChromeDesktopError(`Owned X11 Chrome ${check} is unavailable or changed. Keep tools paused and obtain operator repair; no browser is restarted automatically.`);
+      throw new ChromeDesktopError(`Owned X11 Chrome ${check} is unavailable or changed. Keep the viewer closed and obtain operator repair; no browser is restarted automatically.`);
     }
   }
   available() { try { this.record(); return true; } catch { return false; } }

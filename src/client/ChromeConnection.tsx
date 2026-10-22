@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { api, control } from "./api";
 import type { Snapshot } from "../shared/types";
 import type { ChromeProfile } from "../shared/chrome-protocol";
-import { ChromeSharePanel } from "./ChromeSharePanel";
+import { ComputerControlPanel } from "./ComputerControlPanel";
 export interface ChromeStatus {
   selectedProfile?: string;
   desktopShared?: boolean;
+  humanUsing?: boolean;
   profiles: ChromeProfile[];
   task: {
     profile: string;
+    humanUsing?: boolean;
     paused: boolean;
     pauseState:
       "active" | "pausing" | "paused" | "resuming" | "failed" | "disconnected";
@@ -46,7 +48,6 @@ export function ChromeConnection({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const shareAgent = agentId || data.agents?.[0]?.id;
   async function load(scope: Scope, afterControl = false) {
     if (scopeRef.current !== scope || (scope.controlling && !afterControl))
       return;
@@ -65,7 +66,7 @@ export function ChromeConnection({
     } catch {
       if (current()) {
         setView(null);
-        setError("Chrome status unavailable—do not enter credentials.");
+        setError("Chrome status unavailable. Retry shortly.");
       }
     }
   }
@@ -89,23 +90,6 @@ export function ChromeConnection({
     ++scope.request; // Revoke every GET admitted before this authority transition.
     setBusy(true);
     setError("");
-    setView((previous) =>
-      previous?.agentId === agentId
-        ? {
-            ...previous,
-            status: {
-              ...previous.status,
-              task: previous.status.task
-                ? {
-                    ...previous.status.task,
-                    paused: false,
-                    pauseState: "pausing",
-                  }
-                : null,
-            },
-          }
-        : null,
-    );
     try {
       await control(
         `/chrome/${operation}`,
@@ -124,7 +108,7 @@ export function ChromeConnection({
       if (scopeRef.current === scope) {
         setView(null);
         setError(
-          `Chrome control failed—do not enter credentials. ${(e as Error).message}`,
+          `Chrome settings could not be saved. ${(e as Error).message}`,
         );
       }
     } finally {
@@ -136,12 +120,8 @@ export function ChromeConnection({
     <section className="settings-section">
       <h3>Connected Chrome</h3>
       <p className="settings-footnote">
-        Connected Chrome uses
-        your explicitly selected Chrome profile; all agents share its signed-in
-        accounts, with separate task groups and exclusive tab permissions. Local
-        machine only; not a network sandbox.
-        Signed-in rollout still requires the safety review in
-        docs/CONNECTED-CHROME.md.
+        All agents use this profile’s signed-in accounts, with separate task tabs.
+        Site access applies to new sessions. This is not a network sandbox.
       </p>
       <details>
         <summary>Connect your existing Chrome profile once</summary>
@@ -170,7 +150,7 @@ export function ChromeConnection({
       <label className="chat-form-field">
         <span>Chrome profile</span>
         <select value={profile} onChange={(e) => setProfile(e.target.value)}>
-          <option value="">Choose an explicitly connected profile</option>
+          <option value="">Choose a connected profile</option>
           {profile && !status.profiles.some((p) => p.id === profile) && (
             <option value={profile}>{profile} · disconnected</option>
           )}
@@ -214,13 +194,9 @@ export function ChromeConnection({
         </label>
       )}
       <p className="chat-form-hint">
-        Global scope applies to new sessions for every persistent agent.
-        Existing sessions keep their profile and site scope until
-        closed. Grant existing user tabs explicitly in the extension popup;
-        their groups are preserved and they are never automatically closed.
-        Paused handoffs require a follow-up browser run and explicit Resume.
-        Child browser tools, free-form input and file artifacts remain
-        unavailable.
+        Existing sessions keep their profile and site access until closed.
+        Personal tabs are not shared. To reconnect an agent’s browser session,
+        open its Computer control panel → Advanced → Close session.
       </p>
       <button
         className="primary"
@@ -229,85 +205,14 @@ export function ChromeConnection({
       >
         Save Chrome profile and site scope
       </button>
-      {!status.task && data.selectedAgentId && (
-        <button disabled={busy} onClick={() => void act("close")}>
-          Reset pinned session (when idle)
-        </button>
-      )}
-      {shareAgent && <button disabled={busy} onClick={() => setShareOpen(true)}>Connected Chrome web VNC…</button>}
-      {shareOpen && shareAgent && <ChromeSharePanel agentId={shareAgent} onClose={() => setShareOpen(false)} onChange={() => { if (scopeRef.current) void load(scopeRef.current); void refresh(); }} />}
-      {status.task && (
-        <div className="chat-form-group">
-          <h4>This agent’s pinned Chrome session</h4>
-          <p>
-            {status.task.profile} ·{" "}
-            {status.task.connected
-              ? status.task.pauseState === "pausing"
-                ? "Pausing—do not enter credentials yet"
-                : status.task.pauseState === "resuming"
-                  ? "Resuming—do not enter credentials"
-                  : status.task.pauseState === "failed"
-                    ? "Pause failed—do not enter credentials"
-                    : status.task.paused
-                      ? "Paused"
-                      : "Connected"
-              : "Disconnected"}{" "}
-            · {status.task.tabs.length} task tabs
-          </p>
-          <p>
-            {status.task.siteScope === "internet"
-              ? "Unrestricted web (HTTP and HTTPS)"
-              : status.task.origins.join(", ")}
-          </p>
-          {["pause", "resume", "disconnect", "close"].map((op) => (
-            <button
-              key={op}
-              disabled={
-                busy ||
-                !!status.desktopShared ||
-                (op === "resume" &&
-                  (!status.task?.connected || !status.task.paused))
-              }
-              onClick={() => void act(op)}
-            >
-              {op[0]!.toUpperCase() + op.slice(1)}
-            </button>
-          ))}
-          {status.task.tabs.map((tab, i) => (
-            <div key={tab}>
-              Task tab {i + 1}{" "}
-              <button
-                disabled={
-                  busy || !status.task?.connected || !status.task.paused
-                }
-                onClick={() => void act("focus", tab)}
-              >
-                Open in Chrome
-              </button>
-              <button
-                disabled={
-                  busy ||
-                  !status.task?.connected ||
-                  status.task.pauseState !== "active"
-                }
-                onClick={() => void act("deliverable", tab)}
-              >
-                Keep as deliverable
-              </button>
-              <button
-                disabled={
-                  busy ||
-                  !status.task?.connected ||
-                  status.task.pauseState !== "active"
-                }
-                onClick={() => void act("handoff", tab)}
-              >
-                Retain for follow-up handoff
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      <button disabled={busy} onClick={() => setShareOpen(true)}>Computer control</button>
+      {shareOpen && <ComputerControlPanel agentId={agentId || undefined} onClose={() => setShareOpen(false)} onChange={() => { if (scopeRef.current) void load(scopeRef.current); void refresh(); }} />}
+      {status.task && <details>
+        <summary>Advanced session settings</summary>
+        <p>{status.task.connected ? "Connected" : "Disconnected"} · {status.task.tabs.length} tabs</p>
+        <p>Close an idle session to use a different profile or site access.</p>
+        <button disabled={busy} onClick={() => void act("close")}>Close session</button>
+      </details>}
       {error && <p role="alert">{error}</p>}
     </section>
   );

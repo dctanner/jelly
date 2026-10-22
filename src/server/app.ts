@@ -1,4 +1,5 @@
 import "./runtime-network";
+import { COMPUTER_CLIPBOARD_BODY_BYTES } from "../shared/computer-clipboard";
 import { tailnetAddresses } from "../shared/network";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { AVATARS } from "../shared/avatars";
@@ -47,7 +48,7 @@ const json = (value: unknown, status = 200) =>
       "X-Content-Type-Options": "nosniff",
     },
   });
-async function body(req: Request) {
+async function body(req: Request, maxBytes = 64000, fatalUtf8 = false) {
   if (!req.headers.get("content-type")?.includes("application/json"))
     throw new HttpError(415, "Send JSON with Content-Type: application/json.");
   const reader = req.body?.getReader();
@@ -59,7 +60,7 @@ async function body(req: Request) {
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 64000) {
+        if (size > maxBytes) {
           await reader.cancel();
           throw new HttpError(413, "Request is too large.");
         }
@@ -69,8 +70,9 @@ async function body(req: Request) {
       reader.releaseLock();
     }
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
   try {
+    const bytes = Buffer.concat(chunks);
+    const raw = fatalUtf8 ? new TextDecoder("utf-8", { fatal: true }).decode(bytes) : bytes.toString("utf8");
     const value = JSON.parse(raw);
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error();
@@ -297,17 +299,21 @@ export async function startApp(options: AppOptions) {
             if (req.method === "POST" && url.pathname.startsWith("/api/chrome/share/")) {
               const session = controls.require(req);
               const operation = url.pathname.slice("/api/chrome/share/".length);
-              const input = await body(req);
+              const input = await body(req, operation === "clipboard/send" ? COMPUTER_CLIPBOARD_BODY_BYTES : 64000,
+                operation === "clipboard/send" || operation === "clipboard/receive");
+              if (operation === "clipboard/send" || operation === "clipboard/receive")
+                return json(await service.chromeShare.transferClipboard(session.id, input, operation === "clipboard/send"));
               if (operation === "take-owned") {
                 if (Object.keys(input).some(k => k !== "agentId")) throw new HttpError(400, "Only the installed owned desktop may be selected.");
-                const agentId = text(input.agentId, "Agent ID", 100);
-                if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
+                const agentId = input.agentId == null ? null : text(input.agentId, "Agent ID", 100);
+                if (agentId && !store.agent(agentId)) throw new HttpError(404, "Agent not found.");
+                if (agentId && service.chrome.state(agentId).task) throw new HttpError(409, "Use this agent’s pinned computer; close its browser session before changing computers.");
                 return json(await service.chromeShare.takeOwned(session.id, agentId));
               }
               if (operation === "take") {
-                const agentId = text(input.agentId, "Agent ID", 100);
-                if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
-                const task = service.chrome.state(agentId).task;
+                const agentId = input.agentId == null ? null : text(input.agentId, "Agent ID", 100);
+                if (agentId && !store.agent(agentId)) throw new HttpError(404, "Agent not found.");
+                const task = service.chrome.state(agentId ?? undefined).task;
                 const profile = task?.profile ?? store.browserSelection().chromeProfile;
                 const live = service.chrome.bridge.profiles().find(p => p.id === profile);
                 if (!live || input.profile !== profile || input.profileGeneration !== live.generation)
@@ -315,16 +321,9 @@ export async function startApp(options: AppOptions) {
                 return json(await service.chromeShare.take(session.id, agentId, live.id, live.generation));
               }
               if (operation === "ticket") return json(service.chromeShare.ticket(session.id, input.generation));
-              if (operation === "reconnect") return json(await service.chromeShare.reconnect(session.id, input.generation));
+              if (operation === "reconnect") return json(await service.chromeShare.reconnect(session.id, input.generation, input.controlId));
               if (operation === "release") {
-                const previous = service.chromeShare.state(session.id);
-                const cleanupOnly = input.cleanupOnly === true;
-                const next = await service.chromeShare.release(session.id, input.generation, cleanupOnly);
-                if (!cleanupOnly && previous.owned && previous.agentId && input.resume === true) {
-                  const handoff = await service.chrome.resumeAfterShare(previous.agentId);
-                  if (handoff && store.intervention(handoff)?.status === "pending") service.interventions.completeLogin(handoff);
-                  await service.finishBrowserPrivacy(previous.agentId);
-                }
+                const next = await service.chromeShare.release(session.id, input.generation, input.cleanupOnly === true, input.controlId);
                 await service.finishDesktopPrivacy();
                 return json(next);
               }
@@ -371,7 +370,8 @@ export async function startApp(options: AppOptions) {
             if (url.pathname.startsWith("/api/desktop/") && req.method === "POST") {
               const operation = url.pathname.slice("/api/desktop/".length);
               const input = await body(req);
-              if (operation !== "pause" && operation !== "stop") service.chrome.assertAutomationAllowed();
+              if (!["pause", "stop"].includes(operation) && service.chromeShare.state().status !== "idle")
+                throw new HttpError(409, "Finish computer viewer cleanup before using native desktop controls.");
               if (operation === "settings") return json(await service.desktop.configure(input));
               if (operation === "connect") { await service.desktop.connect(); return json(service.desktopStatus()); }
               if (operation === "pause") { await service.pauseDesktopForPrivacy(); return json(service.desktopStatus()); }
@@ -405,12 +405,14 @@ export async function startApp(options: AppOptions) {
               const agentId = text(input.agentId, "Agent ID", 100);
               if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
               if (operation === "close" && ["running", "waiting"].includes(store.agent(agentId)!.status)) throw new HttpError(409, "Stop or finish the run before resetting its pinned Chrome session.");
-              if (["pause", "focus", "handoff"].includes(operation)) await service.pauseDesktopForPrivacy(`browser:${agentId}`);
-              if (operation === "resume") service.assertBrowserHandbackAllowed();
-              const handoff = await service.chrome.control(agentId, operation, typeof input.pageId === "string" ? input.pageId : undefined);
-              if (operation === "close") service.browsers.releasePin(agentId);
-              if (handoff && store.intervention(handoff)?.status === "pending") service.interventions.completeLogin(handoff);
-              if (operation === "resume") await service.finishBrowserPrivacy(agentId);
+              if (operation === "done") {
+                if (input.handoff !== null && typeof input.handoff !== "string") throw new HttpError(400, "A matching browser request is required.");
+                await service.completeBrowserControl(agentId, input.handoff as string | null);
+              } else {
+                if (!["close", "disconnect"].includes(operation)) throw new HttpError(400, "Unsupported Chrome control.");
+                await service.chrome.control(agentId, operation);
+                if (operation === "close") service.browsers.releasePin(agentId);
+              }
               return json(service.chromeStatus(agentId));
             }
             const intervention = url.pathname.match(
@@ -420,7 +422,12 @@ export async function startApp(options: AppOptions) {
               controls.require(req);
               const [, id, action] = intervention;
               if (action === "deny") {
-                service.interventions.deny(id!);
+                const request = service.interventions.deny(id!);
+                if (request.kind === "browser_login") {
+                  if (service.chrome.state(request.agentId).task?.handoff === request.id)
+                    service.chrome.done(request.agentId, request.id);
+                  await service.finishBrowserPrivacy(request.agentId);
+                }
                 return json({ ok: true });
               }
               const input = await body(req);

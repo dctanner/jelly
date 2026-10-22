@@ -55,9 +55,9 @@ test("desktop-card handback retains another browser boundary's cross-instance ex
     await app.service.pauseDesktopForPrivacy(`browser:${agentId}`);
     let browserPaused = true;
     app.service.chrome.state = () => ({
-      profiles: [],
+      profiles: [], humanUsing: false,
       task: {
-        profile: "fixture",
+        profile: "fixture", humanUsing: false,
         paused: browserPaused,
         pauseState: browserPaused ? "paused" : "active",
         connected: true,

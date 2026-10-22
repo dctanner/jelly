@@ -358,7 +358,7 @@ try {
   console.log("PASS: production local-address policy permits same-host different-port main frame, local redirect, cross-site frame, script and WebSocket; exact local control navigation/redirect/assets/WebSocket have zero hits.");
   // Private control survives run settlement for explicit and protective pauses.
   // Human input still works, while agent observation remains revoked.
-  for (const mode of ["server", "popup", "debugger-conflict"]) {
+  for (const mode of ["server", "debugger-conflict"]) {
     const takeover = crypto.randomUUID();
     const url = `${fixture.url.origin}/private-takeover-${mode}`;
     await call(
@@ -373,10 +373,6 @@ try {
     const humanPage = context.pages().find((p) => p.url() === url)!;
     await humanPage.getByRole("heading", { name: "Local fixture" }).waitFor();
     if (mode === "server") await call("pause", {}, takeover);
-    else if (mode === "popup")
-      await popup.evaluate(() =>
-        (globalThis as any).chrome.runtime.sendMessage({ action: "pause" }),
-      );
     else {
       await worker.evaluate(async (url) => {
         const api = (globalThis as any).chrome;
@@ -438,7 +434,6 @@ try {
       await humanPage.close();
     }
   }
-  await call("resume"); // The popup paused the original fixture session too.
   console.log(
     "PASS: private pause preserves open tabs and human control after settlement",
   );
@@ -825,7 +820,7 @@ try {
   });
   void waiting.catch(() => {});
   await delay(100);
-  await popup.getByRole("button", { name: "Pause all agents locally" }).click();
+  await Promise.all([call("pause"), call("pause", {}, other)]);
   await expect(waiting).rejects.toThrow();
   await expect(
     call("key", { tab: options.pageId, ref: keyRef, key: "Enter" }),
@@ -981,9 +976,10 @@ try {
       () => "revoked",
     );
     await delay(20);
-    // Await the actual local pause acknowledgement, not just button dispatch.
+    // Await the actual native security pause acknowledgement, not just button dispatch.
+    await Promise.all([call("pause"), call("pause", {}, other)]);
     const paused = await popup.evaluate(() =>
-      (globalThis as any).chrome.runtime.sendMessage({ action: "pause" }),
+      (globalThis as any).chrome.runtime.sendMessage({ action: "status" }),
     );
     expect(paused.sessions.every((s: any) => s.paused)).toBe(true);
     await blocked;
@@ -1028,7 +1024,7 @@ try {
     url: `${fixture.url.origin}/deliverable`,
   });
   await call("mark", { tab: deliverable.pageId, mark: "deliverable" });
-  await popup.getByRole("button", { name: "Pause all agents locally" }).click();
+  await Promise.all([call("pause"), call("pause", {}, other)]);
   await expect(call("snapshot", { tab })).rejects.toThrow();
   await expect(call("screenshot", { tab })).rejects.toThrow();
   await call("resume");
@@ -1551,7 +1547,7 @@ try {
   await delay(250);
   expect(bridge.profiles()).toHaveLength(0); // The one-shot launch fragment was consumed.
   console.log(
-    "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, rejected personal-tab grant with preserved original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by local pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
+    "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, rejected personal-tab grant with preserved original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by native security pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
   );
 } finally {
   await Promise.race([context?.close(), delay(5000)]);

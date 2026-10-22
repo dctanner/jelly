@@ -8,6 +8,8 @@ export interface ChromeShareState {
     | "failed"
     | "orphaned";
   owned: boolean;
+  /** Stable for one Take; unlike transport generation, survives reconnects. */
+  controlId?: string | null;
   profile: string | null;
   agentId: string | null;
   generation: number;

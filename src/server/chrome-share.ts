@@ -21,11 +21,14 @@ import { HttpError } from "./errors";
 import type { ChromeShareState } from "../shared/chrome-share";
 import type { VncEndpoint } from "./vnc-endpoint";
 import { OwnedChromeDesktop, privateJson } from "./owned-chrome-desktop";
+import { ComputerClipboard } from "./computer-clipboard";
+import { validClipboardText } from "../shared/computer-clipboard";
 
-/** Human-only sharing of the connected Chrome desktop. */
+/** Authenticated computer viewer. Its lifecycle never grants browser authority. */
 export class ChromeShare implements VncEndpoint {
   private status: ChromeShareState["status"] = "idle";
   private owner: string | null = null;
+  private controlId: string | null = null;
   private profile: string | null = null;
   private agentId: string | null = null;
   private profileGeneration: string | null = null;
@@ -45,8 +48,27 @@ export class ChromeShare implements VncEndpoint {
   private transition: Promise<void> | null = null;
   private captureCleanup: Promise<void> | null = null;
   private returning = false;
-  private frozen = false;
+  private handoffs: { agent: string; id: string }[] = [];
+  onDone: (handoffs: { agent: string; id: string }[]) => void | Promise<void> = () => {};
   private connections = new Set<() => void>();
+  private clipboard = new ComputerClipboard();
+  async transferClipboard(session: string, input: Record<string, unknown>, send: boolean) {
+    const requireCurrent = () => {
+      this.owned(session);
+      if (this.closing || input.controlId !== this.controlId || typeof input.controlId !== "string" ||
+          input.generation !== this.generation || !this.connections.size ||
+          !this.validConnection(this.generation, session) || !this.binding || !validDesktopBinding(this.binding))
+        throw new HttpError(409, "Computer connection changed. Reconnect before transferring text.");
+    };
+    requireCurrent();
+    if (Object.keys(input).some(key => !["controlId", "generation", ...(send ? ["text"] : [])].includes(key)))
+      throw new HttpError(400, "Unsupported text transfer options.");
+    if (send && !validClipboardText(input.text))
+      throw new HttpError(413, "Send valid Unicode text up to 256 KiB. Nothing was transferred.");
+    const result = await this.clipboard.transfer(this.binding!, requireCurrent, send ? input.text as string : undefined);
+    requireCurrent();
+    return result;
+  }
   private tickets = new Map<
     string,
     { owner: string; generation: number; expires: number }
@@ -58,7 +80,7 @@ export class ChromeShare implements VncEndpoint {
   checkPrivacy() {
     if (this.status === "sharing" && (!this.privacyValid() || (this.ownedGeneration && !this.ownedAlive())))
       this.fail(
-        "Desktop privacy exclusion was lost. Sharing stopped; tools remain paused.",
+        "Desktop privacy exclusion was lost. Sharing stopped; the viewer needs cleanup.",
       );
   }
   private checkOwner() {
@@ -78,7 +100,7 @@ export class ChromeShare implements VncEndpoint {
     private changed: () => void = () => {},
   ) {
     this.ownedDesktop = new OwnedChromeDesktop(dataDir, chrome.bridge.instance);
-    chrome.bridge.deferDesktop = (_desktop, parent, desktop) => this.ownedDesktop.nativeClaim(parent, desktop);
+    chrome.bridge.attestDesktop = (_desktop, parent, desktop) => this.ownedDesktop.nativeClaim(parent, desktop);
     this.latch = join(chrome.bridge.directory, "desktop-share.json");
     if (existsSync(this.latch)) {
       const stat = lstatSync(this.latch);
@@ -105,17 +127,18 @@ export class ChromeShare implements VncEndpoint {
         saved.inputCleanupRequired !== false || !!saved.runtime;
       this.unexpectedExit = this.inputCleanupRequired;
       this.status = "orphaned";
+      this.controlId = crypto.randomUUID(); // Cleanup-only; no old owner is restored.
       this.error =
-        "A previous desktop share was interrupted. End it without viewing before using browser tools.";
-      chrome.lockDesktop();
+        "A previous desktop share was interrupted. End it without viewing before reconnecting the viewer. Browser agents can continue.";
+      chrome.setHumanDesktop(true);
     }
     this.expiry = setInterval(() => {
       this.checkOwner();
       this.checkPrivacy();
     }, 1000);
     this.expiry.unref();
-    chrome.bridge.onDesktopLoss = () => {
-      this.frozen = false;
+    chrome.bridge.onDesktopLoss = profile => {
+      if (profile !== this.profile) return;
       this.fail(
         "Chrome disconnected. Sharing stopped; cleanup without viewing is required.",
       );
@@ -126,6 +149,7 @@ export class ChromeShare implements VncEndpoint {
     return {
       status: this.status,
       owned: !!session && session === this.owner,
+      controlId: this.controlId,
       profile: this.profile,
       agentId: this.agentId,
       generation: this.generation,
@@ -147,6 +171,7 @@ export class ChromeShare implements VncEndpoint {
     );
   }
   private revoke() {
+    this.clipboard.stop();
     ++this.generation;
     this.tickets.clear();
     for (const close of [...this.connections]) close();
@@ -155,7 +180,7 @@ export class ChromeShare implements VncEndpoint {
   private failureMessage(error: unknown) {
     return error instanceof HttpError || error instanceof ChromeDesktopError
       ? error.message
-      : "Desktop sharing or cleanup could not be verified. Tools remain paused; check the local X11 backend or obtain operator repair.";
+      : "Desktop sharing or cleanup could not be verified. The viewer needs cleanup; check the local X11 backend or obtain operator repair.";
   }
   private fail(message: string) {
     if (this.status === "idle" || this.status === "orphaned") return;
@@ -221,7 +246,7 @@ export class ChromeShare implements VncEndpoint {
       child.kill("SIGKILL");
       await child.exited;
       throw new ChromeDesktopError(
-        "Could not verify X11 key/button cleanup. Tools remain paused; operator repair may be required.",
+        "Could not verify X11 key/button cleanup. The viewer needs cleanup; operator repair may be required.",
       );
     }
   }
@@ -297,7 +322,7 @@ export class ChromeShare implements VncEndpoint {
     this.process = child;
     child.on("error", () =>
       this.fail(
-        "The X11 sharing process could not start. Tools remain paused.",
+        "The X11 sharing process could not start. The viewer needs cleanup.",
       ),
     );
     child.once("exit", () => {
@@ -349,7 +374,7 @@ export class ChromeShare implements VncEndpoint {
         env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", HOME: this.runtime, DISPLAY: binding.display,
           XAUTHORITY: binding.auth, GDK_BACKEND: "x11", GTK_A11Y: "none", NO_AT_BRIDGE: "1" }, stdio: ["ignore", "pipe", "ignore"],
       });
-      this.authProcess.on("error", () => this.fail("Private OS authentication helper failed. Keep tools paused."));
+      this.authProcess.on("error", () => this.fail("Private OS authentication helper failed. Keep the viewer closed."));
       const authChild = this.authProcess;
       authChild.once("exit", () => {
         if (authChild.exitCode !== 0 || authChild.signalCode) { this.authUncertain = true; this.persist(); }
@@ -370,26 +395,30 @@ export class ChromeShare implements VncEndpoint {
     this.status = "sharing";
     this.changed();
   }
-  async takeOwned(session: string, agent: string) {
+  async takeOwned(session: string, agent: string | null) {
     if (this.closing || this.status !== "idle") throw new HttpError(409, "A private desktop is already reserved or closing.");
     const record = this.ownedDesktop.record();
     this.binary();
     this.owner = session;
+    this.controlId = crypto.randomUUID();
     this.agentId = agent;
     this.ownedGeneration = record.generation;
     this.binding = record.binding;
     this.status = "pausing";
     this.error = null;
     this.persist();
-    this.chrome.lockDesktop();
+    this.chrome.setHumanDesktop(true);
+    this.handoffs = this.chrome.pendingHandoffs((profile, generation) => {
+      try { return this.ownedDesktop.matches(this.chrome.bridge.desktop(profile, generation)); }
+      catch { return false; }
+    });
     this.revoke();
     const epoch = this.generation;
     this.changed();
     this.transition = (async () => {
       try {
-        await Promise.all([this.chrome.freezeDesktop(), this.drainDesktop()]);
+        await this.drainDesktop();
         if (this.status !== "pausing" || epoch !== this.generation) throw new ChromeDesktopError("Bootstrap authority changed while draining.");
-        this.frozen = true;
         await this.startCapture();
       } catch (error) {
         this.fail(this.failureMessage(error));
@@ -401,7 +430,7 @@ export class ChromeShare implements VncEndpoint {
   }
   async take(
     session: string,
-    agent: string,
+    agent: string | null,
     profile: string,
     generation: string,
   ) {
@@ -417,22 +446,23 @@ export class ChromeShare implements VncEndpoint {
     this.binary();
     // The authenticated Take control action is authorization. No extra consent gate.
     this.owner = session;
+    this.controlId = crypto.randomUUID();
     this.profile = profile;
     this.agentId = agent;
     this.profileGeneration = generation;
     this.status = "pausing";
     this.error = null;
     this.persist();
-    this.chrome.lockDesktop();
+    this.chrome.setHumanDesktop(true);
+    this.handoffs = this.chrome.pendingHandoffs(id => id === profile);
     this.revoke();
     const epoch = this.generation;
     this.changed();
     this.transition = (async () => {
       try {
-        await Promise.all([this.chrome.freezeDesktop(), this.drainDesktop()]);
+        await this.drainDesktop();
         if (this.status !== "pausing" || epoch !== this.generation)
           throw new ChromeDesktopError("Desktop share revoked while draining.");
-        this.frozen = true;
         await this.startCapture();
       } catch (error) {
         this.fail(this.failureMessage(error));
@@ -452,10 +482,15 @@ export class ChromeShare implements VncEndpoint {
         "This desktop is private to its owning control session.",
       );
   }
-  async reconnect(session: string, generation: unknown) {
+  private currentControl(generation: unknown, controlId: unknown) {
+    return controlId === undefined
+      ? generation === this.generation
+      : typeof controlId === "string" && controlId === this.controlId;
+  }
+  async reconnect(session: string, generation: unknown, controlId?: unknown) {
     this.owned(session);
     if (
-      this.closing || generation !== this.generation ||
+      this.closing || !this.currentControl(generation, controlId) ||
       this.transition ||
       !["sharing", "disconnected"].includes(this.status)
     )
@@ -535,7 +570,6 @@ export class ChromeShare implements VncEndpoint {
       generation === this.generation &&
       session === this.owner &&
       this.status === "sharing" &&
-      this.chrome.sharingDesktop &&
       (this.ownedGeneration
         ? this.ownedAlive()
         : this.chrome.bridge.profiles().some(p => p.id === this.profile && p.generation === this.profileGeneration))
@@ -584,6 +618,8 @@ export class ChromeShare implements VncEndpoint {
     return cleanup;
   }
   private async stopCaptureOnce(allowRepair: boolean) {
+    // Clipboard cleanup never short-circuits the existing held-key cleanup path.
+    await this.clipboard.drain().catch(() => {});
     // Admission is revoked by every caller before entering shared cleanup.
     const auth = this.authProcess;
     if (auth && auth.exitCode === null && !auth.signalCode) {
@@ -593,13 +629,13 @@ export class ChromeShare implements VncEndpoint {
         this.authUncertain = true;
         this.persist();
         auth.kill("SIGKILL");
-        throw new ChromeDesktopError("Cannot confirm private OS-authentication shutdown. Tools remain paused.");
+        throw new ChromeDesktopError("Cannot confirm private OS-authentication shutdown. The viewer needs cleanup.");
       }
     }
     this.authProcess = null;
     if (this.runtime && existsSync(join(this.runtime, "auth.lock"))) {
       const probe = Bun.spawn(["/usr/bin/flock", "-n", join(this.runtime, "auth.lock"), "/usr/bin/true"], { stdout: "ignore", stderr: "ignore" });
-      if (await probe.exited !== 0) throw new ChromeDesktopError("Old private OS-authentication helper is still alive. Keep tools paused.");
+      if (await probe.exited !== 0) throw new ChromeDesktopError("Old private OS-authentication helper is still alive. Keep the viewer closed.");
     }
     const child = this.process;
     let stoppedByUs = false;
@@ -615,7 +651,7 @@ export class ChromeShare implements VncEndpoint {
         await Promise.race([exited, Bun.sleep(5000)]);
         if (child.exitCode === null && !child.signalCode)
           throw new ChromeDesktopError(
-            "Cannot confirm sharing process exit. Tools remain paused; repair required.",
+            "Cannot confirm sharing process exit. The viewer needs cleanup; repair required.",
           );
       }
     }
@@ -655,14 +691,14 @@ export class ChromeShare implements VncEndpoint {
       );
       if ((await probe.exited) !== 0)
         throw new ChromeDesktopError(
-          "Old X11 input process is still alive. Retry cleanup; tools remain paused.",
+          "Old X11 input process is still alive. Retry cleanup; the viewer needs cleanup.",
         );
     }
     this.process = null;
     if (this.inputCleanupRequired) {
       if (this.unexpectedExit && !allowRepair)
         throw new ChromeDesktopError(
-          "Input state is uncertain. End the share without viewing before reconnecting or resuming.",
+          "Input state is uncertain. End the share without viewing before reconnecting.",
         );
       await this.inputHelper("--release");
       this.inputCleanupRequired = false;
@@ -683,13 +719,13 @@ export class ChromeShare implements VncEndpoint {
     const check = Bun.spawn(["/usr/bin/python3", resolve(import.meta.dir, "../../scripts/connected-chrome-os-auth.py"),
       "--verify", JSON.stringify(record.auth)], { stdout: "pipe", stderr: "ignore", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" } });
     const code = await Promise.race([check.exited, Bun.sleep(5000).then(() => -1)]);
-    if (code !== 0) { check.kill(); await check.exited; requireCurrent(); throw new ChromeDesktopError("OS authentication daemon binding was lost. Keep tools paused."); }
+    if (code !== 0) { check.kill(); await check.exited; requireCurrent(); throw new ChromeDesktopError("OS authentication daemon binding was lost. Keep the viewer closed."); }
     requireCurrent();
     const attested = JSON.parse(await new Response(check.stdout).text());
     requireCurrent();
-    if (JSON.stringify(attested) !== JSON.stringify(record.auth)) throw new ChromeDesktopError("OS authentication daemon changed. Keep tools paused.");
+    if (JSON.stringify(attested) !== JSON.stringify(record.auth)) throw new ChromeDesktopError("OS authentication daemon changed. Keep the viewer closed.");
   }
-  async release(session: string, generation: unknown, cleanupOnly = false) {
+  async release(session: string, generation: unknown, cleanupOnly = false, controlId?: unknown) {
     const orphan = this.status === "orphaned";
     if (orphan) {
       if (!cleanupOnly)
@@ -698,16 +734,19 @@ export class ChromeShare implements VncEndpoint {
           "Use cleanup without viewing for an orphaned share.",
         );
     } else this.owned(session);
-    if (generation !== this.generation || this.returning)
+    if (!this.currentControl(generation, controlId) || this.returning)
       throw new HttpError(
         409,
         "Stale or concurrent handback. Refresh and retry.",
       );
-    if (this.status === "failed" && !cleanupOnly)
-      throw new HttpError(
-        409,
-        "Use End failed share without viewing; do not resume old input.",
-      );
+    // Socket shutdown can fail after Done. This changes cleanup mode, not
+    // the user's intent to finish this exact Take.
+    cleanupOnly ||= this.status === "failed";
+    this.chrome.setHumanDesktop(false);
+    const handoffs = this.handoffs;
+    this.handoffs = [];
+    const notified = Promise.resolve(this.onDone(handoffs));
+    void notified.catch(() => {});
     // Snapshot only already-completed obligations. Never turn failed native
     // cleanup into permission to retire a dead display within this request.
     const cleanOwned = cleanupOnly && !!this.ownedGeneration && this.runtime === null &&
@@ -717,7 +756,7 @@ export class ChromeShare implements VncEndpoint {
       const saved = privateJson<Record<string, unknown>>(this.latch);
       if (saved.runtime !== null || saved.inputCleanupRequired !== false || saved.authUncertain !== false ||
           saved.ownedGeneration !== this.ownedGeneration || JSON.stringify(saved.binding) !== JSON.stringify(this.binding))
-        throw new ChromeDesktopError("Completed desktop cleanup evidence is missing or changed. Keep tools paused.");
+        throw new ChromeDesktopError("Completed desktop cleanup evidence is missing or changed. Keep the viewer closed.");
       return JSON.stringify(this.ownedDesktop.cleanupRecord(this.ownedGeneration!, this.binding!));
     };
     let cleanEvidence: string | null = null;
@@ -730,17 +769,18 @@ export class ChromeShare implements VncEndpoint {
     this.returning = true;
     this.status = "stopping";
     this.revoke();
-    const expected = { generation: this.generation, failure: this.failureEpoch, owner: this.owner, bridge: this.chrome.bridge.desktopEpoch,
+    const expected = { generation: this.generation, failure: this.failureEpoch, owner: this.owner,
       owned: this.ownedGeneration, profile: this.profileGeneration };
     let privacyReady = false;
     const current = () => !this.closing && this.returning && this.status === "stopping" &&
-      this.generation === expected.generation && this.failureEpoch === expected.failure && this.chrome.bridge.desktopEpoch === expected.bridge &&
+      this.generation === expected.generation && this.failureEpoch === expected.failure &&
       this.owner === expected.owner && this.ownedGeneration === expected.owned && this.profileGeneration === expected.profile &&
       this.ownerValid(session) && (orphan || this.owner === session) && (!privacyReady || this.privacyValid()) &&
       (!expected.owned || (cleanOwned ? cleanCurrent() : this.ownedAlive()));
-    const requireCurrent = () => { if (!current()) throw new ChromeDesktopError("Desktop handback was revoked. Keep tools paused."); };
+    const requireCurrent = () => { if (!current()) throw new ChromeDesktopError("Desktop handback was revoked. Keep the viewer closed."); };
     this.changed();
     try {
+      await notified;
       await this.transition?.catch(() => {});
       requireCurrent();
       // A restored orphan has no live native-provider lease yet. Acquire/drain
@@ -750,32 +790,20 @@ export class ChromeShare implements VncEndpoint {
       requireCurrent();
       await this.stopCapture(cleanupOnly);
       requireCurrent();
-      if (cleanupOnly || !this.frozen) {
-        // Only after capture/input cleanup: ACK every current peer, but do not
-        // require revoked/lost tasks to reconnect or restore their authority.
-        if (cleanupOnly) await this.chrome.freezeDesktopForCleanup();
-        else await this.chrome.freezeDesktop();
-        requireCurrent();
-        this.frozen = true;
-      }
-      if (this.authUncertain) throw new ChromeDesktopError("OS authentication outcome is uncertain. Tools remain paused for operator repair; no authentication is replayed.");
+      if (this.authUncertain) throw new ChromeDesktopError("OS authentication outcome is uncertain. The viewer needs cleanup for operator repair; no authentication is replayed.");
       const verifyAuth = async () => { if (!cleanOwned) await this.verifyOwnedAuth(requireCurrent); requireCurrent(); };
       await verifyAuth();
       requireCurrent();
-      await this.chrome.unlockDesktop(() => current() && !this.authUncertain, verifyAuth);
-      requireCurrent();
       rmSync(this.latch);
       this.owner = this.profile = this.agentId = this.profileGeneration = null;
+      this.controlId = null;
       this.binding = null;
       this.ownedGeneration = null;
       this.status = "idle";
-      this.frozen = false;
       this.error = null;
       this.changed();
       return this.state(session);
     } catch (e) {
-      this.chrome.lockDesktop();
-      this.frozen = false;
       this.persist();
       this.status = orphan || !this.owner ? "orphaned" : "failed";
       this.error = this.failureMessage(e);

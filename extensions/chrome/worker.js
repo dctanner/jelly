@@ -1064,8 +1064,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   void (async () => {
     await initialized;
     if (message.action === "connect") await connect(true);
-    else if (message.action === "pause")
-      await Promise.all([...sessions.values()].map((s) => pause(s, true)));
     else if (message.action === "disconnect") {
       optedOut = true;
       connectionError = null;

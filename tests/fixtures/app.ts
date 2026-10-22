@@ -1,4 +1,5 @@
 /** Explicit test/preview injection; production has no scripted provider or bypass. */
+import "./bun-extra-stdio";
 import { startApp as startProductionApp, type AppOptions } from "../../src/server/app";
 import { Harness } from "../../src/server/harness";
 import { MODEL_OPTIONS } from "../../src/shared/models";

@@ -80,14 +80,18 @@ export class JellyService {
     });
     this.chrome = new ChromeSessions(harness.dataDir, store.instance().id, id => {
       this.emit(id, null, "chrome_changed", {});
-      const task = this.chrome.state(id).task;
-      if (this.desktop && !this.desktop.status().privateSafe && task && (task.handoff || (task.pauseState === "paused" && task.tabs.length > 0)))
-        void this.pauseDesktopForPrivacy(`browser:${id}`).catch(() => {});
     });
     this.chromeShare = new ChromeShare(this.chrome, harness.dataDir, async () => {
       if (this.desktopHandoff) throw new HttpError(409, "Return the existing desktop handoff first.");
       await this.pauseDesktopForPrivacy("chrome-share");
     }, () => this.emit(null, null, "chrome_changed", {}));
+    this.chromeShare.onDone = async handoffs => {
+      for (const { agent, id } of handoffs) {
+        if (this.chrome.state(agent).task?.handoff !== id) continue;
+        if (this.store.intervention(id)?.status === "pending") await this.completeBrowserControl(agent, id);
+        else { this.chrome.done(agent, id); await this.finishBrowserPrivacy(agent); }
+      }
+    };
     this.browsers = new BrowserSessions(this.chrome);
     this.desktop = new DesktopSessions(harness.dataDir, {
       ...options.desktopOptions,
@@ -95,7 +99,7 @@ export class JellyService {
         const state = this.active.get(runId);
         return !this.closing && state?.agentId === agentId && !state.cancelled;
       },
-      canAdmit: () => !this.chrome.sharingDesktop && !this.desktopPrivate && !this.desktopHandoff && !this.browserPrivate(),
+      canAdmit: () => !this.desktopPrivate && !this.desktopHandoff && !this.browserPrivate(),
       notify: () => { this.chromeShare.checkPrivacy(); this.emit(null, null, "desktop_changed", {}); },
     });
     this.chromeShare.privacyValid = () => this.desktop.status().privateSafe;
@@ -121,25 +125,29 @@ export class JellyService {
       });
   }
   private browserPrivate(agentId?: string) {
-    if (this.chrome.sharingDesktop) return true;
-    return this.store.agents().filter(agent => !agentId || agent.id === agentId).some(agent => {
-      const chrome = this.chrome.state(agent.id).task;
-      return !!chrome && (chrome.pauseState !== "active" || !!chrome.handoff);
-    });
+    // Native Mac desktop privacy remains exclusive, including uncertain viewer
+    // cleanup. This guard is never used to admit browser operations.
+    return this.chromeShare.state().status !== "idle" || this.chrome.humanState() ||
+      this.store.agents().filter(agent => !agentId || agent.id === agentId).some(agent => {
+        const task = this.chrome.state(agent.id).task;
+        return !!task && (task.pauseState !== "active" || !!task.handoff);
+      });
   }
   chromeStatus(agentId?: string) {
-    const state = { ...this.chrome.state(agentId),
+    return { ...this.chrome.state(agentId),
       selectedProfile: this.store.browserSelection().chromeProfile,
-      desktopShared: this.chrome.sharingDesktop };
-    const share = this.chromeShare.state();
-    if (state.task && this.chrome.sharingDesktop && !["sharing", "disconnected"].includes(share.status))
-      return { ...state, task: { ...state.task, paused: false,
-        pauseState: ["failed", "orphaned"].includes(share.status) ? "failed" as const : "pausing" as const } };
-    const desktop = this.desktop.status();
-    if (state.task?.paused && !desktop.privateSafe)
-      return { ...state, task: { ...state.task, paused: false,
-        pauseState: desktop.control === "unsafe" ? "failed" as const : "pausing" as const } };
-    return state;
+      desktopShared: this.chromeShare.state().status !== "idle" };
+  }
+  async completeBrowserControl(agent: string, handoff: string | null) {
+    const request = handoff ? this.store.intervention(handoff) : null;
+    if (handoff && (!request || request.agentId !== agent || request.kind !== "browser_login" || request.status !== "pending"))
+      throw new HttpError(409, "This browser request is no longer current.");
+    if (this.chrome.state(agent).task) this.chrome.done(agent, handoff);
+    if (request) {
+      if (Date.parse(request.expiresAt) <= Date.now()) this.interventions.cancel(request.id, "expired");
+      else this.interventions.completeLogin(request.id);
+    }
+    await this.finishBrowserPrivacy(agent);
   }
   desktopStatus(): DesktopUIStatus {
     const handoff = this.desktopHandoff;
@@ -168,7 +176,6 @@ export class JellyService {
         if (port && id === agentId) return port;
         const browser = scoped.get(id);
         const guard = () => {
-          this.chrome.assertAutomationAllowed();
           if (this.desktopHandoff) throw new Error("Browser automation is paused for private desktop control. Explicit desktop handback is required.");
         };
         port = {
@@ -198,11 +205,7 @@ export class JellyService {
     void pending.promise.catch(() => {});
     try {
       await this.pauseDesktopForPrivacy(`desktop-handoff:${pending.request.id}`);
-      const pauses = this.store.agents().flatMap(agent => {
-        const task = this.chrome.state(agent.id).task;
-        return task ? [this.chrome.control(agent.id, "pause")] : [];
-      });
-      await Promise.all(pauses);
+      await this.chrome.pauseForNativeHandoff();
       signal?.throwIfAborted();
       if (this.desktopHandoff?.id !== pending.request.id ||
           this.store.intervention(pending.request.id)?.status !== "pending")
@@ -217,7 +220,6 @@ export class JellyService {
     }
   }
   async resumeDesktop(agentId: string, runId: string, handoffId?: string) {
-    this.chrome.assertAutomationAllowed();
     const active = this.active.get(runId);
     if (active?.agentId !== agentId || active.cancelled)
       throw new HttpError(409, "Start a current desktop run before explicitly resuming.");
@@ -226,7 +228,8 @@ export class JellyService {
         (!handoff.safe || handoff.id !== handoffId || handoff.agentId !== agentId || handoff.runId !== runId))
       throw new HttpError(409, "A matching, safely drained desktop handoff is required.");
     if (handoff && handoff.safe && handoff.id === handoffId && this.store.intervention(handoff.id)?.status === "pending") {
-      // Explicit handback ends private work, not qualification or browser pause.
+      // Explicit native handback clears only pauses created by this handoff.
+      await this.chrome.finishNativeHandoff();
       this.privateBoundaries.delete(`desktop-handoff:${handoff.id}`);
       if (!this.privateBoundaries.size && !this.browserPrivate()) {
         await this.desktop.releasePrivateControl();
@@ -248,6 +251,7 @@ export class JellyService {
     try {
       await this.desktop.releasePrivateControl();
       await this.desktop.resume(agentId, runId);
+      await this.chrome.finishNativeHandoff();
       if (handoff && this.store.intervention(handoff.id)?.status === "pending")
         this.interventions.completeDesktopHandoff(handoff.id);
     } catch (error) {
@@ -259,12 +263,12 @@ export class JellyService {
     return this.desktopStatus();
   }
   assertBrowserHandbackAllowed() {
-    this.chrome.assertAutomationAllowed();
     if (this.desktopHandoff && this.store.intervention(this.desktopHandoff.id)?.status === "pending")
       throw new HttpError(409, "Private desktop control is reserved. Return desktop control first.");
   }
   async finishBrowserPrivacy(agentId: string) {
-    if (!this.browserPrivate(agentId)) this.privateBoundaries.delete(`browser:${agentId}`);
+    const task = this.chrome.state(agentId).task;
+    if (!task?.humanUsing && !task?.handoff) this.privateBoundaries.delete(`browser:${agentId}`);
     if (!this.privateBoundaries.size && !this.browserPrivate() && !this.desktopHandoff) {
       await this.desktop.releasePrivateControl();
       this.desktopPrivate = false;
@@ -274,7 +278,7 @@ export class JellyService {
   async finishDesktopPrivacy() {
     if (this.desktopHandoff && this.store.intervention(this.desktopHandoff.id)?.status === "pending")
       throw new HttpError(409, "Return the matching desktop handoff card first.");
-    if (!this.chrome.sharingDesktop) this.privateBoundaries.delete("chrome-share");
+    if (this.chromeShare.state().status === "idle") this.privateBoundaries.delete("chrome-share");
     this.privateBoundaries.delete("desktop-manual");
     for (const boundary of this.privateBoundaries)
       if (boundary.startsWith("desktop-handoff:") &&

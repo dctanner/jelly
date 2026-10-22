@@ -1,7 +1,7 @@
 let busy = false;
 let revision = 0;
 async function action(action) {
-  if (busy && !["pause", "disconnect"].includes(action)) return;
+  if (busy && action !== "disconnect") return;
   const request = ++revision;
   busy = true;
   if (action !== "status") {
@@ -9,9 +9,6 @@ async function action(action) {
   }
   if (action === "connect") document.querySelector("#status").textContent = "Connecting…";
   if (action === "disconnect") document.querySelector("#status").textContent = "Disconnecting…";
-  if (action === "pause")
-    document.querySelector("#status").textContent =
-      "Pausing—do not enter credentials yet";
   try {
     const result = await chrome.runtime.sendMessage({
       action,
@@ -29,7 +26,7 @@ async function action(action) {
     };
     document.querySelector("#status").textContent = result?.error
       ? "Control failed—do not enter credentials. Retry or reload the extension."
-      : result?.pending ? "Connection pending—return control in Jelly web desktop to publish"
+      : result?.pending ? "Connecting…"
       : result?.connected ? "Connected"
       : result?.connecting ? "Connecting…"
       : errors[result?.connectionError] ?? (result?.optedOut
@@ -46,7 +43,7 @@ async function action(action) {
     list.replaceChildren();
     for (const task of result?.sessions ?? []) {
       const li = document.createElement("li");
-      li.textContent = `${task.name}: ${task.failed ? "Pause failed—do not enter credentials" : task.pausing ? "Pausing—do not enter credentials yet" : task.paused ? "paused" : "working"}, ${task.tabs} tab(s) · ${task.siteScope === "internet" ? "Unrestricted web" : "Approved sites"}`;
+      li.textContent = `${task.name}: ${task.failed ? "Security cleanup required" : task.pausing ? "Finishing work" : task.paused ? "Idle or security-paused" : "Working"}, ${task.tabs} tab(s) · ${task.siteScope === "internet" ? "Unrestricted web" : "Approved sites"}`;
       list.append(li);
     }
   } catch {
@@ -59,7 +56,7 @@ async function action(action) {
     if (request === revision) busy = false;
   }
 }
-for (const id of ["connect", "pause", "disconnect"])
+for (const id of ["connect", "disconnect"])
   document.getElementById(id).onclick = () => void action(id);
 // Legacy launch fragments never override a persisted Disconnect.
 if (window.location.hash)

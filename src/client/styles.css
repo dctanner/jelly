@@ -823,6 +823,13 @@ dialog .choice {
   padding: 10px 16px;
   border-radius: 9px;
 }
+.computer-clipboard { margin-bottom: 12px; font-size: 13px; }
+.computer-clipboard-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.computer-clipboard button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; border-radius: 9px; }
+.computer-clipboard-manual { display: grid; gap: 8px; margin-top: 10px; }
+.computer-clipboard-manual textarea { box-sizing: border-box; width: 100%; min-height: 96px; resize: vertical; font: inherit; font-size: 16px; padding: 10px; }
+.computer-clipboard-terminal { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.computer-clipboard p { margin: 8px 0; }
 .chrome-share-viewer {
   min-width: 0;
 }
@@ -832,6 +839,65 @@ dialog .choice {
 .chrome-share-display {
   width: 100%;
   height: 100%;
+  transform-origin: top left;
+}
+.chrome-share-pan {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+}
+.chrome-share-pan svg, .chrome-share-pan span { flex-shrink: 0; }
+.chrome-share-pan span { white-space: nowrap; }
+.app .chrome-share-pan input[type="range"] {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.app .chrome-share-pan input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.chrome-share-pan input::-webkit-slider-runnable-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 6px;
+}
+.chrome-share-pan input::-webkit-slider-thumb {
+  appearance: none;
+  width: 44px;
+  height: 24px;
+  margin-top: -9px;
+  border-radius: 12px;
+  background: var(--accent);
+}
+.chrome-share-pan input::-moz-range-track {
+  height: 6px;
+  background: var(--border);
+  border-radius: 6px;
+}
+.chrome-share-pan input::-moz-range-thumb {
+  width: 44px;
+  height: 24px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
 }
 .chrome-share-screen {
   height: min(65vh, 800px);
@@ -848,6 +914,63 @@ dialog .choice {
   .header-status {
     display: none;
   }
+}
+.computer-control-tools { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.computer-control-tools > .chrome-share-toolbar, .computer-control-notice { flex-basis: 100%; }
+.computer-control-info, .computer-text-options-icon { display: none; }
+.computer-keyboard { position: relative; margin-bottom: 12px; }
+.computer-keyboard button { min-width: 44px; min-height: 44px; padding: 8px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 9px; }
+.computer-keyboard-toggle[aria-pressed="true"] { background: var(--accent); color: white; }
+.app .computer-keyboard-input {
+  position: absolute; top: 0; left: 0; width: 1px; height: 1px;
+  min-width: 0; min-height: 0; padding: 0; margin: 0; border: 0;
+  opacity: 0; pointer-events: none; resize: none; font-size: 16px;
+}
+.computer-keyboard-keys { display: flex; gap: 4px; margin-top: 4px; }
+.computer-keyboard-keys button { flex: 1; padding: 6px; }
+.computer-keyboard-message { font-size: 12px; }
+@media (max-width: 767px) {
+  dialog.chrome-share-panel.computer-control-active {
+    height: calc(var(--sheet-viewport-height, 100dvh) - max(8px, env(safe-area-inset-top)));
+    max-height: calc(var(--sheet-viewport-height, 100dvh) - max(8px, env(safe-area-inset-top)));
+    border-radius: 16px 16px 0 0;
+  }
+  .computer-control-active .sheet-handle { display: none; }
+  .chrome-share-panel.computer-control-active .modal-heading { min-height: 44px; padding: 0 8px; }
+  .chrome-share-panel.computer-control-active .modal-heading h2 { font-size: 15px; }
+  .chrome-share-panel.computer-control-active .modal-body {
+    display: flex; flex-direction: column; gap: 6px; min-height: 0;
+    padding: 0 8px max(8px, env(safe-area-inset-bottom));
+  }
+  .computer-control-active .computer-control-tools {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px auto;
+    gap: 4px; flex: 0 0 auto; align-items: center;
+  }
+  .computer-control-active .computer-control-notice { grid-column: 1 / -1; margin: 0; }
+  .computer-control-active .computer-control-notice.compact-collapsed { display: none; }
+  .computer-control-active .computer-control-info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 44px; height: 44px; padding: 0; grid-column: 3; grid-row: 1; border-radius: 9px;
+  }
+  .computer-control-active .chrome-share-toolbar { grid-column: 4; grid-row: 1; margin: 0; }
+  .computer-control-active .chrome-share-toolbar > [role="status"] { display: none; }
+  .computer-control-active .chrome-share-toolbar .primary { min-width: 56px; min-height: 44px; padding: 8px; }
+  .computer-control-active .computer-keyboard, .computer-control-active .computer-clipboard { display: contents; }
+  .computer-control-active .computer-keyboard-toggle { grid-column: 1; grid-row: 1; width: 44px; padding: 0; }
+  .computer-control-active .computer-keyboard-toggle span,
+  .computer-control-active .computer-clipboard > .computer-clipboard-actions button > span { display: none; }
+  .computer-control-active .computer-clipboard > .computer-clipboard-actions { grid-column: 2; grid-row: 1; flex-wrap: nowrap; gap: 4px; }
+  .computer-control-active .computer-clipboard > .computer-clipboard-actions button { min-width: 44px; width: 44px; padding: 0; }
+  .computer-control-active .computer-text-options-icon { display: block; }
+  .computer-control-active .computer-keyboard-keys,
+  .computer-control-active .computer-keyboard-message,
+  .computer-control-active .computer-clipboard > p,
+  .computer-control-active .computer-clipboard-manual { grid-column: 1 / -1; margin: 0; }
+  .computer-control-active .computer-keyboard-keys { justify-content: space-between; }
+  .computer-control-active .chrome-share-viewer:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 120px; }
+  .computer-control-active .chrome-share-pan { height: 44px; min-height: 44px; flex-shrink: 0; margin-bottom: 4px; }
+  .computer-control-active .chrome-share-screen { height: auto; min-height: 0; flex: 1; }
+  .computer-control-active .computer-control-advanced { display: none; }
 }
 .account-connections {
   margin: 24px 0;

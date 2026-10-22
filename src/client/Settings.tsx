@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { ChevronRight, Check } from "lucide-react";
 import { Modal } from "./Modal";
 import { Connections } from "./Connections";
+import { ComputerControlPanel } from "./ComputerControlPanel";
 import { ChromeConnection } from "./ChromeConnection";
 import { DesktopConnection } from "./DesktopConnection";
 import { McpConnections } from "./McpConnections";
@@ -146,6 +147,7 @@ export function Settings({
       setBusy(false);
     }
   }
+  if (page === "Computer control") return <ComputerControlPanel onClose={() => setPage("Settings")} onChange={() => void refresh()} />;
   return (
     <Modal
       title={page}
@@ -176,14 +178,15 @@ export function Settings({
         </button>
       }
     >
-      {page === "Connected Chrome" && <ChromeConnection data={data} refresh={refresh} />}
+      {page === "Connected Chrome" && <ChromeConnection data={{ ...data, selectedAgentId: null }} refresh={refresh} />}
       {page === "Native Mac desktop" && <DesktopConnection data={data} refresh={refresh} onDirty={setDetailDirty} onBusy={setBusy} />}
       {page === "Browser notifications" && <BrowserNotifications instance={data.instance.id} />}
       {page === "Settings" && (
         <>
           <section className="settings-section">
-            <h3>Browser</h3>
+            <h3>Computer and browser</h3>
             <div className="settings-group">
+              <SettingsRow label="Computer control" onClick={() => setPage("Computer control")} />
               <SettingsRow label="Connected Chrome" onClick={() => setPage("Connected Chrome")} />
             </div>
           </section>

@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
+import { spawnSync } from "node:child_process";
 import { expect } from "bun:test";
 import { startApp } from "./fixtures/app";
 import { ChromeSessions } from "../src/server/chrome-sessions";
@@ -78,6 +79,7 @@ const { process: decoyXvfb, display: decoyDisplay } = await disposableDisplay();
 const app = await startApp({
   dataDir,
   configDir: join(dir, "config"),
+  staticDir: process.env.JELLY_TEST_STATIC_DIR,
   port: 0,
 });
 const fixtureHttpPort = app.server.port!;
@@ -89,8 +91,8 @@ const site = Bun.serve({
       `
   <body style="background:#142e48;color:white"><h1>Connected Chrome human fixture</h1>
   <button style="position:absolute;left:100px;top:150px;width:240px;height:100px;background:rgb(231,17,123);border:0"
-    onclick="document.querySelector('h1').textContent='Human VNC click received';document.querySelector('input').focus()">Human button</button>
-  <input style="position:absolute;top:300px;left:100px" aria-label="Human text">
+    onclick="document.querySelector('h1').textContent='Human VNC click received';document.querySelector('textarea').focus()">Human button</button>
+  <textarea style="position:absolute;top:300px;left:100px" aria-label="Human text"></textarea>
   <script>document.cookie='sameProfile=preserved;SameSite=Lax'</script>`,
       { headers: { "Content-Type": "text/html" } },
     ),
@@ -178,6 +180,7 @@ const viewerIdentity: FixtureBrowserIdentity = {
 await viewerInspector.detach();
 const ui = await viewerBrowser.newContext({
   viewport: { width: 1100, height: 1000 },
+  hasTouch: true,
 });
 const page = await ui.newPage();
 const errors: string[] = [],
@@ -304,7 +307,7 @@ try {
       ).rejects.toThrow("unavailable");
       expect((app.service.chromeShare as any).process).toBeNull();
       expect(app.service.chromeShare.state().status).toBe("idle");
-      expect(chrome.sharingDesktop).toBe(false);
+      expect(chrome.humanState()).toBe(false);
       console.log(
         `PASS: two real X11 displays, Chrome only on ${displaySwitch} override; native host refuses capture/control of either display.`,
       );
@@ -399,9 +402,8 @@ try {
     .getByRole("heading", { name: "Connected Chrome human fixture" })
     .waitFor();
   const pidBefore = readlinkSync(join(profileDir, "SingletonLock"));
-  await chrome.control(agent.id, "pause");
-  // Focusing is a distinct, explicit request, never a side effect of sharing.
-  await chrome.control(agent.id, "focus");
+  // Fixture-only focus chooses the test tab, not a local-machine UI control.
+  await remote.bringToFront();
   await popup.close();
   app.service.emit(agent.id, null, "message", {
     role: "user",
@@ -412,19 +414,19 @@ try {
   await openChromeViewer(page);
   await page
     .getByRole("heading", {
-      name: "Take control of Connected Chrome",
+      name: "Use the computer",
       exact: true,
     })
     .waitFor();
   expect((app.service.chromeShare as any).process).toBeNull();
   expect(await page.locator(".chrome-share-screen canvas").count()).toBe(0);
   expect(
-    await page.getByText(/Other windows, accounts, notifications/).count(),
+    await page.getByText(/Full computer access, including other windows and notifications/).count(),
   ).toBe(1);
   await page.getByRole("button", { name: "Take control" }).click();
   try {
     await page
-      .getByText(/You control the full desktop/)
+      .getByText(/You’re using the computer/)
       .waitFor({ timeout: 20000 });
   } catch (e) {
     console.error(
@@ -437,23 +439,12 @@ try {
   }
   const sharing = app.service.chromeShare.state();
   expect(sharing.status).toBe("sharing");
-  expect(chrome.state(other.id).task?.paused).toBe(true);
-  await expect(a.action("snapshot")).rejects.toThrow("paused");
-  await expect(b.action("snapshot")).rejects.toThrow("paused");
-  expect(() =>
-    chrome.allocate("new-agent", "new-run", selected, "New"),
-  ).toThrow("paused");
-  await expect(chrome.control(other.id, "resume")).rejects.toThrow("paused");
-  await expect(
-    chrome.bridge.call(
-      peer.id,
-      peer.generation,
-      taskA.id,
-      taskA.run,
-      "screenshot",
-      { tab: taskA.active },
-    ),
-  ).rejects.toThrow();
+  expect(chrome.humanState()).toBe(true);
+  expect(chrome.state(other.id).task?.paused).toBe(false);
+  expect(await a.action("snapshot")).toMatchObject({ humanUsing: true });
+  expect(await b.action("snapshot")).toMatchObject({ humanUsing: true });
+  const newAgent = app.service.createAgent({ name: "New", instructions: "Fixture", color: "#b5bafc" });
+  expect(() => chrome.allocate(newAgent.id, "new-run", selected, "New")).not.toThrow();
   // x11vnc has no TCP listener, including the separate LibVNCServer IPv6 port.
   const child = (app.service.chromeShare as any).process;
   const socketInodes = readdirSync(`/proc/${child.pid}/fd`).flatMap((fd) => {
@@ -485,7 +476,7 @@ try {
       if (d[i] === 231 && d[i + 1] === 17 && d[i + 2] === 123) return true;
     return false;
   });
-  const point = await page.evaluate(() => {
+  const buttonPoint = () => page.evaluate(() => {
     const c = document.querySelector(
         ".chrome-share-screen canvas",
       ) as HTMLCanvasElement,
@@ -505,6 +496,7 @@ try {
       y: r.y + ((sy / n) * r.height) / c.height,
     };
   });
+  const point = await buttonPoint();
   await page.mouse.click(point.x, point.y);
   await remote
     .getByRole("heading", { name: "Human VNC click received" })
@@ -530,23 +522,215 @@ try {
   expect(Buffer.concat(frames).includes(Buffer.from(clipboardSentinel))).toBe(
     false,
   );
-  expect(await page.getByRole("button", { name: /clipboard/i }).count()).toBe(
-    0,
-  );
-  clip.kill();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForFunction(() => {
-    const c = document
-        .querySelector(".chrome-share-screen canvas")!
-        .getBoundingClientRect(),
-      v = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
-    return (
-      c.width <= v.width + 2 &&
-      c.height <= v.height + 2 &&
-      Math.abs(c.width / c.height - 1280 / 900) < 0.02
-    );
+  // Explicit transfer is separate from the passive RFB sentinel above.
+  await ui.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const unicode = "雪 café 🪼\nsecond line\n";
+  await page.evaluate(async text => navigator.clipboard.writeText(text), unicode);
+  await remote.getByRole("textbox").fill("");
+  await page.locator(".chrome-share-screen canvas").focus();
+  await page.keyboard.press("Control+v");
+  await waitFor(async () => await remote.getByRole("textbox").inputValue() === unicode);
+  // Exercise actual noVNC Mac Command -> Alt_L mapping, with Command still
+  // held when the transfer ACK arrives (Linux Chromium needs a supplied paste event).
+  await remote.getByRole("textbox").fill("");
+  await remote.evaluate(() => {
+    (window as any).clipboardKeys = [];
+    document.addEventListener("keydown", event => (window as any).clipboardKeys.push({ key: event.key, alt: event.altKey, ctrl: event.ctrlKey }));
   });
-  expect(await page.getByRole("slider").count()).toBe(0);
+  await page.evaluate(() => Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" }));
+  await page.locator(".chrome-share-screen canvas").focus();
+  await page.keyboard.down("Meta");
+  await waitFor(() => remote.evaluate(() => (window as any).clipboardKeys.some((key: any) => key.key === "Alt" && key.alt)));
+  await page.evaluate(text => {
+    const data = new DataTransfer(); data.setData("text/plain", text);
+    document.querySelector(".chrome-share-screen canvas")!.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, clipboardData: data }));
+  }, unicode);
+  await waitFor(async () => await remote.getByRole("textbox").inputValue() === unicode);
+  expect(await remote.evaluate(() => (window as any).clipboardKeys.some((key: any) => key.key.toLowerCase() === "v" && key.ctrl && !key.alt))).toBe(true);
+  console.log("PASS: real noVNC Mac Command maps to remote Alt; Command held through clipboard ACK still produces Ctrl+V without Alt and pastes Unicode.");
+  await page.keyboard.up("Meta");
+  await page.evaluate(() => { delete (navigator as any).platform; });
+  await page.getByRole("button", { name: "Copy from computer" }).click();
+  await page.getByText("Copied to this device.", { exact: true }).waitFor();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(unicode);
+  // Same manual experience as plain HTTP or clipboard permission denial.
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined }));
+  await page.getByRole("button", { name: "Paste to computer" }).click();
+  await page.getByText(/Paste access is unavailable/).waitFor();
+  await page.getByLabel("Text to computer", { exact: true }).fill(unicode);
+  await page.getByRole("button", { name: "Send without pasting" }).click();
+  await page.getByText(/Not pasted/).waitFor();
+  expect(await remote.getByRole("textbox").inputValue()).toBe(unicode);
+  await page.getByRole("button", { name: "Copy from computer" }).click();
+  await page.getByLabel("Text from computer", { exact: true }).waitFor();
+  expect(await page.getByLabel("Text from computer", { exact: true }).inputValue()).toBe(unicode);
+  await remote.getByRole("textbox").fill("");
+  await page.getByLabel("Text to computer", { exact: true }).fill(unicode);
+  await page.getByRole("button", { name: "Send & paste" }).click();
+  await waitFor(async () => await remote.getByRole("textbox").inputValue() === unicode);
+  await page.getByRole("button", { name: "Send without pasting" }).click(); // empty draft is real empty text
+  await page.getByText(/Not pasted/).waitFor();
+  await page.getByRole("button", { name: "Copy from computer" }).click();
+  await page.getByText(/contains empty text/).waitFor();
+  expect(await page.getByLabel("Text from computer", { exact: true }).inputValue()).toBe("");
+  await page.getByRole("button", { name: "Clear text", exact: true }).click();
+  await page.getByRole("button", { name: "Text options" }).click();
+  await remote.getByRole("textbox").fill("human-typed");
+  clip.kill();
+  await clip.exited;
+  // Real noVNC scaling and input mapping at both edges, with the actual
+  // 1280x900 desktop rather than the removed managed browser's fixed ratio.
+  await remote.evaluate(() => {
+    (window as any).panClicks = [];
+    document.addEventListener("click", event => (window as any).panClicks.push(event.clientX));
+  });
+  const slider = page.getByRole("slider", { name: "Pan computer left and right" });
+  const screen = page.locator(".chrome-share-screen");
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await slider.waitFor();
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector(".chrome-share-screen canvas")!.getBoundingClientRect();
+      const viewport = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
+      return Math.abs(canvas.height - viewport.height) < 2 && canvas.width > viewport.width;
+    });
+    for (const [key, sym] of [["Shift", 0xffe1], ["w", 0x77]] as const) {
+      await page.locator(".chrome-share-screen canvas").focus();
+      await page.keyboard.down(key);
+      await waitFor(async () => (await inputState(false, sym)) === "True False");
+      await slider.focus();
+      await page.keyboard.up(key);
+      await waitFor(async () => (await inputState(false, sym)) === "False False");
+      // Returning to the canvas can press/release the same key normally:
+      // neither the remote state nor noVNC's own key map may remain latched.
+      await page.locator(".chrome-share-screen canvas").focus();
+      await page.keyboard.down(key);
+      await waitFor(async () => (await inputState(false, sym)) === "True False");
+      await page.keyboard.up(key);
+      await waitFor(async () => (await inputState(false, sym)) === "False False");
+    }
+    const keyCount = await remote.evaluate(() => (window as any).clipboardKeys.length);
+    const clickCount = await remote.evaluate(() => (window as any).panClicks.length);
+    const bounds = (await slider.boundingBox())!;
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+    expect(await page.locator(".chrome-share-pan > span").evaluate(label => getComputedStyle(label).whiteSpace)).toBe("nowrap");
+    await slider.tap({ position: { x: bounds.width / 2, y: bounds.height / 2 } });
+    await waitFor(async () => Number(await slider.inputValue()) > 0);
+    await slider.focus();
+    await slider.press("End");
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector(".chrome-share-screen canvas")!.getBoundingClientRect();
+      const viewport = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
+      return Math.abs(canvas.right - viewport.right) < 2;
+    });
+    expect(await remote.evaluate(() => (window as any).panClicks.length)).toBe(clickCount);
+    expect(await remote.evaluate(() => (window as any).clipboardKeys.length)).toBe(keyCount);
+    await screen.scrollIntoViewIfNeeded();
+    let box = (await screen.boundingBox())!;
+    await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
+    await waitFor(async () => Number((await inputState(true)).split(" ")[0]) > 1000);
+    await slider.focus();
+    await slider.press("Home");
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector(".chrome-share-screen canvas")!.getBoundingClientRect();
+      const viewport = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
+      return Math.abs(canvas.left - viewport.left) < 2;
+    });
+    await screen.scrollIntoViewIfNeeded();
+    box = (await screen.boundingBox())!;
+    await page.mouse.click(box.x + 30, box.y + box.height / 2);
+    await waitFor(async () => Number((await inputState(true)).split(" ")[0]) < 200);
+    expect(await page.locator(".chrome-share-screen canvas").evaluate(canvas => ({
+      width: (canvas as HTMLCanvasElement).width, height: (canvas as HTMLCanvasElement).height,
+    }))).toEqual({ width: 1280, height: 900 });
+    expect(await page.getByRole("button", { name: "Paste to computer" }).isEnabled()).toBe(true);
+    const scene = (await screen.boundingBox())!;
+    expect(scene.y).toBeLessThan(185);
+    expect(scene.height).toBeGreaterThan(844 * 0.65);
+    expect(scene.y + scene.height).toBeLessThanOrEqual(845);
+    for (const name of ["Show keyboard", "Paste to computer", "Copy from computer", "Text options", "About computer control", "Done"]) {
+      const button = (await page.getByRole("button", { name, exact: true }).boundingBox())!;
+      expect(button.width).toBeGreaterThanOrEqual(44);
+      expect(button.height).toBeGreaterThanOrEqual(44);
+      expect(button.x).toBeGreaterThanOrEqual(0);
+      expect(button.x + button.width).toBeLessThanOrEqual(width);
+    }
+    await page.getByRole("button", { name: "About computer control" }).tap();
+    await page.getByText(/Full computer access, including other windows/).waitFor();
+    await page.getByRole("button", { name: "About computer control" }).tap();
+    await page.getByText(/Full computer access, including other windows/).waitFor({ state: "hidden" });
+    await remote.getByRole("textbox").fill("");
+    await page.getByRole("button", { name: "Show keyboard" }).tap();
+    const keyboard = page.getByRole("textbox", { name: "Remote keyboard input" });
+    await page.getByRole("button", { name: "Hide keyboard" }).waitFor();
+    expect(await keyboard.evaluate(input => input === document.activeElement)).toBe(true);
+    await page.waitForFunction(() => document.querySelector(".chrome-share-screen canvas")!.getBoundingClientRect().height <= document.querySelector(".chrome-share-screen")!.getBoundingClientRect().height + 2);
+    const remotePoint = await buttonPoint();
+    await page.touchscreen.tap(remotePoint.x, remotePoint.y);
+    expect(await keyboard.evaluate(input => input === document.activeElement)).toBe(true);
+    await page.keyboard.type("Hi");
+    await page.keyboard.insertText(" é雪🪼");
+    await waitFor(async () => await remote.getByRole("textbox").inputValue() === "Hi é雪🪼");
+    await keyboard.evaluate(input => {
+      const field = input as HTMLTextAreaElement;
+      field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      field.value = "\u200bni";
+      field.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, inputType: "insertCompositionText", data: "ni" }));
+    });
+    expect(await remote.getByRole("textbox").inputValue()).toBe("Hi é雪🪼");
+    await keyboard.evaluate(input => {
+      const field = input as HTMLTextAreaElement;
+      field.value = "\u200b你";
+      field.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "你" }));
+      field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "你" }));
+    });
+    await waitFor(async () => await remote.getByRole("textbox").inputValue() === "Hi é雪🪼你");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("ok");
+    await page.getByRole("button", { name: "ArrowLeft", exact: true }).tap();
+    await page.keyboard.type("!");
+    await waitFor(async () => await remote.getByRole("textbox").inputValue() === "Hi é雪🪼\no!k");
+    // Model visual-viewport changes from an OS keyboard. This is not physical
+    // Safari/Android qualification; native input above is real X11/noVNC.
+    const identityBeforeKeyboardResize = app.service.chromeShare.state().controlId;
+    for (const visibleHeight of [360, 420, 480]) {
+      await page.evaluate(height => {
+        Object.defineProperty(window.visualViewport!, "height", { configurable: true, value: height });
+        window.visualViewport!.dispatchEvent(new Event("resize"));
+      }, visibleHeight);
+      await page.waitForFunction(height => {
+        const box = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
+        return box.height > 60 && box.bottom <= height + 2;
+      }, visibleHeight);
+    }
+    await page.evaluate(() => {
+      delete (window.visualViewport as any).height;
+      window.visualViewport!.dispatchEvent(new Event("resize"));
+    });
+    expect(app.service.chromeShare.state().controlId).toBe(identityBeforeKeyboardResize);
+    await page.getByRole("button", { name: "Hide keyboard" }).tap();
+    await page.getByRole("button", { name: "Show keyboard" }).waitFor();
+    expect(await keyboard.inputValue()).toBe("");
+    if (process.env.JELLY_TEST_SCREENSHOT_DIR) {
+      await slider.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(process.env.JELLY_TEST_SCREENSHOT_DIR, `computer-pan-${width}.png`) });
+    }
+  }
+  for (const [width, height] of [[844, 390], [1100, 1000]]) {
+    await page.setViewportSize({ width: width!, height: height! });
+    await slider.waitFor({ state: "detached" });
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector(".chrome-share-screen canvas")!.getBoundingClientRect();
+      const viewport = document.querySelector(".chrome-share-screen")!.getBoundingClientRect();
+      return canvas.width <= viewport.width + 2 && canvas.height <= viewport.height + 2;
+    });
+  }
+  console.log("PASS: compact 390/320 controls leave over 65% screen height, 44px targets, explicit notice, keyboard-toggle focus retained through remote taps, Unicode/IME/Backspace/Enter/arrows and simulated soft-keyboard viewport resizing.");
+  console.log("PASS: portrait 390/320 height-fill, held modifier/ordinary-key release on pan focus and reuse, touch/keyboard pan without remote input, both-edge native pointer mapping, unchanged framebuffer and landscape/desktop fit.");
+  // The ordinary-key regression intentionally typed into the disposable field.
+  // Restore the fixture sentinel for the subsequent reconnect-preservation check.
+  await remote.getByRole("textbox").fill("human-typed");
   // A different cookie never sees this person's pixels or receives a ticket.
   const foreign = await viewerBrowser.newContext();
   const foreignPage = await foreign.newPage();
@@ -554,7 +738,7 @@ try {
   await foreignPage.getByTitle(`${agent.name} · idle`).click();
   await openChromeViewer(foreignPage);
   await foreignPage
-    .getByText(/Private desktop share owned by another/)
+    .getByText(/computer viewer is open in another control session/)
     .waitFor();
   expect(await foreignPage.locator(".chrome-share-screen canvas").count()).toBe(0);
   const denied = await foreignPage.evaluate(async (generation) => {
@@ -568,13 +752,20 @@ try {
     ).status;
   }, app.service.chromeShare.state().generation);
   expect(denied).toBe(403);
+  const deniedClipboard = await foreignPage.evaluate(async identity => {
+    const { csrf } = await (await fetch("/api/control-session")).json();
+    return (await fetch("/api/chrome/share/clipboard/receive", { method: "POST",
+      headers: { "content-type": "application/json", "x-jelly-csrf": csrf }, body: JSON.stringify(identity) })).status;
+  }, { generation: app.service.chromeShare.state().generation, controlId: app.service.chromeShare.state().controlId });
+  expect(deniedClipboard).toBe(403);
   await foreign.close();
   // Real held modifier AND pointer-button state must be drained before a new
   // viewer/automation is admitted. Queries below are disposable-fixture only.
-  async function inputState() {
-    const probe = Bun.spawn(
-      [
-        "/usr/bin/python3",
+  async function inputState(position = false, keysym = 0xffe1) {
+    // This bounded read-only probe need not register asynchronous process pipes.
+    // Bun's execFile epoll path can fail with EBADF after many fixture children.
+    const probe = spawnSync(
+        "/usr/bin/python3", [
         "-c",
         `
 import ctypes as c, os
@@ -586,32 +777,38 @@ x.XDefaultRootWindow.argtypes = [c.c_void_p]
 x.XDefaultRootWindow.restype = c.c_ulong
 x.XQueryPointer.argtypes = [c.c_void_p, c.c_ulong, c.POINTER(c.c_ulong), c.POINTER(c.c_ulong), c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(c.c_uint)]
 d = x.XOpenDisplay(os.environ['DISPLAY'].encode())
-k = x.XKeysymToKeycode(d, 0xffe1)
+k = x.XKeysymToKeycode(d, ${keysym})
 a = (c.c_ubyte * 32)(); x.XQueryKeymap(d, a)
 r, child, mask = c.c_ulong(), c.c_ulong(), c.c_uint()
 rx, ry, wx, wy = c.c_int(), c.c_int(), c.c_int(), c.c_int()
 x.XQueryPointer(d, x.XDefaultRootWindow(d), c.byref(r), c.byref(child), c.byref(rx), c.byref(ry), c.byref(wx), c.byref(wy), c.byref(mask))
-print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
+print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
       ],
-      { env: { ...xenv, DISPLAY: display }, stdout: "pipe", stderr: "ignore" },
+      { env: { ...xenv, DISPLAY: display }, timeout: 2000, maxBuffer: 1024, encoding: "utf8" },
     );
-    const state = (await new Response(probe.stdout).text()).trim();
-    expect(await probe.exited).toBe(0);
-    return state;
+    if (probe.error || probe.status !== 0) throw new Error("Disposable held-input query failed.");
+    return probe.stdout.trim();
   }
-  await page.keyboard.down("Shift");
-  await page.mouse.move(point.x, point.y);
-  await page.mouse.down();
+  async function holdViewerInputs() {
+    // Mobile resize and reconnect change coordinates/focus. Never reuse the
+    // earlier desktop click position for a held-input cleanup assertion.
+    const box = await page.locator(".chrome-share-screen canvas").boundingBox();
+    if (!box) throw new Error("Viewer canvas missing");
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.keyboard.down("Shift");
+    await page.mouse.down();
+  }
+  await holdViewerInputs();
   await waitFor(async () => (await inputState()) === "True True");
   for (const close of [
     ...(app.service.chromeShare as any).connections,
   ] as (() => void)[])
     close();
   await page
-    .getByText(/Desktop disconnected\. Browser tools remain paused/)
+    .getByText(/Viewer disconnected/).first()
     .waitFor();
-  expect(chrome.sharingDesktop).toBe(true);
-  expect(chrome.state(agent.id).task?.paused).toBe(true);
+  expect(chrome.humanState()).toBe(true);
+  expect(chrome.state(agent.id).task?.paused).toBe(false);
   await waitFor(
     () => app.service.chromeShare.state().status === "disconnected",
   );
@@ -619,43 +816,28 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   await page.keyboard.up("Shift");
   await page.mouse.up();
   await page
-    .getByRole("button", { name: "Reconnect desktop", exact: true })
+    .getByRole("button", { name: "Reconnect", exact: true })
     .click();
-  await page.getByText(/You control the full desktop/).waitFor();
-  // Escape must wait for a real handback, and keep the panel if it fails.
-  const release = app.service.chromeShare.release.bind(app.service.chromeShare);
-  app.service.chromeShare.release = async () => {
-    throw new Error("Fixture handback failure");
-  };
+  await page.getByText(/You’re using the computer/).waitFor();
+  // Closing stops local input and dismisses even if native cleanup needs repair.
+  const share = app.service.chromeShare as any;
+  const stopCapture = share.stopCapture.bind(share);
+  share.stopCapture = async () => { throw new Error("Fixture cleanup failure"); };
   await page.keyboard.press("Escape");
-  await page.getByText(/Could not return control/).waitFor();
-  expect(
-    await page
-      .getByRole("dialog", { name: "Connected Chrome desktop" })
-      .count(),
-  ).toBe(1);
-  expect(chrome.sharingDesktop).toBe(true);
-  app.service.chromeShare.release = release;
-  // The failed request intentionally closed its viewer before the injected
-  // rejection. Wait for that real network-loss drain before retrying handback.
-  await waitFor(
-    () => app.service.chromeShare.state().status === "disconnected",
-  );
-  const resume = chrome.resumeAfterShare.bind(chrome);
-  chrome.resumeAfterShare = async (id) => {
-    expect((app.service.chromeShare as any).process).toBeNull();
-    expect((app.service.chromeShare as any).runtime).toBeNull();
-    expect((app.service.chromeShare as any).connections.size).toBe(0);
-    expect(await inputState()).toBe("False False");
-    return resume(id);
-  };
+  await page.getByRole("dialog", { name: "Computer control" }).waitFor({ state: "detached" });
+  expect(chrome.humanState()).toBe(false);
+  expect(await a.action("snapshot")).toMatchObject({ humanUsing: false });
+  share.stopCapture = stopCapture;
+  await openChromeViewer(page);
+  await page.getByRole("button", { name: "Retry cleanup", exact: true }).click();
+  await page.getByRole("button", { name: "Take control", exact: true }).waitFor();
+  expect(share.process).toBeNull();
+  expect(share.runtime).toBeNull();
+  expect(share.clipboard.children.size).toBe(0);
+  expect(await inputState()).toBe("False False");
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("dialog", { name: "Connected Chrome desktop" })
-    .waitFor({ state: "detached" });
-  expect(chrome.sharingDesktop).toBe(false);
-  expect(chrome.state(agent.id).task?.pauseState).toBe("active");
-  expect(chrome.state(other.id).task?.paused).toBe(true);
+  await page.getByRole("dialog", { name: "Computer control" }).waitFor({ state: "detached" });
+  expect(chrome.state(other.id).task?.paused).toBe(false);
   expect(readlinkSync(join(profileDir, "SingletonLock"))).toBe(pidBefore);
   expect(
     (await personal.cookies(site.url.origin)).some(
@@ -666,7 +848,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   // A fresh sharing generation cannot be ended or ticketed by stale requests.
   await openChromeViewer(page);
   await page.getByRole("button", { name: "Take control" }).click();
-  await page.getByText(/You control the full desktop/).waitFor();
+  await page.getByText(/You’re using the computer/).waitFor();
   const stale = await page.evaluate(async (oldGeneration) => {
     const { csrf } = await (await fetch("/api/control-session")).json();
     const headers = {
@@ -694,8 +876,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
     newCanvas.x + newCanvas.width / 2,
     newCanvas.y + newCanvas.height - 20,
   );
-  await page.keyboard.down("Shift");
-  await page.mouse.down();
+  await holdViewerInputs();
   await waitFor(async () => (await inputState()) === "True True");
   (app.service.chromeShare as any).process.kill("SIGKILL");
   // Deterministically cover cleanup after actual native-generation loss too.
@@ -706,21 +887,21 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   await waitFor(() => app.service.chromeShare.state().status === "failed");
   await page
     .getByRole("button", {
-      name: "End failed share without viewing",
+      name: "Retry cleanup",
       exact: true,
     })
     .waitFor();
-  expect(chrome.sharingDesktop).toBe(true);
+  expect(chrome.humanState()).toBe(true);
   // Public paused means acknowledged human-safe state, and must stay false if
   // the real native peer disconnected. Assert authority revocation separately.
   const failedTask = tasks.get(agent.id);
   expect(failedTask.paused).toBe(true);
   expect(chrome.state(agent.id).task?.paused).toBe(!failedTask.lost);
   expect(app.service.chromeStatus(agent.id).task?.paused).toBe(false);
-  await expect(a.action("snapshot")).rejects.toThrow("paused");
+  await expect(a.action("snapshot")).rejects.toThrow("expired");
   expect(() =>
     chrome.allocate("blocked-new", "blocked-run", selected, "Blocked"),
-  ).toThrow("paused");
+  ).toThrow("disconnected");
   await expect(chrome.control(agent.id, "resume")).rejects.toThrow();
   const failedTicket = await page.evaluate(async (generation) => {
     const { csrf } = await (await fetch("/api/control-session")).json();
@@ -735,13 +916,13 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   expect(failedTicket).toBe(409);
   await page
     .getByRole("button", {
-      name: "End failed share without viewing",
+      name: "Retry cleanup",
       exact: true,
     })
     .click();
   await page
     .getByRole("heading", {
-      name: "Take control of Connected Chrome",
+      name: "Use the computer",
       exact: true,
     })
     .waitFor();
@@ -750,7 +931,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   expect(chrome.state(agent.id).task?.pauseState === "active").toBe(false);
   await page.keyboard.up("Shift");
   await page.mouse.up();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
 
   // Real parent-death/restart proof: never kill a saved numeric PID. The child
   // shim's inherited lock must refuse cleanup while alive, then permit a new
@@ -801,7 +982,7 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
     await expect(
       orphanShare.release("new-owner", orphanShare.state().generation, true),
     ).rejects.toThrow("still alive");
-    expect(cleanupChrome.sharingDesktop).toBe(true);
+    expect(cleanupChrome.humanState()).toBe(false);
     parent.kill("SIGKILL");
     await parent.exited;
     await waitFor(() => {
@@ -819,14 +1000,14 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
     await expect(
       orphanShare.release("new-owner", orphanShare.state().generation, true),
     ).rejects.toThrow("binding changed");
-    expect(cleanupChrome.sharingDesktop).toBe(true);
+    expect(cleanupChrome.humanState()).toBe(false);
     writeFileSync(auth, originalAuth);
     await orphanShare.release(
       "new-owner",
       orphanShare.state().generation,
       true,
     );
-    expect(cleanupChrome.sharingDesktop).toBe(false);
+    expect(cleanupChrome.humanState()).toBe(false);
     expect(orphanShare.state().status).toBe("idle");
   } finally {
     parent.kill("SIGKILL");
@@ -836,12 +1017,13 @@ print(bool(a[k // 8] & (1 << (k % 8))), bool(mask.value & 256))`,
   expect(errors).toEqual([]);
   assertionsPassed = true;
   console.log(
-    "PASS: disposable Xvfb + existing headed Chrome + native attestation + x11vnc + noVNC; direct take, actual desktop pixels/input, all-task block, owner exclusion, no TCP/clipboard, mobile fit, disconnect/reconnect, failed Escape handback, confirmed VNC teardown before resume, stale epochs/process loss, real parent-death/orphan cleanup lock, unchanged Chrome PID/profile/cookies.",
+    "PASS: disposable Xvfb + existing headed Chrome + native attestation + x11vnc + noVNC; direct take, actual desktop pixels/input, advisory browser status, owner exclusion, no TCP/passive clipboard export, explicit Unicode/empty text clipboard and native paste, manual fallback, mobile fit, disconnect/reconnect, failed-cleanup dismissal and retry, confirmed native teardown, stale epochs/process loss, real parent-death/orphan cleanup lock, unchanged Chrome PID/profile/cookies.",
   );
 } catch (e) {
   console.error(
     "Share browser fixture failed:",
     (e as Error).stack?.slice(0, 2000) ?? (e as Error).message,
+    { status: app.service.chromeShare.state().status, error: app.service.chromeShare.state().error },
   );
   throw e;
 } finally {

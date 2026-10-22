@@ -204,7 +204,7 @@ export class Interventions {
     this.settle(id, null, {
       completed: true,
       message:
-        "The user returned browser control. Continue without requesting their credentials in chat.",
+        "The user finished this browser sign-in request. Re-observe the page and continue without requesting credentials in chat.",
     });
   }
   completeDesktopHandoff(id: string) {

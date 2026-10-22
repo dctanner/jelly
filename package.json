@@ -30,7 +30,7 @@
     "test:notifications": "bun run build && bun tests/notifications.browser.ts",
     "test:history-scroll": "bun run build && bun tests/history-scroll.browser.ts",
     "test:mobile-layout": "bun run build && bun tests/mobile-layout.browser.ts",
-    "test:client": "bun test --timeout 30000 tests/client.test.tsx tests/subagent-ui.test.tsx tests/chrome-client.test.tsx tests/chrome-share-client.test.tsx tests/notifications.test.tsx",
+    "test:client": "bun test --timeout 30000 tests/client.test.tsx tests/subagent-ui.test.tsx tests/chrome-client.test.tsx tests/chrome-share-client.test.tsx tests/computer-clipboard-client.test.tsx tests/computer-viewport-client.test.tsx tests/computer-keyboard-client.test.tsx tests/notifications.test.tsx",
     "format": "prettier --write src scripts tests *.json *.ts *.html *.md docs/*.md plans/*.md plans_done/*.md",
     "test:capabilities": "bun test --timeout 30000 tests/capabilities.test.ts",
     "dev:tailscale": "JELLY_TAILSCALE=1 bun scripts/dev.ts"

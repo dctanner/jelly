@@ -442,9 +442,9 @@ test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools
       "exact",
     );
     await browser.reserveLogin("handoff", "https://example.com/login");
-    await expect(browser.action("snapshot", {})).rejects.toThrow("paused");
+    expect(await browser.action("snapshot", {})).toMatchObject({ humanUsing: true });
     expect(chrome.state("a").task?.handoff).toBe("handoff");
-    expect(await chrome.control("a", "resume")).toBe("handoff");
+    expect(chrome.done("a", "handoff")).toBe("handoff");
     const tools = interventionTools(
       { get: () => browser },
       {} as Interventions,
@@ -457,6 +457,7 @@ test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools
       .execute("id", {}, undefined, undefined, {} as never);
     expect(shot.content).toEqual([
       { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
+      { type: "text", text: '{"humanUsing":false}' },
     ]);
     await browser.keepTab();
     await chrome.settle("a", "run1");
@@ -600,7 +601,7 @@ test("ChromeSessions forgets human-closed tabs, rejects foreign removal and open
     chrome.bridge.onTabRemoved(profile, generation, session, "run", cap);
     expect(chrome.state("a").task).toMatchObject({ active: null, tabs: [] });
     expect(await browser.action("tabs", { operation: "list" })).toEqual({
-      tabs: [],
+      tabs: [], humanUsing: false,
     });
     await browser.action("open", { url: "https://example.com" });
     expect(lastTab).toBeNull();
@@ -638,7 +639,7 @@ test("Chrome bridge fails stalled socket writes after a bounded drain wait", asy
   }
 }, 12000);
 
-test("ChromeSessions retains paused handoffs across runs and requires explicit resume without retargeting", async () => {
+test("ChromeSessions retains handoffs across runs and reuses them without explicit resume or retargeting", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-handoff-"));
   const chrome = new ChromeSessions(dir, "handoff-instance");
   const profile = crypto.randomUUID(),
@@ -650,6 +651,7 @@ test("ChromeSessions retains paused handoffs across runs and requires explicit r
     calls.push({ p, g, s, r, method, params });
     if (method === "open") return { pageId: cap };
     if (method === "end") return { retained: params.discard ? [] : [cap] };
+    if (method === "begin" && r === "second") return { paused: true, tabs: [cap] };
     return { ok: true };
   };
   const selection = {
@@ -662,16 +664,16 @@ test("ChromeSessions retains paused handoffs across runs and requires explicit r
     await first.keepTab("handoff");
     await chrome.settle("agent", "first");
     expect(chrome.state("agent").task).toMatchObject({
-      paused: true,
+      paused: false,
       tabs: [cap],
     });
     await expect(chrome.control("agent", "resume")).rejects.toThrow(
-      "follow-up",
+      "active native",
     );
     chrome.allocate("agent", "no-browser-run", selection, "Researcher");
     await chrome.settle("agent", "no-browser-run");
     expect(chrome.state("agent").task).toMatchObject({
-      paused: true,
+      paused: false,
       tabs: [cap],
     });
     const second = chrome.allocate(
@@ -680,9 +682,8 @@ test("ChromeSessions retains paused handoffs across runs and requires explicit r
       { ...selection, chromeProfile: "foreign" },
       "Researcher",
     );
-    await expect(second.action("snapshot", {})).rejects.toThrow("paused");
+    await second.action("snapshot", {});
     await expect(first.action("snapshot", {})).rejects.toThrow("expired");
-    await chrome.control("agent", "resume");
     await second.action("snapshot", {});
     expect(calls.at(-1)).toMatchObject({
       p: profile,
@@ -883,52 +884,33 @@ test("ChromeSessions pause revokes authority but never reports human-safe before
   }
 });
 
-test("ChromeSessions private login stays preparing through open, mark and delayed pause acknowledgement", async () => {
-  const f = await pauseFixture();
-  const stages = {
-    open: deferred<unknown>(),
-    mark: deferred<unknown>(),
-    pause: deferred<unknown>(),
-  };
+test("ChromeSessions login status is advisory; Done/cancel during delayed preparation never resurrects a request", async () => {
+  const f = await pauseFixture(), opened = deferred<unknown>();
   const calls: string[] = [];
   f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
     calls.push(method);
-    return method in stages
-      ? stages[method as keyof typeof stages].promise
-      : { ok: true };
+    if (method === "open") return opened.promise;
+    return { ok: true };
   };
   try {
-    const login = f.browser.reserveLogin(
-      "request",
-      "https://example.com/login",
-    );
-    for (const method of ["open", "mark", "pause"] as const) {
-      await waitFor(() => calls.at(-1) === method);
-      expect(calls.at(-1)).toBe(method);
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: "pausing",
-        handoff: null,
-      });
-      await expect(
-        f.chrome.control("agent", "focus", "login-tab"),
-      ).rejects.toThrow();
-      await expect(f.chrome.control("agent", "resume")).rejects.toThrow();
-      stages[method].resolve(
-        method === "open" ? { pageId: "login-tab" } : { ok: true },
-      );
-    }
+    const login = f.browser.reserveLogin("request", "https://example.com/login");
+    await waitFor(() => calls.includes("open"));
+    expect(f.chrome.state("agent").task).toMatchObject({ paused: false, humanUsing: true, handoff: "request" });
+    expect(() => f.chrome.done("agent", "other")).toThrow("no longer current");
+    expect(f.chrome.done("agent", "request")).toBe("request");
+    opened.resolve({ pageId: "login-tab" });
     await login;
-    expect(f.chrome.state("agent").task).toMatchObject({
-      paused: true,
-      pauseState: "paused",
-      handoff: "request",
-      active: "login-tab",
-    });
-    expect(await f.chrome.control("agent", "resume")).toBe("request");
-  } finally {
-    await f.close();
-  }
+    expect(f.chrome.state("agent").task).toMatchObject({ humanUsing: false, handoff: null });
+    expect(calls).not.toContain("pause");
+    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    await f.browser.reserveLogin("new", "https://example.com/login");
+    f.browser.cancelLogin("request");
+    expect(f.chrome.state("agent").task?.handoff).toBe("new");
+    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    f.chrome.bridge.onLoss(f.profile);
+    expect(f.chrome.done("agent", "new")).toBe("new");
+    await expect(f.browser.action("snapshot")).rejects.toThrow("expired");
+  } finally { opened.resolve({ pageId: "login-tab" }); await f.close(); }
 });
 
 test("ChromeSessions failed and disconnected pauses never advertise private-safe state", async () => {
@@ -978,6 +960,7 @@ test("ChromeSessions invalidates human-safe state before Resume dispatch and kee
     };
     try {
       await f.browser.reserveLogin("handoff", "https://example.com/login");
+      await f.chrome.control("agent", "pause"); // A real native/security pause, not human-use status.
       const resume = f.chrome.control("agent", "resume");
       const outcome = resume.then(
         (value) => value,
@@ -994,7 +977,7 @@ test("ChromeSessions invalidates human-safe state before Resume dispatch and kee
       await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
       if (fail) ack.reject(new Error("uncertain resume"));
       else ack.resolve({ ok: true });
-      expect(await outcome).toBe(fail ? "rejected" : "handoff");
+      expect(await outcome).toBe(fail ? "rejected" : null);
       expect(f.chrome.state("agent").task).toMatchObject({
         paused: false,
         pauseState: fail ? "failed" : "active",
@@ -1269,5 +1252,45 @@ test("total intent-write failure still revokes live authority and refuses runnin
     expect(retry.messages).toEqual([]);
     // No claim of restart durability when the filesystem accepted no evidence.
     expect(fs.readdirSync(f.bridge.directory).some(name => name.startsWith("disconnected-profiles.json"))).toBe(false);
+  } finally { await f.close(); }
+});
+
+test("native Mac handback releases only its own pauses, never independent security faults", async () => {
+  const f = await pauseFixture();
+  f.chrome.bridge.call = async (_p, _g, _s, _r, method) => method === "open" ? { pageId: "owned" } : { ok: true };
+  try {
+    await f.browser.action("open", { url: "https://example.com" });
+    await f.chrome.pauseForNativeHandoff();
+    await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
+    await f.chrome.finishNativeHandoff();
+    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    await f.chrome.control("agent", "pause"); // Independent security pause.
+    await f.chrome.pauseForNativeHandoff();
+    await f.chrome.finishNativeHandoff();
+    await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
+  } finally { await f.close(); }
+});
+
+test("settlement preserves human-used tabs and sign-in identity even when no tab survives", async () => {
+  const f = await pauseFixture();
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  f.chrome.bridge.call = async (_p, _g, _s, _r, method, params) => {
+    calls.push({ method, params });
+    if (method === "open") return { pageId: "human-tab" };
+    if (method === "end") return { retained: [] }; // Human closed it during settlement.
+    return { ok: true };
+  };
+  try {
+    await f.browser.reserveLogin("login", "https://example.com");
+    await f.browser.keepTab("deliverable");
+    const marked = calls.length;
+    await f.chrome.settle("agent", "run");
+    expect(calls.slice(marked)).toEqual([
+      { method: "pause", params: {} },
+      { method: "end", params: {} },
+    ]);
+    expect(f.chrome.state("agent").task).toMatchObject({ handoff: "login", humanUsing: true, tabs: [], paused: false });
+    expect(f.chrome.done("agent", "login")).toBe("login");
+    expect(f.chrome.humanState()).toBe(false);
   } finally { await f.close(); }
 });

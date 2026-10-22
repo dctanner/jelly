@@ -192,7 +192,7 @@ test("unsafe desktop drain prevents publishing a browser private-entry card or r
     await f.close();
   }
 });
-test("Chrome cannot report a private-safe pause while desktop completion is unsafe", async () => {
+test("browser status is advisory and does not reinterpret native desktop safety", async () => {
   const f = await fixture();
   try {
     const desktopStatus = f.app.service.desktop.status();
@@ -201,9 +201,9 @@ test("Chrome cannot report a private-safe pause while desktop completion is unsa
       control: "unsafe",
     });
     f.app.service.chrome.state = () => ({
-      profiles: [],
+      profiles: [], humanUsing: false,
       task: {
-        profile: "fixture",
+        profile: "fixture", humanUsing: false,
         paused: true,
         pauseState: "paused",
         connected: true,
@@ -218,8 +218,8 @@ test("Chrome cannot report a private-safe pause while desktop completion is unsa
       headers: f.headers,
     });
     const state = (await response.json()) as any;
-    expect(state.task.paused).toBe(false);
-    expect(state.task.pauseState).toBe("failed");
+    expect(state.humanUsing).toBe(false);
+    expect(f.app.service.desktopStatus().control).toBe("unsafe");
   } finally {
     await f.close();
   }
@@ -247,7 +247,7 @@ test("browser handback cannot release an independent manual native private bound
     await f.close();
   }
 });
-test("a local paused desktop without confirmed shared exclusion cannot authorize Chrome private-entry UI", async () => {
+test("browser status never claims native shared exclusion", async () => {
   const f = await fixture();
   try {
     const state = f.app.service.desktop.status();
@@ -257,9 +257,9 @@ test("a local paused desktop without confirmed shared exclusion cannot authorize
       privateSafe: false,
     });
     f.app.service.chrome.state = () => ({
-      profiles: [],
+      profiles: [], humanUsing: false,
       task: {
-        profile: "fixture",
+        profile: "fixture", humanUsing: false,
         paused: true,
         pauseState: "paused",
         connected: true,
@@ -270,7 +270,8 @@ test("a local paused desktop without confirmed shared exclusion cannot authorize
         siteScope: "approved",
       },
     });
-    expect(f.app.service.chromeStatus("fixture").task?.paused).toBe(false);
+    expect(f.app.service.chromeStatus("fixture").humanUsing).toBe(false);
+    expect(f.app.service.desktopStatus().privateSafe).toBe(false);
   } finally {
     await f.close();
   }

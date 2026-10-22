@@ -96,16 +96,62 @@ Use `ChatFormCard` and `ChatFormActions` from `src/client/ChatFormCard.tsx` for 
 - Errors use the shell's `error` prop and an alert. Never put credentials in React state, stored transcripts, logs or persistence; clear password fields before submitting private requests.
 - Do not steal focus when a card arrives. Collapse settled requests back into tool history; restore an empty, retryable form if submission fails.
 
-## Connected Chrome viewer
+## Computer control and Connected Chrome
 
-Connected Chrome is the only browser integration. Settings exposes profile/site
-scope and private handoff controls, not a managed browser or controller selector.
-Its human-only web VNC viewer fits the actual connected desktop on mobile and
-desktop; do not change website zoom, framebuffer resolution or input mapping.
-Closing an owned viewer must finish input cleanup and private handback before
-dismissal. Keep failures visible and retryable; never release another session's
-private control. Clipboard and file transfer are unavailable. See
-[Connected Chrome](CONNECTED-CHROME.md) for sharing and recovery requirements.
+Settings and every agent menu open the same `ComputerControlPanel`: global human
+computer access, not an agent/browser ownership transfer. Use **Take control**,
+**Done**, and relevant reconnect/cleanup retry. Keep browser profile/site access
+in separate Connected Chrome settings. A contextual, collapsed Advanced section
+may close that agent’s idle browser session for recovery; it is not computer
+ownership. Agent context must preserve its pinned
+computer; never silently choose a different desktop or route to native Mac
+automation controls. The global entry works without a selected agent.
+If a global configured browser is disconnected, an explicit **Use installed
+computer** choice may expose the installed desktop; never silently change an
+agent’s pinned target.
+
+Explain concisely that this is the full computer (other windows and notifications),
+text transfer is human-initiated only (no files), and browser agents may continue.
+Use **Paste to computer** / **Copy from computer** with a compact **Text options**
+disclosure for manual textareas, send-only and terminal paste. Say “this device”
+and “computer”, not protocol jargon. Clipboard APIs run only in explicit gestures;
+real viewer paste events use their supplied text. Reject unsupported/oversized
+text without truncation, never paste after a stale connection, and clear local
+transfer fields on disconnect/Done. Clipboard managers may retain native text;
+never promise erasure. Keep touch targets at least 44px and manual input at 16px.
+Human-use status is
+advisory, never a privacy-lock promise. Sign-in Done completes only the bound
+request. No local “Open in Chrome”, pause/resume or tab-capability controls.
+
+On portrait phones (up to 767px), fill the viewer's height and provide a
+44px-touch-target **Pan** slider above it to reach both horizontal edges.
+Use the actual framebuffer aspect ratio, not a fixed managed-browser resolution.
+Landscape and desktop views fit the whole desktop. Do not change website zoom,
+framebuffer resolution or input mapping; noVNC owns scale and pointer conversion.
+Leaving the canvas for Pan releases held viewer keys through noVNC before local
+input, without global blur or replay into a replacement canvas. Panning resets
+after disconnect/Done and never reconnects. Keep clipboard controls outside the
+clipped viewport.
+While connected on phones, use a compact 44px header and one row of 44px
+keyboard, paste, copy, text-options, information and Done controls. Icon-only
+controls keep accessible names and titles. Show the full access notice before
+Take; keep it available behind the information button while connected. Hide
+nonessential status/Advanced chrome only in this active mobile layout.
+The viewer fills the remaining visible viewport, including soft-keyboard resize;
+reserve the pan row when calculating overflow to avoid resize oscillation.
+
+**Show keyboard** focuses an in-viewport input synchronously from the gesture.
+Remote pointer taps keep that input focused. Send only committed Unicode text
+and balanced key pairs; never retain typed text in React state, logs or storage.
+Discard composition on hide, blur, disconnect or Take change, and never send
+late input to a replacement viewer. Provide Esc, Tab and arrow buttons; Escape
+hides the local keyboard and Shift+Tab returns to local controls. Keep clipboard
+paste in the explicit transfer controls, not the keyboard input.
+Closing an owned viewer stops
+input and sends Done; cleanup errors remain retryable but must not trap dismissal
+or block browser tools. Never release another control session’s viewer. Preserve
+native cleanup/authentication protections. Bind actions to the displayed Take,
+not a newer viewer fetched in the background. See [Connected Chrome](CONNECTED-CHROME.md).
 
 ## Agent identity editing
 

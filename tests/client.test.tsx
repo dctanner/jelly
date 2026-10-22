@@ -128,25 +128,26 @@ async function saveAgentProfile(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
 }
-test("Computer actions are absent and Connected Chrome sharing is available in Settings", async () => {
+test("Computer control is shared by agent options and Connected Chrome settings", async () => {
   const a = await setup();
   render(<App />);
   await waitForConnectedAgent();
   expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
   await screen.findByRole("button", { name: "Fresh Session" });
-  expect(screen.queryByRole("button", { name: /^Computer$/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "Computer control" })).toBeDefined();
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
   expect(screen.queryByRole("button", { name: /Browser target|Browser controller/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Connected Chrome" }));
   expect(screen.queryByLabelText("Browser target")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Connected Chrome web VNC…" }));
-  await screen.findByRole("heading", { name: "Take control of Connected Chrome" });
+  fireEvent.click(screen.getByRole("button", { name: "Computer control" }));
+  const computer = await screen.findByRole("dialog", { name: "Computer control" });
+  await within(computer).findByRole("heading", { name: "Use the computer" });
   expect(a.service.chromeShare.state().status).toBe("idle");
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connected Chrome desktop" })).toBeNull());
+  fireEvent.click(within(computer).getByRole("button", { name: "Close dialog" }));
+  await waitFor(() => expect(!!screen.queryByRole("dialog", { name: "Computer control" })).toBe(false));
 });
 
 test("React client connects, creates an agent, sends through Pi, renders tool completion and restores history on remount", async () => {
@@ -1829,12 +1830,12 @@ test("browser login dismissal hides immediately and failed dismissal restores th
       }}
     />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByText("Sign in through the browser")).toBeNull();
   await screen.findByText("Dismissal failed.");
   expect(screen.getByText("Sign in through the browser")).toBeDefined();
   fail = false;
-  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(ui.container.textContent).toBe("");
   await waitFor(() => expect(changed).toBe(true));
   expect(ui.container.textContent).toBe("");
@@ -3022,14 +3023,15 @@ test("browser sign-in and future inline forms share the standard card shell", as
   </>);
   const browser = screen.getByRole("region", { name: "Browser login" });
   expect(browser.classList.contains("chat-form-card")).toBe(true);
-  expect(within(browser).getByText("Preparing private sign-in")).toBeDefined();
+  expect(within(browser).getByText("Needs your sign-in")).toBeDefined();
   expect(within(browser).getByText("https://example.com/sign-in")).toBeDefined();
-  expect(within(browser).getByRole("button", { name: "Open in Chrome" })).toBeDefined();
+  expect(within(browser).getByRole("button", { name: "Take control" })).toBeDefined();
+  expect(within(browser).getByRole("button", { name: "Done" }).hasAttribute("disabled")).toBe(false);
   const generic = screen.getByRole("region", { name: "Another inline form" });
   expect(generic.classList.contains("chat-form-card")).toBe(true);
   expect(within(generic).getByRole("alert").textContent).toBe("Try again.");
   expect(within(generic).getByText("Needs your input")).toBeDefined();
-  await screen.findByText("Chrome disconnected or unavailable—do not enter credentials.");
+  expect(within(browser).getByText(/Other browser work may continue/)).toBeDefined();
 });
 
 test("profile activity ring does not opt out for reduced-motion preferences", () => {

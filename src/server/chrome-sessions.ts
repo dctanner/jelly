@@ -21,7 +21,7 @@ interface Task {
   pausePending: Promise<void> | null;
   resumePending: boolean;
   transition: number;
-  preparingLogin: boolean;
+  humanUsing: boolean;
   lost: boolean;
   active: string | null;
   tabs: Set<string>;
@@ -32,66 +32,29 @@ interface Task {
 export class ChromeSessions {
   readonly bridge: ChromeBridge;
   private tasks = new Map<string, Task>();
+  private nativePauses = new Map<Task, number>();
   private protected: string[] = [];
-  private privacyEpoch = 0;
-  private desktopPrivate = false;
-  get sharingDesktop() { return this.desktopPrivate; }
-  assertAutomationAllowed() {
-    if (this.desktopPrivate) throw new HttpError(409, "Connected Chrome browser tools paused for a private desktop share. Explicit Return control is required.");
+  private humanDesktop = false;
+  /** Advisory only: never used by automation admission. */
+  setHumanDesktop(value: boolean) { this.humanDesktop = value; }
+  humanState() {
+    return this.humanDesktop || [...this.tasks.values()].some(t => t.humanUsing);
   }
-  lockDesktop() {
-    this.desktopPrivate = true;
-    ++this.privacyEpoch;
-    this.bridge.setDesktopPrivate(true);
-    for (const t of this.tasks.values()) {
-      ++t.transition;
-      t.paused = true;
-      t.pauseState = "pausing";
-      this.changed(t.agent);
+  pendingHandoffs(onComputer: (profile: string, generation: string) => boolean = () => true) {
+    return [...this.tasks.values()].flatMap(t =>
+      t.handoff && onComputer(t.profile, t.generation) ? [{ agent: t.agent, id: t.handoff }] : []);
+  }
+  done(agent: string, handoff: string | null) {
+    const t = this.tasks.get(agent);
+    if (!t) {
+      if (handoff) throw new HttpError(409, "This browser request is no longer current.");
+      return null;
     }
-  }
-  freezeDesktop() { return this.freezeDesktopProfiles(false); }
-  /** Cleanup-only: dead tasks cannot ACK and must never regain authority. */
-  freezeDesktopForCleanup() { return this.freezeDesktopProfiles(true); }
-  private async freezeDesktopProfiles(cleanupOnly: boolean) {
-    const epoch = this.privacyEpoch;
-    const profiles = this.bridge.profiles();
-    const pending = this.bridge.deferredProfiles();
-    const bridgeEpoch = this.bridge.desktopEpoch;
-    await Promise.all([this.bridge.waitDeferredReady(), ...profiles.map(p => this.bridge.call(p.id, p.generation, "desktop", "desktop", "freeze", {}))]);
-    if (!this.desktopPrivate || epoch !== this.privacyEpoch || bridgeEpoch !== this.bridge.desktopEpoch ||
-        JSON.stringify(pending) !== JSON.stringify(this.bridge.deferredProfiles()) ||
-        JSON.stringify(profiles) !== JSON.stringify(this.bridge.profiles()))
-      throw new Error("Chrome profiles changed while draining. Desktop remains paused.");
-    for (const t of this.tasks.values()) {
-      if (t.lost) {
-        if (!cleanupOnly) throw new Error("Chrome task disconnected while draining.");
-        t.paused = true;
-        continue;
-      }
-      t.paused = true;
-      t.pauseState = "paused";
-      this.changed(t.agent);
-    }
-  }
-  async unlockDesktop(allowed: () => boolean = () => true, beforePublish: () => Promise<void> = async () => {}) {
-    // A failed unfreeze never opens server admission. No task is resumed here.
-    const privacyEpoch = this.privacyEpoch, bridgeEpoch = this.bridge.desktopEpoch;
-    const profiles = this.bridge.profiles();
-    const valid = () => this.desktopPrivate && privacyEpoch === this.privacyEpoch && bridgeEpoch === this.bridge.desktopEpoch &&
-      JSON.stringify(profiles) === JSON.stringify(this.bridge.profiles()) && allowed();
-    const requireCurrent = () => { if (!valid()) throw new Error("Desktop handback authority changed. Browser tools remain paused."); };
-    requireCurrent();
-    await this.bridge.waitDeferredReady();
-    requireCurrent();
-    await Promise.all(profiles.map(p => this.bridge.call(p.id, p.generation, "desktop", "desktop", "unfreeze", {})));
-    requireCurrent();
-    await beforePublish();
-    requireCurrent();
-    this.bridge.publishDeferred(bridgeEpoch);
-    this.desktopPrivate = false;
-    ++this.privacyEpoch;
-    this.bridge.setDesktopPrivate(false);
+    if (t.handoff !== handoff) throw new HttpError(409, "This browser request is no longer current.");
+    t.humanUsing = false;
+    t.handoff = null;
+    this.changed(agent);
+    return handoff;
   }
   constructor(
     dataDir: string,
@@ -200,7 +163,6 @@ export class ChromeSessions {
     selection: ChromeSelection,
     name: string,
   ) {
-    this.assertAutomationAllowed();
     let task = this.tasks.get(agent);
     if (!task) {
       this.validate(selection);
@@ -233,7 +195,7 @@ export class ChromeSessions {
         pausePending: null,
         resumePending: false,
         transition: 0,
-        preparingLogin: false,
+        humanUsing: false,
         lost: false,
         active: null,
         tabs: new Set(),
@@ -253,14 +215,13 @@ export class ChromeSessions {
       return next;
     };
     const begin = async () => {
-      this.assertAutomationAllowed();
       if (t.lost || t.run !== run)
         throw new Error(
           "Chrome authority expired. Close the session and explicitly reconnect.",
         );
       if (!t.begun) {
-        // Record cleanup authority before dispatch; a privacy epoch can revoke
-        // the begin result after the extension has already created the task.
+        // Record cleanup authority before dispatch; a connection failure can
+        // revoke the result after the extension has already created the task.
         t.begun = true;
         t.authorityRun = run;
         const resumed = (await this.call(t, "begin", {
@@ -271,20 +232,21 @@ export class ChromeSessions {
           protected: this.protected,
         })) as { paused?: boolean; tabs?: string[] };
         if (resumed.paused) {
-          t.paused = true;
-          t.pauseState = "paused";
           t.tabs = new Set(
             (resumed.tabs ?? []).filter((cap) => t.tabs.has(cap)),
           );
           if (!t.active || !t.tabs.has(t.active))
             t.active = t.tabs.values().next().value ?? null;
+          // End detaches retained tabs. A new run reclaims only valid retained
+          // authority; extension cleanup failures still reject resume.
+          if (!t.paused) await this.call(t, "resume", {});
         }
         t.authorityRun = run;
         t.begun = true;
       }
       if (t.paused)
         throw new Error(
-          "Connected Chrome is paused for private human control. The user can return control in Jelly Settings → Connected Chrome → This agent’s pinned Chrome session → Resume (or the pending Chrome sign-in card). Do not direct them to a managed browser viewer or Computer panel; chat messages cannot resume Chrome.",
+          "Chrome automation was paused by a native desktop handoff or a security fault. Finish the native desktop handoff or reconnect the affected session; human computer-control status alone does not block browser tools.",
         );
     };
     return {
@@ -360,43 +322,32 @@ export class ChromeSessions {
               t.active = t.tabs.values().next().value ?? null;
           }
           this.changed(agent);
-          return result;
+          return { ...result, humanUsing: this.humanState() } as Record<string, unknown> & { humanUsing: boolean };
         }),
-      reserveLogin: (id: string, url: string, signal?: AbortSignal) =>
-        serialize(async () => {
-          t.preparingLogin = true;
-          this.changed(agent);
+      reserveLogin: (id: string, url: string, signal?: AbortSignal) => {
+        // Bind before queuing, so cancel/Done during a delayed open cannot be
+        // overwritten by that operation's late response.
+        if (t.handoff) throw new HttpError(409, "A browser sign-in request is already pending.");
+        t.handoff = id;
+        t.humanUsing = true;
+        this.changed(agent);
+        return serialize(async () => {
+          if (t.handoff !== id) return;
           try {
             await begin();
             this.url(t, url);
-            const result = (await this.call(t, "open", { url }, signal)) as {
-              pageId: string;
-            };
+            const result = (await this.call(t, "open", { url }, signal)) as { pageId: string };
             t.tabs.add(result.pageId);
             t.active = result.pageId;
-            await this.call(
-              t,
-              "mark",
-              { tab: t.active, mark: "handoff" },
-              signal,
-            );
-            await this.pause(t, signal);
-            t.handoff = id;
+            await this.call(t, "mark", { tab: t.active, mark: "handoff" }, signal);
           } catch (error) {
-            t.paused = true;
-            t.pauseState = "failed";
+            if (t.handoff === id) this.done(agent, id);
             throw error;
-          } finally {
-            t.preparingLogin = false;
-            this.changed(agent);
           }
-        }),
+        });
+      },
       cancelLogin: (id: string) => {
-        if (t.handoff === id) {
-          t.handoff = null;
-          void this.pause(t).catch(() => {});
-          this.changed(agent);
-        }
+        if (t.handoff === id) this.done(agent, id);
       },
     };
   }
@@ -439,9 +390,6 @@ export class ChromeSessions {
       throw new Error(
         "Unavailable Chrome operation parameters; use exact references and bounded inputs.",
       );
-    const epoch = this.privacyEpoch;
-    const automation = !["pause", "end", "focus"].includes(method);
-    if (automation) this.assertAutomationAllowed();
     // Removal can arrive before an in-flight open/select response. Never restore
     // a revoked capability from that response; retain tombstones only while pending.
     const removed = new Set<string>();
@@ -456,8 +404,6 @@ export class ChromeSessions {
         params,
         signal,
       );
-      if (automation && (epoch !== this.privacyEpoch || this.desktopPrivate))
-        throw new Error("Chrome result revoked by private desktop handoff.");
       if (
         result &&
         typeof result === "object" &&
@@ -476,19 +422,18 @@ export class ChromeSessions {
     const t = agent ? this.tasks.get(agent) : undefined;
     return {
       profiles: this.bridge.profiles(),
+      humanUsing: this.humanState(),
       task: t
         ? {
             profile: t.profile,
+            humanUsing: t.humanUsing,
             paused:
               !t.lost &&
-              !t.preparingLogin &&
               !t.resumePending &&
               t.pauseState === "paused",
             pauseState: t.lost
               ? "disconnected"
-              : t.preparingLogin
-                ? "pausing"
-                : t.pauseState,
+              : t.pauseState,
             connected: !t.lost,
             active: t.active,
             tabs: [...t.tabs],
@@ -499,13 +444,23 @@ export class ChromeSessions {
         : null,
     };
   }
-  async resumeAfterShare(agent: string) {
-    const t = this.tasks.get(agent);
-    if (!t || !t.run || !t.begun || t.lost || t.pauseState !== "paused") return null;
-    return this.control(agent, "resume");
+  async pauseForNativeHandoff() {
+    await Promise.all([...this.tasks.values()].map(async t => {
+      if (t.lost || t.paused) return;
+      await this.pause(t);
+      this.nativePauses.set(t, t.transition);
+    }));
+  }
+  async finishNativeHandoff() {
+    for (const [t, transition] of this.nativePauses) {
+      // Never clear an independent debugger/security fault or a newer pause.
+      if (this.tasks.get(t.agent) !== t || t.lost || t.transition !== transition || t.pauseState !== "paused") continue;
+      if (t.run && t.begun) await this.control(t.agent, "resume");
+      else { t.paused = false; t.pauseState = "active"; this.changed(t.agent); }
+    }
+    this.nativePauses.clear();
   }
   async control(agent: string, operation: string, pageId?: string) {
-    this.assertAutomationAllowed();
     const t = this.tasks.get(agent);
     if (!t && operation === "close") return null;
     if (!t) throw new HttpError(404, "No Connected Chrome session.");
@@ -542,7 +497,7 @@ export class ChromeSessions {
     if (operation === "resume" && (!t.run || !t.begun))
       throw new HttpError(
         409,
-        "Start a follow-up browser run, then explicitly resume its retained handoff.",
+        "Only an active native/security-paused task can be resumed.",
       );
     if (operation === "pause") {
       await this.pause(t);
@@ -550,13 +505,12 @@ export class ChromeSessions {
     }
     if (
       ["focus", "resume"].includes(operation) &&
-      (t.lost || t.preparingLogin || t.pauseState !== "paused")
+      (t.lost || t.pauseState !== "paused")
     )
       throw new HttpError(
         409,
-        "Chrome pause is not acknowledged. Do not enter credentials yet.",
+        "Chrome security pause is not acknowledged.",
       );
-    const handoff = t.handoff;
     if (operation === "resume") {
       const transition = ++t.transition;
       // Revoke the human-safe signal before Chrome can resume, not after its
@@ -568,12 +522,11 @@ export class ChromeSessions {
         await this.call(t, "resume", {});
         if (t.lost || t.transition !== transition)
           throw new Error(
-            "Chrome authority changed during resume. Pause explicitly before entering credentials.",
+            "Chrome authority changed during native handback. Reconnect the affected session.",
           );
         t.paused = false;
         t.pauseState = "active";
-        t.handoff = null;
-        return handoff;
+        return null;
       } catch (error) {
         if (t.transition === transition) {
           t.paused = true;
@@ -602,14 +555,18 @@ export class ChromeSessions {
   async settle(agent: string, run: string) {
     const t = this.tasks.get(agent);
     if (!t || t.run !== run) return;
+    const nativePaused = this.nativePauses.get(t) === t.transition;
     ++t.transition;
     await t.chain.catch(() => {});
-    t.paused = true;
-    t.pauseState = "pausing";
-    this.changed(agent);
+    const securityPaused = t.paused;
     let retained: string[] = !t.begun && !t.lost ? [...t.tabs] : [];
     try {
       if (t.begun && !t.lost) {
+        if (this.humanState() && !securityPaused) {
+          // Settlement ends this run; preserve temporary tabs without
+          // overwriting explicit deliverable/handoff marks.
+          await this.call(t, "pause", {});
+        }
         const result = (await this.call(t, "end", {})) as {
           retained?: string[];
         };
@@ -621,12 +578,12 @@ export class ChromeSessions {
     } finally {
       t.run = null;
       t.begun = false;
-      if (!retained.length) t.handoff = null;
       t.tabs = new Set(retained);
       t.active = retained[0] ?? null;
       if (!t.lost) {
-        t.paused = this.desktopPrivate || retained.length > 0;
+        t.paused = securityPaused;
         t.pauseState = t.paused ? "paused" : "active";
+        if (nativePaused && t.paused) this.nativePauses.set(t, t.transition);
       }
       this.changed(agent);
     }

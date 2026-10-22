@@ -44,7 +44,7 @@ export function interventionTools(
       name: "request_browser_login",
       label: "Request browser login",
       description:
-        "Pause the Connected Chrome task for private sign-in in the user’s existing Chrome profile. Never ask for credentials. The user returns control through Settings → Connected Chrome → This agent’s pinned Chrome session → Resume, or the Chrome sign-in card.",
+        "Open a Connected Chrome sign-in tab and wait for this request’s Done or cancellation. The user can use Computer control from Settings or any agent menu. Human-use status is advisory: browser tools remain usable. Never ask for credentials in chat or tools.",
       parameters: Type.Object({
         url: Type.String(),
         reason: Type.String({ maxLength: 2000 }),
@@ -80,7 +80,7 @@ export function interventionTools(
     define({
       name: "browser_keep_tab",
       label: "Keep Chrome deliverable",
-      description: "Keep the current Connected Chrome task tab after settlement: deliverable releases control; handoff retains a paused reservation for a follow-up run with explicit user resume.",
+      description: "Keep the current Connected Chrome task tab after settlement: deliverable releases control; handoff retains the tab for a follow-up run without requiring Resume.",
       parameters: Type.Object({ mark: Type.Optional(Type.Union([Type.Literal("deliverable"), Type.Literal("handoff")])) }),
       execute: async (_id, args) => {
         const session = browser();
@@ -110,7 +110,7 @@ export function interventionTools(
       name: "browser_open",
       label: "Open website",
       description:
-        "Navigate this agent’s browser session. Blocked during human control.",
+        "Navigate this agent’s browser session. Human-use status is advisory; re-observe if the page changes.",
       parameters: Type.Object({ url: Type.String() }),
       execute: async (_id, args, signal) =>
         result(await browser().action("open", args, signal)),
@@ -119,15 +119,17 @@ export function interventionTools(
       name: "browser_screenshot",
       label: "Browser screenshot",
       description:
-        "Inspect this agent’s browser session viewport. Blocked during human control.",
+        "Inspect this agent’s browser session viewport. Human-use status is advisory; re-observe if the page changes.",
       parameters: Type.Object({}),
       execute: async (_id, _args, signal) => {
         const value = (await browser().action("screenshot", {}, signal)) as {
           image: string;
+          humanUsing?: boolean;
         };
         return {
           content: [
             { type: "image", mimeType: "image/png", data: value.image },
+            { type: "text", text: JSON.stringify({ humanUsing: value.humanUsing === true }) },
           ],
           details: {},
         };

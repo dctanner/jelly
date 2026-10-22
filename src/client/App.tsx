@@ -2,6 +2,7 @@ import { AppRegistration } from "./AppRegistration";
 import { Avatar } from "./Avatar";
 import { InitialAgentIdentity } from "./InitialAgentIdentity";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
+import { ComputerControlPanel } from "./ComputerControlPanel";
 import { Settings, SettingsRow } from "./Settings";
 import { ComposerSettings } from "./ComposerSettings";
 import { captureAnchor, restoreAnchor, mergeHistory, snapshotHistory, type ScrollAnchor } from "./history";
@@ -358,7 +359,7 @@ function Profile({
     </Modal>
   );
 }
-function AgentDetails({
+export function AgentDetails({
   agent,
   projects,
   connected,
@@ -393,8 +394,10 @@ function AgentDetails({
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
+  const [computerOpen, setComputerOpen] = useState(false);
   const project =
     projects.find((p) => p.id === agent.projectId)?.name ?? "Ungrouped";
+  if (computerOpen) return <ComputerControlPanel agentId={agent.id} onClose={() => setComputerOpen(false)} onChange={onSaved} />;
   return (
     <Modal
       title={
@@ -455,6 +458,11 @@ function AgentDetails({
               icon={<RefreshCw size={19} />}
               disabled={running || !connected || refreshing || !!agent.archivedAt || !canCompact}
               onClick={onFreshSession}
+            />
+            <SettingsRow
+              label="Computer control"
+              disabled={!connected}
+              onClick={() => setComputerOpen(true)}
             />
             <SettingsRow
               label="Workspace"
