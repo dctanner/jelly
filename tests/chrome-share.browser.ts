@@ -21,6 +21,19 @@ import { ChromeSessions } from "../src/server/chrome-sessions";
 import { ChromeShare } from "../src/server/chrome-share";
 import { openChromeViewer } from "./fixtures/chrome-viewer";
 
+const capturePids = new Set<number>();
+function expectNoCaptureShm(pid: number) {
+  const [header, ...rows] = readFileSync("/proc/sysvipc/shm", "utf8").trim().split("\n");
+  const creator = header!.trim().split(/\s+/).indexOf("cpid");
+  expect(creator).toBeGreaterThanOrEqual(0);
+  expect(rows.filter((row) => Number(row.trim().split(/\s+/)[creator]) === pid)).toEqual([]);
+}
+function trackCapture(pid: number) {
+  capturePids.add(pid);
+  expect(readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")).toContain("-noshm");
+  expectNoCaptureShm(pid);
+}
+
 // All Chrome profiles, host registrations, X11 authority and displays are disposable.
 const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-share-browser-"));
 const dataDir = join(dir, "data");
@@ -447,6 +460,7 @@ try {
   expect(() => chrome.allocate(newAgent.id, "new-run", selected, "New")).not.toThrow();
   // x11vnc has no TCP listener, including the separate LibVNCServer IPv6 port.
   const child = (app.service.chromeShare as any).process;
+  trackCapture(child.pid);
   const socketInodes = readdirSync(`/proc/${child.pid}/fd`).flatMap((fd) => {
     try {
       const target = readlinkSync(`/proc/${child.pid}/fd/${fd}`);
@@ -821,6 +835,7 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   await page.getByText(/You’re using the computer/).waitFor();
   // Closing stops local input and dismisses even if native cleanup needs repair.
   const share = app.service.chromeShare as any;
+  trackCapture(share.process.pid);
   const stopCapture = share.stopCapture.bind(share);
   share.stopCapture = async () => { throw new Error("Fixture cleanup failure"); };
   await page.keyboard.press("Escape");
@@ -878,7 +893,9 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   );
   await holdViewerInputs();
   await waitFor(async () => (await inputState()) === "True True");
-  (app.service.chromeShare as any).process.kill("SIGKILL");
+  const killedCapture = (app.service.chromeShare as any).process;
+  trackCapture(killedCapture.pid);
+  killedCapture.kill("SIGKILL");
   // Deterministically cover cleanup after actual native-generation loss too.
   chrome.bridge.disconnect(peer.id);
   await waitFor(
@@ -962,6 +979,7 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
     new TextDecoder().decode((await output.read()).value),
   );
   output.releaseLock();
+  trackCapture(ready.child);
   const cleanupChrome = new ChromeSessions(orphanData, "orphan-cleanup-test");
   await cleanupChrome.bridge.ready;
   writeFileSync(
@@ -1015,6 +1033,8 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
     await cleanupChrome.close();
   }
   expect(errors).toEqual([]);
+  for (const pid of capturePids) expectNoCaptureShm(pid);
+  console.log("PASS: capture creates no System V shared-memory segments during viewing, reconnect, forced SIGKILL or real parent death; input-cleanup checks remain enforced.");
   assertionsPassed = true;
   console.log(
     "PASS: disposable Xvfb + existing headed Chrome + native attestation + x11vnc + noVNC; direct take, actual desktop pixels/input, advisory browser status, owner exclusion, no TCP/passive clipboard export, explicit Unicode/empty text clipboard and native paste, manual fallback, mobile fit, disconnect/reconnect, failed-cleanup dismissal and retry, confirmed native teardown, stale epochs/process loss, real parent-death/orphan cleanup lock, unchanged Chrome PID/profile/cookies.",

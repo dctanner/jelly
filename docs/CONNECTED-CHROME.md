@@ -304,6 +304,40 @@ Uncertain native authentication or input cleanup still requires operator repair;
 never delete the latch/runtime to bypass it. These obligations gate **viewer
 reuse**, not browser automation. Native Mac private-work exclusion stays intact.
 
+### Shared-memory lifetime and explicit repair
+
+Capture always uses x11vnc `-noshm` (ordinary X11 image transfers). Its MIT-SHM
+buffers otherwise survive forced termination on hosts with the default
+`kernel.shm_rmid_forced=0`; repeated crashes or parent-death tests can exhaust the
+System V segment limit even when RAM and disk space remain available. Avoiding
+these allocations is the permanent fix, not a larger limit or a cleanup timer.
+It may cost additional image-copy CPU; display identity, Unix-only transport,
+clipboard isolation and strict input teardown are unchanged. A SIGKILL still
+requires the existing cleanup proof; this does not classify it as a clean exit.
+
+For existing abandoned allocations, run the metadata-only repair as the
+ordinary owning user, **without sudo**:
+
+```sh
+python3 scripts/cleanup-orphaned-shm.py
+# Inspect the dry run, then explicitly apply:
+python3 scripts/cleanup-orphaned-shm.py --apply --report /tmp/shm-repair.json
+```
+
+This Linux/util-linux helper only selects current-user-owned and -created,
+private-key, mode-0600 segments with no attachments, at least five minutes since
+any recorded activity, and both creator and last-user PIDs demonstrably gone.
+It rechecks every ID and all metadata immediately before removal. Active,
+named, foreign-user, recent, changed and uncertain segments are preserved; no
+contents are read, no processes are killed and no kernel policy is changed.
+Report files are new and owner-only. This is an explicit repair tool, never an
+automatic background sweeper. A nonzero exit may mean partial cleanup; consult
+the report rather than broadening the selection.
+
+`bun run test:chrome-shm` covers repair policy without mutating real IPC.
+`bun run test:chrome-vnc` checks live capture and verifies no capture-owned SysV
+segments remain through viewing, reconnect, forced kill and real parent death.
+
 ## Optional owned virtual-X11 desktop — existing profile, extension-only automation
 
 This is a **separate, explicit owner installation**, not native Wayland capture

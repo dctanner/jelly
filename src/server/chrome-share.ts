@@ -303,6 +303,9 @@ export class ChromeShare implements VncEndpoint {
         "-nopw",
         "-nolookup",
         "-noxdamage",
+        // Parent-death/SIGKILL cannot run x11vnc's MIT-SHM cleanup. Plain X11
+        // capture avoids persistent SysV allocations without weakening teardown.
+        "-noshm",
         "-nosel",
         "-clear_keys",
       ],
