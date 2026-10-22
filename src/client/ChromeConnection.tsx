@@ -195,8 +195,9 @@ export function ChromeConnection({
       )}
       <p className="chat-form-hint">
         Existing sessions keep their profile and site access until closed.
-        Personal tabs are not shared. To reconnect an agent’s browser session,
-        open its Computer control panel → Advanced → Close session.
+        Personal tabs are not shared. Agents recover expired sessions using
+        browser_reconnect. Close an idle session in Computer control → Advanced
+        only to change its profile/site access or perform operator repair.
       </p>
       <button
         className="primary"

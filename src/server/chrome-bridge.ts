@@ -203,6 +203,13 @@ export class ChromeBridge {
       desktopAvailable: p.desktop.available,
     }));
   }
+  canReconnect(profile: string, generation: string) {
+    const peer = this.peers.get(profile);
+    // A revoked socket can remain in the map until its asynchronous close
+    // callback. Presence in the UI's profile list is not renewal authority.
+    return !this.closing && !this.admissionFailed && !this.blocked.has(profile) &&
+      !!peer && peer.generation === generation && !peer.socket.destroyed && peer.socket.writable;
+  }
   private accept(socket: Socket) {
     if (this.sockets.size >= 8) {
       socket.destroy();

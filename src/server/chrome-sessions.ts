@@ -16,6 +16,7 @@ interface Task {
   run: string | null;
   authorityRun: string;
   begun: boolean;
+  settling: boolean;
   paused: boolean; // Authority revoked, not necessarily safe for credential entry.
   pauseState: "active" | "pausing" | "paused" | "resuming" | "failed";
   pausePending: Promise<void> | null;
@@ -162,6 +163,7 @@ export class ChromeSessions {
     run: string,
     selection: ChromeSelection,
     name: string,
+    assertReconnectAllowed: () => void = () => {},
   ) {
     let task = this.tasks.get(agent);
     if (!task) {
@@ -190,6 +192,7 @@ export class ChromeSessions {
         run: null,
         authorityRun: run,
         begun: false,
+        settling: false,
         paused: false,
         pauseState: "active",
         pausePending: null,
@@ -209,15 +212,25 @@ export class ChromeSessions {
     if (t.run && t.run !== run)
       throw new Error("Chrome task is still owned by another run.");
     t.run = run;
-    const serialize = <T>(fn: () => Promise<T>) => {
-      const next = t.chain.catch(() => {}).then(fn);
+    const assertRun = () => {
+      if (this.tasks.get(agent) !== t || t.run !== run || t.settling)
+        throw new Error("Chrome run authority expired. Only the current active run can use or reconnect its session.");
+    };
+    const serialize = <T>(fn: () => Promise<T> | T) => {
+      const session = t.id;
+      const next = t.chain.catch(() => {}).then(() => {
+        assertRun();
+        if (t.id !== session)
+          throw new Error("Chrome session changed while this operation was queued. Nothing was replayed. Open the page and take a fresh browser_snapshot.");
+        return fn();
+      });
       t.chain = next;
       return next;
     };
     const begin = async () => {
       if (t.lost || t.run !== run)
         throw new Error(
-          "Chrome authority expired. Close the session and explicitly reconnect.",
+          "Chrome authority expired. Call browser_reconnect to create a fresh session, then reopen the page and take a fresh browser_snapshot. Do not replay an unconfirmed action.",
         );
       if (!t.begun) {
         // Record cleanup authority before dispatch; a connection failure can
@@ -246,11 +259,46 @@ export class ChromeSessions {
       }
       if (t.paused)
         throw new Error(
-          "Chrome automation was paused by a native desktop handoff or a security fault. Finish the native desktop handoff or reconnect the affected session; human computer-control status alone does not block browser tools.",
+          "Chrome automation was paused by a native desktop handoff or a security fault. Finish the native desktop handoff or ask the operator to repair the affected session; browser_reconnect cannot bypass this boundary. Human computer-control status alone does not block browser tools.",
         );
     };
     return {
       target: "chrome" as const,
+      reconnect: (signal?: AbortSignal) => serialize(() => {
+        signal?.throwIfAborted();
+        // Revalidate at the head of the queue, not merely at tool admission.
+        assertReconnectAllowed();
+        if (t.handoff || t.pausePending || t.resumePending ||
+            t.pauseState !== "active" || this.nativePauses.has(t))
+          throw new Error("Browser reconnect cannot clear a sign-in handoff, native privacy pause or security fault. Finish the handoff or ask the operator to repair the affected session.");
+        const profile = this.bridge.profiles().find(p => p.id === t.profile);
+        if (!profile || !this.bridge.canReconnect(t.profile, profile.generation) ||
+            (t.lost && profile.generation === t.generation))
+          throw new Error("The pinned Chrome profile has not reconnected. Wait for its transport to reconnect, or ask the operator to use Reconnect in the Jelly Chrome extension; then call browser_reconnect. This tool cannot clear revoked pairing or native cleanup.");
+        if (!t.lost && profile.generation !== t.generation)
+          throw new Error("Chrome session binding changed unexpectedly. Operator repair is required; no session was reset.");
+        if (!t.lost)
+          return {
+            status: "already_connected" as const,
+            message: "This agent's browser session is already connected; nothing was reset. Use browser_snapshot for current references, or browser_open if no page is open.",
+          };
+        // A new empty session, never revival of old tabs/references or replay of
+        // an old RPC. Keep the exact pinned profile and original site scope.
+        t.id = crypto.randomUUID();
+        t.generation = profile.generation;
+        t.authorityRun = run;
+        t.begun = false;
+        t.lost = false;
+        t.paused = false;
+        t.active = null;
+        t.tabs.clear();
+        ++t.transition;
+        this.changed(agent);
+        return {
+          status: "reconnected" as const,
+          message: "A fresh empty session is ready on the same Chrome profile and site scope. No browser action was performed or replayed. A previous action may already have completed: verify its outcome rather than repeat it. Reopen the desired page with browser_open and take a fresh browser_snapshot before acting. Old tabs and references are not reusable.",
+        };
+      }),
       keepTab: (mark: "deliverable" | "handoff" = "deliverable") =>
         serialize(async () => {
           await begin();
@@ -325,6 +373,7 @@ export class ChromeSessions {
           return { ...result, humanUsing: this.humanState() } as Record<string, unknown> & { humanUsing: boolean };
         }),
       reserveLogin: (id: string, url: string, signal?: AbortSignal) => {
+        assertRun();
         // Bind before queuing, so cancel/Done during a delayed open cannot be
         // overwritten by that operation's late response.
         if (t.handoff) throw new HttpError(409, "A browser sign-in request is already pending.");
@@ -385,7 +434,7 @@ export class ChromeSessions {
     params: Record<string, unknown>,
     signal?: AbortSignal,
   ) {
-    if (t.lost) throw new Error("Chrome session authority expired.");
+    if (t.lost) throw new Error("Chrome session authority expired. Call browser_reconnect; never replay an unconfirmed action.");
     if (!chromeParams(method, params))
       throw new Error(
         "Unavailable Chrome operation parameters; use exact references and bounded inputs.",
@@ -555,6 +604,7 @@ export class ChromeSessions {
   async settle(agent: string, run: string) {
     const t = this.tasks.get(agent);
     if (!t || t.run !== run) return;
+    t.settling = true; // Close admission before waiting for accepted work.
     const nativePaused = this.nativePauses.get(t) === t.transition;
     ++t.transition;
     await t.chain.catch(() => {});
@@ -577,6 +627,7 @@ export class ChromeSessions {
       t.lost = true;
     } finally {
       t.run = null;
+      t.settling = false;
       t.begun = false;
       t.tabs = new Set(retained);
       t.active = retained[0] ?? null;

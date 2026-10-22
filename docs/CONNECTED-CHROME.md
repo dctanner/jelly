@@ -174,8 +174,28 @@ Computer control does not make native desktop automation permissive.
 Disconnect, worker termination, browser/server restart and tab replacement revoke
 capabilities; there is no mutation replay or automatic authority reconstruction
 from numeric IDs. Transport reconnects automatically unless explicitly disconnected;
-close/reset the lost Jelly session and
-allocate anew. Startup reconciles only cleanup: detach this extension's old
+agent sessions never renew automatically, even on the next run. The single routine
+recovery path is the no-argument **`browser_reconnect`** tool. Expiry errors direct
+the agent to call it after the pinned Chrome profile's transport reconnects.
+
+The tool drains previously admitted work, rechecks current run/cancellation and
+native-private authority, then creates a fresh empty task identity on the **same
+profile and original site scope**. It does not reconnect the extension, clear
+pairing blocks, adopt existing tabs, navigate, send input or replay a previous
+operation. Work queued under the old identity is rejected. A healthy session is
+left unchanged. The agent must reopen the desired page with `browser_open`, take
+a new `browser_snapshot`, and verify any unconfirmed action's outcome rather than
+repeat it. Existing personal/deliverable tabs and other agents' sessions are not
+reset. There is no background task-renewal path or shell/API recovery shortcut.
+
+An absent/revoked profile, pending sign-in request, native-private handoff or
+security/cleanup failure remains blocked. Operator **Reconnect** in the extension
+and/or completion of the relevant private handback may be required; the agent
+tool cannot manufacture that consent. Advanced idle-only **Close session** remains
+for operator repair and intentional profile/site-scope changes, not routine
+agent-session recovery.
+
+Startup reconciles only cleanup: detach this extension's old
 sessions and remove its stale per-tab rules; never close/reclaim leftover tabs.
 They cannot be reclaimed through the popup. Navigation,
 frame-document changes, detach and handoff invalidate references; group deletion
@@ -213,7 +233,7 @@ never completed by an older viewer action. A stable Take identity binds Done,
 reconnect and unmount independently of rotating socket/ticket generations.
 Reconnect and cleanup retry appear only when relevant. No local-machine “Open in
 Chrome” path or tab-capability/pause/resume controls are exposed. The agent entry
-adds a collapsed Advanced browser-session recovery section; Close session is
+adds a collapsed Advanced browser-session settings/repair section; Close session is
 server-enforced idle-only and does not close the computer viewer.
 
 **The viewer covers the full computer, including other windows and notifications,

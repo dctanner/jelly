@@ -168,16 +168,21 @@ export class JellyService {
       throw new HttpError(409, "Desktop work has not safely drained. Do not enter credentials.");
   }
   private scopedBrowser(agentId: string, runId: string, selection: ChromeSelection, name: string) {
-    const scoped = this.browsers.forRun(agentId, runId, selection, name);
+    const guard = () => {
+      if (this.desktopHandoff) throw new Error("Browser automation is paused for private desktop control. Explicit desktop handback is required.");
+    };
+    const scoped = this.browsers.forRun(agentId, runId, selection, name, () => {
+      guard();
+      const active = this.active.get(runId);
+      if (this.closing || active?.agentId !== agentId || active.cancelled)
+        throw new Error("Browser reconnect requires this agent's current active run.");
+    });
     let port: BrowserPort | undefined;
     return {
       target: scoped.target,
       get: (id: string): BrowserPort => {
         if (port && id === agentId) return port;
         const browser = scoped.get(id);
-        const guard = () => {
-          if (this.desktopHandoff) throw new Error("Browser automation is paused for private desktop control. Explicit desktop handback is required.");
-        };
         port = {
           ...browser,
           action: (method, params, signal) => { guard(); return browser.action(method, params, signal); },

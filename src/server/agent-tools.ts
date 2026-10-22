@@ -78,6 +78,18 @@ export function interventionTools(
       },
     }),
     define({
+      name: "browser_reconnect",
+      label: "Reconnect browser session",
+      description: "Recover this agent's expired Connected Chrome session on the same authorized profile and site scope. Creates an empty session; never replays actions or restores old tabs/references. Reopen the page and take a fresh snapshot; a previous action may already have completed. Cannot bypass revoked pairing, native privacy or security cleanup. A healthy session is left unchanged.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute: async (_id, _args, signal) => {
+        signal?.throwIfAborted();
+        const session = browser();
+        if (!session.reconnect) throw new Error("Browser session reconnect is unavailable.");
+        return result(await session.reconnect(signal));
+      },
+    }),
+    define({
       name: "browser_keep_tab",
       label: "Keep Chrome deliverable",
       description: "Keep the current Connected Chrome task tab after settlement: deliverable releases control; handoff retains the tab for a follow-up run without requiring Resume.",

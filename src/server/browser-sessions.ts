@@ -16,6 +16,10 @@ export type ConnectedBrowserMethod =
 
 export interface BrowserPort {
   target?: "chrome";
+  reconnect?: (signal?: AbortSignal) => Promise<{
+    status: "reconnected" | "already_connected";
+    message: string;
+  }>;
   keepTab?: (mark?: "deliverable" | "handoff") => Promise<unknown>;
   action(
     method: ConnectedBrowserMethod,
@@ -34,6 +38,7 @@ export class BrowserSessions {
     run: string,
     selection: ChromeSelection,
     name: string,
+    assertReconnectAllowed?: () => void,
   ): { target: "chrome"; get(id: string): BrowserPort } {
     const selected = this.pins.get(agent) ?? structuredClone(selection);
     let port: BrowserPort | undefined;
@@ -43,7 +48,7 @@ export class BrowserSessions {
         if (id !== agent)
           throw new Error("Child/foreign Chrome browser access is unavailable.");
         if (!port) {
-          port = this.chrome.allocate(agent, run, selected, name);
+          port = this.chrome.allocate(agent, run, selected, name, assertReconnectAllowed);
           this.pins.set(agent, selected);
         }
         return port;

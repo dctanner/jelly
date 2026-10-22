@@ -353,7 +353,8 @@ export function ComputerControlPanel({
           <summary>Advanced</summary>
           <h4>This agent’s browser session</h4>
           <p>
-            Close an idle browser session to reconnect or change its profile.
+            Agents recover expired sessions with browser_reconnect. Close an idle
+            session to change its profile/site access or perform operator repair.
             This does not close computer control.
           </p>
           <button disabled={busy} onClick={() => void closeBrowserSession()}>

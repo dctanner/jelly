@@ -20,6 +20,7 @@ import { startApp } from "./fixtures/app";
 import { ChromeSessions } from "../src/server/chrome-sessions";
 import { ChromeShare } from "../src/server/chrome-share";
 import { openChromeViewer } from "./fixtures/chrome-viewer";
+import { interventionTools } from "../src/server/agent-tools";
 
 const capturePids = new Set<number>();
 function expectNoCaptureShm(pid: number) {
@@ -228,8 +229,8 @@ async function installHost(profile: string, config: string, id: string) {
       root,
     ]);
 }
-async function waitFor(check: () => boolean | Promise<boolean>) {
-  const end = Date.now() + 15000;
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 15000) {
+  const end = Date.now() + timeoutMs;
   while (!(await check())) {
     if (Date.now() > end)
       throw new Error(
@@ -408,6 +409,7 @@ try {
     task.active = opened.pageId;
   }
   const taskA = tasks.get(agent.id);
+  const oldBrowserTab = taskA.active;
   const remote = personal
     .pages()
     .find((p) => p.url().includes(`agent=${agent.id}`))!;
@@ -454,7 +456,9 @@ try {
   expect(sharing.status).toBe("sharing");
   expect(chrome.humanState()).toBe(true);
   expect(chrome.state(other.id).task?.paused).toBe(false);
-  expect(await a.action("snapshot")).toMatchObject({ humanUsing: true });
+  const originalSnapshot = await a.action("snapshot") as any;
+  expect(originalSnapshot).toMatchObject({ humanUsing: true });
+  const oldBrowserRef = originalSnapshot.elements.find((element: any) => element.tag === "textarea").ref;
   expect(await b.action("snapshot")).toMatchObject({ humanUsing: true });
   const newAgent = app.service.createAgent({ name: "New", instructions: "Fixture", color: "#b5bafc" });
   expect(() => chrome.allocate(newAgent.id, "new-run", selected, "New")).not.toThrow();
@@ -1032,6 +1036,60 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
     await orphanShare.close();
     await cleanupChrome.close();
   }
+  // The prior intentional profile disconnect is not repairable by an agent.
+  await expect(a.reconnect!()).rejects.toThrow("has not reconnected");
+  const reconnectPopup = await personal.newPage();
+  await reconnectPopup.goto(`chrome-extension://${id}/popup.html`);
+  await reconnectPopup.getByRole("button", { name: "Reconnect to installed Jelly instance" }).click();
+  await waitFor(() => chrome.bridge.profiles().some(p => p.id === peer.id && p.generation !== peer.generation));
+  await reconnectPopup.close();
+  const recoveryTool = interventionTools(
+    { get: requested => { if (requested !== agent.id) throw new Error("Foreign fixture agent"); return a; } },
+    app.service.interventions, agent.id, "run-a", dir,
+  ).find(tool => tool.name === "browser_reconnect")!;
+  const recover = async () => {
+    const result = await recoveryTool.execute("recover-fixture", {}, new AbortController().signal, undefined, {} as any);
+    return JSON.parse((result.content[0] as { text: string }).text);
+  };
+  const pagesBeforeRecovery = personal.pages().length;
+  expect(await recover()).toMatchObject({ status: "reconnected" });
+  expect(personal.pages()).toHaveLength(pagesBeforeRecovery);
+  expect(chrome.state(agent.id).task).toMatchObject({ connected: true, active: null, tabs: [] });
+  expect(chrome.state(other.id).task?.connected).toBe(false);
+  await expect(a.action("tabs", { operation: "select", pageId: oldBrowserTab })).rejects.toThrow("Stale or foreign");
+  await expect(a.action("open", { url: "https://not-approved.invalid/" })).rejects.toThrow("outside");
+  const recovered = await a.action("open", { url: `${site.url.origin}/?recovered=explicit` }) as any;
+  expect(recovered.pageId).not.toBe(oldBrowserTab);
+  // browser_open acknowledges navigation dispatch, not document readiness.
+  // Wait for this known disposable fixture to load before testing references.
+  await waitFor(() => personal!.pages().some(p => p.url().includes("recovered=explicit")));
+  const recoveredPage = personal.pages().find(p => p.url().includes("recovered=explicit"))!;
+  await recoveredPage.getByRole("heading", { name: "Connected Chrome human fixture" }).waitFor();
+  await a.action("snapshot");
+  await expect(a.action("fill", { ref: oldBrowserRef, text: "MUST NOT APPEAR" })).rejects.toThrow("unavailable");
+  const recoveredSnapshot = await a.action("snapshot") as any;
+  await a.action("fill", { ref: recoveredSnapshot.elements.find((element: any) => element.tag === "textarea").ref, text: "fresh session input" });
+  expect(await recoveredPage.getByRole("textbox").inputValue()).toBe("fresh session input");
+  expect(remote.isClosed()).toBe(false);
+
+  // Ordinary transport loss reconnects on the extension's real 30-second retry
+  // alarm. No explicit popup action, timer override or automatic task renewal.
+  const recoveredGeneration = chrome.bridge.profiles()[0]!.generation;
+  (chrome.bridge as any).peers.get(peer.id).socket.destroy();
+  await waitFor(() => chrome.state(agent.id).task?.connected === false);
+  await expect(a.action("snapshot")).rejects.toThrow("browser_reconnect");
+  await waitFor(() => chrome.bridge.profiles().some(p => p.id === peer.id && p.generation !== recoveredGeneration), 60000);
+  await expect(a.action("snapshot")).rejects.toThrow("browser_reconnect");
+  expect(await recover()).toMatchObject({ status: "reconnected" });
+  await expect(a.action("tabs", { operation: "select", pageId: recovered.pageId })).rejects.toThrow("Stale or foreign");
+  await a.action("open", { url: `${site.url.origin}/?recovered=automatic-transport` });
+  await waitFor(() => personal!.pages().some(p => p.url().includes("recovered=automatic-transport")));
+  await personal.pages().find(p => p.url().includes("recovered=automatic-transport"))!
+    .getByRole("heading", { name: "Connected Chrome human fixture" }).waitFor();
+  expect(JSON.stringify(await a.action("snapshot"))).toContain("Connected Chrome human fixture");
+  expect(readlinkSync(join(profileDir, "SingletonLock"))).toBe(pidBefore);
+  expect((await personal.cookies(site.url.origin)).some(c => c.name === "sameProfile" && c.value === "preserved")).toBe(true);
+  console.log("PASS: browser_reconnect tool cannot clear intentional disconnect; after operator repair or ordinary transport auto-reconnect it creates only the caller's fresh session, preserves scope/profile/cookies, rejects old tabs/refs, and performs no action replay.");
   expect(errors).toEqual([]);
   for (const pid of capturePids) expectNoCaptureShm(pid);
   console.log("PASS: capture creates no System V shared-memory segments during viewing, reconnect, forced SIGKILL or real parent death; input-cleanup checks remain enforced.");

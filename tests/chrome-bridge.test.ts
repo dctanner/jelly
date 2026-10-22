@@ -1088,7 +1088,9 @@ test("intentional disconnect survives dropped final frames and bridge restart; o
     const profile = crypto.randomUUID();
     const first = await f.peer({ profile });
     expect(first.messages[0].type).toBe("paired");
+    expect(f.bridge.canReconnect(profile, first.messages[0].generation)).toBe(true);
     f.bridge.disconnect(profile);
+    expect(f.bridge.canReconnect(profile, first.messages[0].generation)).toBe(false);
     await waitFor(() => first.socket.destroyed);
     expect(JSON.parse(readFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([profile]);
     // No reliance on receiving the denial frame: closing immediately cannot clear intent.
@@ -1105,6 +1107,7 @@ test("intentional disconnect survives dropped final frames and bridge restart; o
     expect(restarted.profiles()).toHaveLength(0);
     const reconnect = await f.peer({ profile, explicitReconnect: true });
     expect(reconnect.messages[0]?.type).toBe("paired");
+    expect(restarted.canReconnect(profile, reconnect.messages[0].generation)).toBe(true);
     expect(JSON.parse(readFileSync(join(f.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([]);
   } finally {
     if (restarted) await restarted.close();
