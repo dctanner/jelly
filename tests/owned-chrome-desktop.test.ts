@@ -219,6 +219,42 @@ test("versioned protected-service fast auth guard uses process stamps and exact 
 });
 
 
+test("stopped owned desktop proof requires every original PID absent and no X endpoint", async () => {
+  const f = await setupFixture();
+  const child = Bun.spawn(["/bin/sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    expect(await f.setup()).toBe(0);
+    const binding = { display: ":3999", auth: join(f.owned.directory, "Xauthority"), socketPath: "/tmp/.X11-unix/X3999",
+      socketDev: "1", socketIno: "2", socketCtime: "3", authHash: "a".repeat(64) };
+    const generation = crypto.randomUUID(), identity = ownedProcess(child.pid);
+    const record = { version: 1, instance: f.owned.instance, configHash: ownedConfigHash(f.owned.config()), generation, binding,
+      runner: identity, server: identity, manager: identity, chrome: identity, busProxy: { process: identity } };
+    const path = join(f.owned.directory, "desktop.json");
+    const save = (value: unknown) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+    save(record);
+    expect(() => f.owned.stoppedRecord(generation, binding)).toThrow("fully stopped");
+    child.kill(); await child.exited;
+    expect(f.owned.stoppedRecord(generation, binding)).toEqual(record as any);
+    // Every participant must be absent; a reused live PID with a different
+    // process stamp does not prove death, and missing legacy proof is refused.
+    for (const key of ["runner", "server", "manager", "chrome", "busProxy"]) {
+      for (const process of [{ ...identity, pid: globalThis.process.pid }, undefined]) {
+        save({ ...record, [key]: key === "busProxy" ? { process } : process });
+        expect(() => f.owned.stoppedRecord(generation, binding)).toThrow("fully stopped");
+      }
+    }
+    save(record);
+    expect(() => f.owned.stoppedRecord(crypto.randomUUID(), binding)).toThrow("evidence");
+    // Isolate endpoint detection from canonical binding validation: an existing
+    // node (including a replacement) must never qualify as an absent socket.
+    f.owned.cleanupRecord = () => record as any;
+    expect(() => f.owned.stoppedRecord(generation, { ...binding, socketPath: f.dir })).toThrow("endpoint");
+  } finally {
+    if (child.exitCode === null) { child.kill(); await child.exited; }
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 test("cleanup record needs original private config/generation/binding but not living Chrome; launcher preserves latched evidence", async () => {
   const f = await setupFixture();
   try {

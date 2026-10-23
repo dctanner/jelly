@@ -44,6 +44,7 @@ export class ChromeShare implements VncEndpoint {
   private ownedGeneration: string | null = null;
   private authProcess: ChildProcess | null = null;
   private authUncertain = false;
+  private authVerificationRequired = false;
   private process: ChildProcess | null = null;
   private transition: Promise<void> | null = null;
   private captureCleanup: Promise<void> | null = null;
@@ -123,6 +124,7 @@ export class ChromeShare implements VncEndpoint {
       this.binding = saved.binding ?? null;
       this.ownedGeneration = saved.ownedGeneration ?? null;
       this.authUncertain = saved.authUncertain !== false || (!!this.runtime && existsSync(join(this.runtime, "auth.lock")));
+      this.authVerificationRequired = saved.authVerificationRequired !== false;
       this.inputCleanupRequired =
         saved.inputCleanupRequired !== false || !!saved.runtime;
       this.unexpectedExit = this.inputCleanupRequired;
@@ -166,6 +168,7 @@ export class ChromeShare implements VncEndpoint {
         inputCleanupRequired: this.inputCleanupRequired,
         ownedGeneration: this.ownedGeneration,
         authUncertain: this.authUncertain,
+        authVerificationRequired: this.authVerificationRequired,
       }),
       { mode: 0o600 },
     );
@@ -406,6 +409,7 @@ export class ChromeShare implements VncEndpoint {
     this.controlId = crypto.randomUUID();
     this.agentId = agent;
     this.ownedGeneration = record.generation;
+    this.authVerificationRequired = true;
     this.binding = record.binding;
     this.status = "pausing";
     this.error = null;
@@ -605,22 +609,22 @@ export class ChromeShare implements VncEndpoint {
         });
     };
   }
-  private stopCapture(allowRepair: boolean): Promise<void> {
+  private stopCapture(allowRepair: boolean, stoppedDesktop?: () => void): Promise<void> {
     if (this.captureCleanup) {
       const pending = this.captureCleanup;
       // Explicit repair can retry after an uncertain ordinary shutdown. It
       // cannot overlap that shutdown or signal the same process a second time.
       return allowRepair
-        ? pending.catch(() => {}).then(() => this.stopCapture(true))
+        ? pending.catch(() => {}).then(() => this.stopCapture(true, stoppedDesktop))
         : pending;
     }
-    const cleanup = this.stopCaptureOnce(allowRepair).finally(() => {
+    const cleanup = this.stopCaptureOnce(allowRepair, stoppedDesktop).finally(() => {
       if (this.captureCleanup === cleanup) this.captureCleanup = null;
     });
     this.captureCleanup = cleanup;
     return cleanup;
   }
-  private async stopCaptureOnce(allowRepair: boolean) {
+  private async stopCaptureOnce(allowRepair: boolean, stoppedDesktop?: () => void) {
     // Clipboard cleanup never short-circuits the existing held-key cleanup path.
     await this.clipboard.drain().catch(() => {});
     // Admission is revoked by every caller before entering shared cleanup.
@@ -703,7 +707,10 @@ export class ChromeShare implements VncEndpoint {
         throw new ChromeDesktopError(
           "Input state is uncertain. End the share without viewing before reconnecting.",
         );
-      await this.inputHelper("--release");
+      // Only explicit cleanup with conclusive death proof can retire held input
+      // without sending events. Never touch a reused DISPLAY or restart Chrome.
+      if (allowRepair && stoppedDesktop) stoppedDesktop();
+      else await this.inputHelper("--release");
       this.inputCleanupRequired = false;
       this.unexpectedExit = false;
       this.persist();
@@ -714,9 +721,11 @@ export class ChromeShare implements VncEndpoint {
       this.persist();
     }
   }
-  private async verifyOwnedAuth(requireCurrent: () => void) {
+  private async verifyOwnedAuth(requireCurrent: () => void, stoppedDesktop = false) {
     if (!this.ownedGeneration) return;
-    const record = this.ownedDesktop.record();
+    const record = stoppedDesktop
+      ? this.ownedDesktop.stoppedRecord(this.ownedGeneration, this.binding!)
+      : this.ownedDesktop.record();
     if (record.generation !== this.ownedGeneration) throw new ChromeDesktopError("Owned desktop changed during handback.");
     if (!record.auth) return;
     const check = Bun.spawn(["/usr/bin/python3", resolve(import.meta.dir, "../../scripts/connected-chrome-os-auth.py"),
@@ -753,20 +762,34 @@ export class ChromeShare implements VncEndpoint {
     // Snapshot only already-completed obligations. Never turn failed native
     // cleanup into permission to retire a dead display within this request.
     const cleanOwned = cleanupOnly && !!this.ownedGeneration && this.runtime === null &&
-      !this.inputCleanupRequired && !this.authUncertain && !this.process && !this.authProcess &&
+      !this.inputCleanupRequired && !this.authUncertain && !this.authVerificationRequired && !this.process && !this.authProcess &&
       !this.captureCleanup && !this.transition;
     const evidence = () => {
       const saved = privateJson<Record<string, unknown>>(this.latch);
       if (saved.runtime !== null || saved.inputCleanupRequired !== false || saved.authUncertain !== false ||
+          saved.authVerificationRequired !== false ||
           saved.ownedGeneration !== this.ownedGeneration || JSON.stringify(saved.binding) !== JSON.stringify(this.binding))
         throw new ChromeDesktopError("Completed desktop cleanup evidence is missing or changed. Keep the viewer closed.");
       return JSON.stringify(this.ownedDesktop.cleanupRecord(this.ownedGeneration!, this.binding!));
     };
     let cleanEvidence: string | null = null;
     if (cleanOwned) cleanEvidence = evidence();
+    // Closing Chrome also terminates its owned X server. Pending input cleanup
+    // must not require that server to be alive, nor infer death from !ownedAlive.
+    // Pin positive shutdown evidence before any awaited work and recheck it at
+    // every handback fence. This path grants no viewer/browser authority.
+    const stoppedOwned = cleanupOnly && !!this.ownedGeneration && !cleanOwned && !this.ownedAlive();
+    const stoppedEvidence = stoppedOwned
+      ? JSON.stringify(this.ownedDesktop.stoppedRecord(this.ownedGeneration!, this.binding!))
+      : null;
+    const stoppedCurrent = () => {
+      try { return stoppedEvidence !== null &&
+        JSON.stringify(this.ownedDesktop.stoppedRecord(this.ownedGeneration!, this.binding!)) === stoppedEvidence; }
+      catch { return false; }
+    };
     const cleanCurrent = () => {
       try { return cleanEvidence !== null && this.runtime === null && !this.inputCleanupRequired &&
-        !this.authUncertain && !this.process && !this.authProcess && !this.captureCleanup && !this.transition &&
+        !this.authUncertain && !this.authVerificationRequired && !this.process && !this.authProcess && !this.captureCleanup && !this.transition &&
         evidence() === cleanEvidence; } catch { return false; }
     };
     this.returning = true;
@@ -779,10 +802,18 @@ export class ChromeShare implements VncEndpoint {
       this.generation === expected.generation && this.failureEpoch === expected.failure &&
       this.owner === expected.owner && this.ownedGeneration === expected.owned && this.profileGeneration === expected.profile &&
       this.ownerValid(session) && (orphan || this.owner === session) && (!privacyReady || this.privacyValid()) &&
-      (!expected.owned || (cleanOwned ? cleanCurrent() : this.ownedAlive()));
+      (!expected.owned || (cleanOwned ? cleanCurrent() : stoppedOwned ? stoppedCurrent() : this.ownedAlive()));
     const requireCurrent = () => { if (!current()) throw new ChromeDesktopError("Desktop handback was revoked. Keep the viewer closed."); };
     this.changed();
     try {
+      requireCurrent();
+      // Input cleanup can persist completion before auth verification finishes.
+      // Keep the latter obligation durable so retry/restart cannot choose the
+      // already-clean shortcut after a failed verification.
+      if (this.ownedGeneration && !cleanOwned) {
+        this.authVerificationRequired = true;
+        this.persist();
+      }
       await notified;
       await this.transition?.catch(() => {});
       requireCurrent();
@@ -791,12 +822,13 @@ export class ChromeShare implements VncEndpoint {
       await this.drainDesktop();
       privacyReady = true;
       requireCurrent();
-      await this.stopCapture(cleanupOnly);
+      await this.stopCapture(cleanupOnly, stoppedOwned ? requireCurrent : undefined);
       requireCurrent();
       if (this.authUncertain) throw new ChromeDesktopError("OS authentication outcome is uncertain. The viewer needs cleanup for operator repair; no authentication is replayed.");
-      const verifyAuth = async () => { if (!cleanOwned) await this.verifyOwnedAuth(requireCurrent); requireCurrent(); };
+      const verifyAuth = async () => { if (!cleanOwned) await this.verifyOwnedAuth(requireCurrent, stoppedOwned); requireCurrent(); };
       await verifyAuth();
       requireCurrent();
+      this.authVerificationRequired = false;
       rmSync(this.latch);
       this.owner = this.profile = this.agentId = this.profileGeneration = null;
       this.controlId = null;

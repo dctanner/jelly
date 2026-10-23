@@ -726,6 +726,116 @@ test("clean owned recovery refuses missing runtime and changed durable completio
   } finally { await f.close(); }
 });
 
+test("closing owned Chrome during viewing can finish cleanup without touching a dead display", async () => {
+  const f = await fixture();
+  const runtime = mkdtempSync(join(tmpdir(), "jelly-chrome-share-"));
+  writeFileSync(join(runtime, "guard.lock"), "", { mode: 0o600 });
+  let releasedInput = 0, verifiedAuth = 0, shutdownChecks = 0;
+  try {
+    Object.assign(f.share, { status: "failed", owner: "owner", ownedGeneration: crypto.randomUUID(),
+      binding: {}, runtime, inputCleanupRequired: true, unexpectedExit: true,
+      inputHelper: async () => { releasedInput++; throw new Error("dead display must never receive input"); },
+      verifyOwnedAuth: async (current: () => void, stopped: boolean) => {
+        expect(stopped).toBe(true); current(); verifiedAuth++;
+      },
+    });
+    (f.share as any).persist();
+    f.share.ownedDesktop.record = () => { throw new Error("Chrome and X server exited"); };
+    f.share.ownedDesktop.stoppedRecord = () => { shutdownChecks++; return { fixture: "original" } as any; };
+    expect((await f.share.release("owner", 0, true)).status).toBe("idle");
+    expect(releasedInput).toBe(0);
+    expect(verifiedAuth).toBe(1);
+    expect(shutdownChecks).toBeGreaterThan(4);
+    expect(existsSync(runtime)).toBe(false);
+    expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(false);
+  } finally { await f.close(); rmSync(runtime, { recursive: true, force: true }); }
+});
+
+for (const restored of [false, true]) test(`failed dead-desktop auth verification remains required on retry (restored=${restored})`, async () => {
+  const f = await fixture();
+  let share = f.share, verified = 0;
+  try {
+    Object.assign(share, { status: "failed", owner: "owner", ownedGeneration: crypto.randomUUID(),
+      binding: {}, inputCleanupRequired: true, unexpectedExit: true });
+    const configure = () => {
+      share.ownedDesktop.record = () => { throw new Error("dead Chrome"); };
+      share.ownedDesktop.stoppedRecord = () => ({ fixture: "original" }) as any;
+      share.ownedDesktop.cleanupRecord = () => ({ fixture: "original" }) as any;
+      Object.assign(share, { verifyOwnedAuth: async () => { verified++; throw new Error("auth verify failed"); } });
+    };
+    configure();
+    (share as any).persist();
+    await expect(share.release("owner", 0, true)).rejects.toThrow();
+    expect(verified).toBe(1);
+    const latch = join(f.chrome.bridge.directory, "desktop-share.json");
+    expect(JSON.parse(readFileSync(latch, "utf8"))).toMatchObject({
+      inputCleanupRequired: false, runtime: null, authVerificationRequired: true,
+    });
+    if (restored) {
+      await share.close();
+      share = new ChromeShare(f.chrome, f.dir, async () => {});
+      configure();
+    }
+    await expect(share.release("owner", share.state().generation, true)).rejects.toThrow();
+    expect(verified).toBe(2);
+    expect(existsSync(latch)).toBe(true);
+    Object.assign(share, { verifyOwnedAuth: async () => { verified++; } });
+    expect((await share.release("owner", share.state().generation, true)).status).toBe("idle");
+    expect(verified).toBe(3);
+  } finally { if (share !== f.share) await share.close(); await f.close(); }
+});
+
+test("restored dead desktop with an auth lock retains genuine authentication uncertainty", async () => {
+  const f = await fixture();
+  const runtime = mkdtempSync(join(tmpdir(), "jelly-chrome-share-"));
+  for (const name of ["guard.lock", "auth.lock"]) writeFileSync(join(runtime, name), "", { mode: 0o600 });
+  let restored: ChromeShare | undefined;
+  try {
+    Object.assign(f.share, { ownedGeneration: crypto.randomUUID(), binding: {}, runtime, inputCleanupRequired: true });
+    (f.share as any).persist();
+    restored = new ChromeShare(f.chrome, f.dir, async () => {});
+    restored.ownedDesktop.record = () => { throw new Error("dead Chrome"); };
+    restored.ownedDesktop.stoppedRecord = () => ({ fixture: "original" }) as any;
+    await expect(restored.release("new-owner", 0, true)).rejects.toThrow("authentication outcome is uncertain");
+    expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
+    expect((restored as any).authUncertain).toBe(true);
+  } finally {
+    Object.assign(f.share, { runtime: null, inputCleanupRequired: false });
+    if (restored) await restored.close();
+    await f.close(); rmSync(runtime, { recursive: true, force: true });
+  }
+});
+
+for (const failure of ["unproven-death", "replaced-record", "uncertain-auth"]) {
+  test(`dead owned viewer cleanup preserves the latch on ${failure}`, async () => {
+    const f = await fixture();
+    const runtime = mkdtempSync(join(tmpdir(), "jelly-chrome-share-"));
+    writeFileSync(join(runtime, "guard.lock"), "", { mode: 0o600 });
+    let stamp = "original", touchedInput = false;
+    try {
+      Object.assign(f.share, { status: "failed", owner: "owner", ownedGeneration: crypto.randomUUID(),
+        binding: {}, runtime, inputCleanupRequired: true, unexpectedExit: true,
+        authUncertain: failure === "uncertain-auth",
+        drainDesktop: async () => { if (failure === "replaced-record") stamp = "replacement"; },
+        inputHelper: async () => { touchedInput = true; throw new Error("no input"); },
+      });
+      (f.share as any).persist();
+      f.share.ownedDesktop.record = () => { throw new Error("dead"); };
+      f.share.ownedDesktop.stoppedRecord = () => {
+        if (failure === "unproven-death") throw new Error("not conclusively stopped");
+        return { stamp } as any;
+      };
+      await expect(f.share.release("owner", 0, true)).rejects.toThrow();
+      expect(touchedInput).toBe(false);
+      expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
+      expect(() => f.share.ticket("owner", f.share.state().generation)).toThrow();
+    } finally {
+      Object.assign(f.share, { runtime: null, inputCleanupRequired: false });
+      await f.close(); rmSync(runtime, { recursive: true, force: true });
+    }
+  });
+}
+
 test("human clipboard requires owner, connected exact Take/generation and unchanged native binding before and after async transfer", async () => {
   const f = await fixture(), ack = gate();
   const display = `:${100000000 + Math.floor(Math.random() * 100000000)}`;

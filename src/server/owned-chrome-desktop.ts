@@ -192,6 +192,23 @@ export class OwnedChromeDesktop {
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
     throw new ChromeDesktopError("End the existing desktop share without viewing before starting owned Chrome.");
   }
+  /** Cleanup-only proof that the original input destination no longer exists.
+   * A failed live attestation is not death proof: reused PIDs, unreadable state,
+   * a surviving X server or a replacement socket must all retain the latch.
+   */
+  stoppedRecord(generation: string, binding: ChromeDesktopBinding): OwnedChromeRecord {
+    const r = this.cleanupRecord(generation, binding);
+    const processes = [r.runner, r.server, r.manager, r.chrome, r.busProxy?.process];
+    if (!processes.every(p => p && typeof p.start === "string" && /^[0-9]+$/.test(p.start) &&
+        typeof p.exe === "string" && p.exe.startsWith("/") && pidAbsent(p.pid)))
+      throw new ChromeDesktopError("The original desktop has not fully stopped. Keep the viewer closed and retry cleanup.");
+    try {
+      lstatSync(binding.socketPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return r;
+    }
+    throw new ChromeDesktopError("The original X11 endpoint is still present or changed. Keep the viewer closed.");
+  }
   record(): OwnedChromeRecord {
     let check = "configuration";
     try {
