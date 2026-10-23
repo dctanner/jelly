@@ -5,8 +5,6 @@ import type { ChromeSelection } from "../src/shared/chrome-protocol";
 
 const selection = (profile: string): ChromeSelection => ({
   chromeProfile: profile,
-  chromeOrigins: ["https://example.com"],
-  chromeSiteScope: "approved",
 });
 const port: BrowserPort = {
   target: "chrome",
@@ -32,11 +30,11 @@ function fixture(fail = false) {
 
 test("BrowserSessions captures each run lazily without pinning nonbrowser runs", () => {
   const { sessions, calls } = fixture();
-  sessions.forRun("agent", "nonbrowser", { chromeProfile: "", chromeOrigins: [] }, "Task");
+  sessions.forRun("agent", "nonbrowser", { chromeProfile: "" }, "Task");
   expect(sessions.target("agent")).toBeUndefined();
   const configured = selection("profile-a");
   const run = sessions.forRun("agent", "browser", configured, "Task");
-  configured.chromeOrigins.push("https://later.example");
+  configured.chromeProfile = "profile-b";
   expect(run.target).toBe("chrome");
   expect(calls).toHaveLength(0);
   expect(run.get("agent")).toBe(port);

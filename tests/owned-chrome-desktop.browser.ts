@@ -83,7 +83,7 @@ try {
   expect(owned.record()).toEqual(original);
   const agent = app.store.agents()[0]!;
   // Sharing can open before an initialized/published extension profile exists.
-  app.store.setBrowserSelection({ chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"] });
+  app.store.setBrowserSelection({ chromeProfile: crypto.randomUUID() });
   app.service.emit(agent.id, null, "message", { role: "user", text: "Owned private desktop fixture" });
   viewer = await chromium.launch({ executablePath: "/usr/bin/google-chrome", headless: true });
   const page = await viewer.newPage({ viewport: { width: 1280, height: 1100 } });
@@ -173,7 +173,7 @@ try {
   expect((app.service.chromeShare as any).runtime).toBeNull();
   expect(owned.record()).toEqual(original);
   const profile = app.service.chrome.bridge.profiles()[0]!;
-  const selection = { chromeProfile: profile.id, chromeOrigins: [], chromeSiteScope: "internet" as const };
+  const selection = { chromeProfile: profile.id };
   // Native extension navigation only after handback; normal root cookies survive.
   const browser = app.service.chrome.allocate(agent.id, "fixture-run", selection, "Existing profile");
   await browser.action("name", { name: "Existing profile" });

@@ -59,8 +59,6 @@ export interface Activity {
 }
 export interface ConnectionConfig {
   chromeProfile?: string;
-  chromeOrigins?: string[];
-  chromeSiteScope?: "approved" | "internet";
   selectedModel: ModelId;
   effort: Effort;
   mode: Mode;

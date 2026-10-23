@@ -23,7 +23,6 @@ test("Connected Chrome settings require private control and persist without a ma
     };
     const settings = {
       chromeProfile: crypto.randomUUID(),
-      chromeOrigins: ["https://example.com", "http://localhost:8080", "http://[::1]:8080"],
     };
     expect(
       (
@@ -41,7 +40,7 @@ test("Connected Chrome settings require private control and persist without a ma
           headers,
           body: JSON.stringify({
             ...settings,
-            chromeOrigins: [origin],
+            chromeProfile: "invalid-profile",
           }),
         })
       ).status,
@@ -66,31 +65,24 @@ test("Connected Chrome settings require private control and persist without a ma
         .forRun(agent.id, "test-run", app.store.browserSelection(), agent.name)
         .get(agent.id),
     ).toThrow("disconnected");
-    const internet = {
-      ...settings,
-      chromeOrigins: [],
-      chromeSiteScope: "internet" as const,
-    };
-    for (const [scope, expected] of [
-      ["internet", 200],
-      ["approved", 400],
-      ["anything", 400],
-      [true, 400],
-    ] as const) {
+    // Old clients may still send site restrictions. They are ignored, not
+    // validated, persisted or passed to the extension.
+    for (const scope of ["internet", "approved", "anything", true]) {
       expect(
         (
           await fetch(`${origin}/api/chrome/settings`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ ...internet, chromeSiteScope: scope }),
+            body: JSON.stringify({ ...settings, chromeOrigins: [origin, "not a URL"], chromeSiteScope: scope }),
           })
         ).status,
-      ).toBe(expected);
+      ).toBe(200);
     }
-    expect(app.store.browserSelection()).toEqual(internet);
-    expect(app.service.snapshot().config.chromeSiteScope).toBe("internet");
+    expect(app.store.browserSelection()).toEqual(settings);
+    expect(app.service.snapshot().config).not.toHaveProperty("chromeSiteScope");
+    expect(app.service.snapshot().config).not.toHaveProperty("chromeOrigins");
     expect(() =>
-      app.service.setConfig({ agentId: agent.id, chromeSiteScope: "internet" }),
+      app.service.setConfig({ agentId: agent.id, chromeProfile: settings.chromeProfile }),
     ).toThrow("global");
     expect(
       (
@@ -157,7 +149,7 @@ test("Done and cancellation notify only bound sign-in requests, even after disco
     });
     const agent = app.store.agents()[0]!;
     const run = app.store.createRun(agent.id, "done-fixture", "request", "demo", "local-demo");
-    const browser = chrome.allocate(agent.id, run.id, { chromeProfile: profile, chromeOrigins: ["https://example.com"] }, agent.name);
+    const browser = chrome.allocate(agent.id, run.id, { chromeProfile: profile }, agent.name);
     const request = () => app.service.interventions.request("browser_login", agent.id, run.id, { url: "https://example.com", reason: "Fixture" });
     const first = request();
     await browser.reserveLogin(first.request.id, "https://example.com");

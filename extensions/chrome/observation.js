@@ -138,6 +138,15 @@ export function observation(operation, args, expectedOrigin, epoch) {
   for (const frame of document.querySelectorAll("iframe,frame")) {
     const rect = frame.getBoundingClientRect(),
       bounds = visibleBounds(frame);
+    // Hidden helper frames without a source (about:blank) inherit this origin
+    // and are never observed separately, so they disclose nothing.
+    const src = frame.getAttribute("src");
+    if (
+      !frame.hasAttribute("srcdoc") &&
+      (!src || /^about:blank(?:[?#]|$)/i.test(src.trim())) &&
+      (!bounds || !visible(frame))
+    )
+      continue;
     if (
       !bounds ||
       !visible(frame) ||

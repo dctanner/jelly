@@ -6,7 +6,7 @@ import { Store } from "../src/server/store";
 import { defaultChromeSelection } from "../src/shared/chrome-protocol";
 import { startApp } from "./fixtures/app";
 
-test("legacy managed settings never expose or reactivate a managed controller after reopen", () => {
+test("legacy managed settings and site restrictions have no authority after reopen", () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-browser-settings-"));
   const path = join(dir, "test.sqlite");
   let store = new Store(path);
@@ -14,8 +14,8 @@ test("legacy managed settings never expose or reactivate a managed controller af
     // Reproduce columns and JSON left by an earlier installation, without
     // opening or migrating any real user's old browser profile.
     store.db.exec("ALTER TABLE instance ADD COLUMN browserBackend TEXT NOT NULL DEFAULT 'agent-browser'");
-    const selected = { chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"], chromeSiteScope: "approved" as const };
-    store.db.query("INSERT INTO browser_selection VALUES (1, ?)").run(JSON.stringify({ ...selected, browserTarget: "managed", browserBackend: "playwright" }));
+    const selected = { chromeProfile: crypto.randomUUID() };
+    store.db.query("INSERT INTO browser_selection VALUES (1, ?)").run(JSON.stringify({ ...selected, chromeOrigins: ["https://example.com"], chromeSiteScope: "approved", browserTarget: "managed", browserBackend: "playwright" }));
     store.close();
     store = new Store(path);
     expect(store.instance()).not.toHaveProperty("browserBackend");

@@ -1,5 +1,5 @@
 /** Private native bridge protocol. No raw CDP or model-supplied identities. */
-export const CHROME_PROTOCOL = 7;
+export const CHROME_PROTOCOL = 8;
 export const CHROME_MAX_FRAME = 768 * 1024;
 export const CHROME_METHODS = [
   "freeze",
@@ -41,12 +41,9 @@ export interface ChromeProfile {
 }
 export interface ChromeSelection {
   chromeProfile: string;
-  chromeOrigins: string[];
-  chromeSiteScope?: "approved" | "internet";
 }
 export const defaultChromeSelection = (): ChromeSelection => ({
   chromeProfile: "",
-  chromeOrigins: [],
 });
 /** Canonical HTTP endpoint; WebSocket resources share their HTTP(S) endpoint. */
 export function chromeWebEndpoint(value: string): string {
@@ -63,10 +60,10 @@ export function chromeOrigin(
   protectedOrigins: string[] = [],
 ): string {
   if (typeof value !== "string" || value.length > 2048)
-    throw new Error("Invalid Chrome site scope.");
+    throw new Error("Invalid Chrome URL.");
   const u = new URL(value);
   if (u.username || u.password || !["https:", "http:"].includes(u.protocol))
-    throw new Error("Chrome requires approved web origins without credentials.");
+    throw new Error("Chrome requires web URLs without credentials.");
   const origin = chromeWebEndpoint(value);
   if (protectedOrigins.some((protectedOrigin) => {
     try { return chromeWebEndpoint(protectedOrigin) === origin; }
@@ -115,7 +112,7 @@ export function chromeParams(
   const keys: Record<ChromeMethod, string[]> = {
     freeze: [],
     unfreeze: [],
-    begin: ["name", "agent", "origins", "protected", "siteScope"],
+    begin: ["name", "agent", "protected"],
     name: ["name", "tab"],
     end: ["discard"],
     open: ["url", "tab"],
@@ -142,10 +139,8 @@ export function chromeParams(
   if (method === "begin")
     return (
       string(p.name, 100) &&
-      (p.siteScope === undefined ||
-        ["approved", "internet"].includes(String(p.siteScope))) &&
       (p.agent === undefined || string(p.agent, 128)) &&
-      [p.origins, p.protected].every(
+      [p.protected].every(
         (v) =>
           Array.isArray(v) &&
           v.length <= 100 &&

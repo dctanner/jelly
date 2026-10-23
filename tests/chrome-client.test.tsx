@@ -76,7 +76,6 @@ const task = {
   tabs: ["tab"],
   active: "tab",
   handoff: "handoff",
-  origins: [],
 } as NonNullable<ChromeStatus["task"]>;
 const data = {
   config: { mode: "auto", selectedModel: "gpt-5.4", effort: "high" },
@@ -86,7 +85,7 @@ const data = {
   agents: [],
 } as unknown as Snapshot;
 
-test("Connected Chrome configuration keeps only profile/site settings and the shared computer entry", async () => {
+test("Connected Chrome configuration has no site restrictions, only a profile and shared computer entry", async () => {
   const calls = transport(task);
   render(
     <ChromeConnection
@@ -108,19 +107,17 @@ test("Connected Chrome configuration keeps only profile/site settings and the sh
   fireEvent.change(screen.getByLabelText("Chrome profile"), {
     target: { value: "global" },
   });
-  fireEvent.change(screen.getByLabelText("Site access"), {
-    target: { value: "internet" },
-  });
+  expect(screen.queryByLabelText("Site access")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.getByText(/All websites are accessible by default/)).toBeTruthy();
   fireEvent.click(
-    screen.getByRole("button", { name: "Save Chrome profile and site scope" }),
+    screen.getByRole("button", { name: "Save Chrome profile" }),
   );
   await waitFor(() =>
     expect(
       calls.find((c) => c.path.endsWith("/chrome/settings"))?.body,
     ).toEqual({
       chromeProfile: "global",
-      chromeOrigins: [],
-      chromeSiteScope: "internet",
     }),
   );
   expect(screen.queryByLabelText("Browser target")).toBeNull();

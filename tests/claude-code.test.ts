@@ -3,7 +3,7 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import { normalizeContext, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   SettingsManager,
@@ -198,26 +198,76 @@ test("request auth rechecks subscription on every call, including scoped config 
   expect(check).toHaveBeenCalledTimes(4);
 });
 
-test("Claude skips optional naming entirely so a billing stop cannot be swallowed before another request", async () => {
+function namingReply(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
+  return {
+    role: "assistant", api: "claude-code", provider: "claude-code", model: "claude-opus-5-5",
+    content: [{ type: "text", text: "Code Reviewer" }], stopReason: "stop", timestamp: Date.now(),
+    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    ...overrides,
+  };
+}
+
+test("Claude automatically names a new agent once with an unthemed, tool-free request", async () => {
   const { app } = await fixture();
   fakeClaude(app);
   app.service.setMode("claude-code");
   const agent = app.service.createAgent({ name: "New Agent", instructions: "", color: "#fff" });
-  const complete = spyOn(app.service.harness.runtime, "completeSimple")
-    .mockRejectedValue(new Error("Claude Code billing: usage credits; will not retry"));
-  const naming = spyOn(app.service.harness, "generateAgentName");
+  const complete = spyOn(app.service.harness.runtime, "completeSimple").mockResolvedValue(namingReply());
+  const create = spyOn(app.service.harness, "create");
   try {
-    app.service.start(agent.id, "claude-no-naming", "Hello fixture");
+    app.service.start(agent.id, "claude-naming", "Review my code");
     await app.service.settled();
-    expect(naming).toHaveBeenCalledTimes(1);
-    expect(complete).not.toHaveBeenCalled();
-    expect(app.store.agent(agent.id)?.name).toBe("New Agent");
+    expect(complete).toHaveBeenCalledTimes(1);
+    const [model, context, options] = complete.mock.calls[0]!;
+    expect(model.provider).toBe("claude-code");
+    expect(context.systemPrompt).toContain("Base the name on the task without imposing a theme");
+    expect(context.systemPrompt).not.toMatch(/sea-themed|ocean|sea-creature|Coral Coder|Octopus Organizer/i);
+    expect(context.messages).toHaveLength(1);
+    expect(context.messages[0]).toMatchObject({ role: "user", content: "Review my code" });
+    expect(context.tools).toBeUndefined();
+    expect(options).toMatchObject({ reasoning: "low", maxRetries: 0 });
+    expect(app.store.agent(agent.id)?.name).toBe("Code Reviewer");
+    expect(create.mock.calls[0]![0].name).toBe("Code Reviewer");
     expect(app.store.runs(agent.id)[0]?.status).toBe("completed");
+    app.service.start(agent.id, "claude-naming-next", "Continue reviewing");
+    await app.service.settled();
+    expect(complete).toHaveBeenCalledTimes(1);
   } finally {
     complete.mockRestore();
-    naming.mockRestore();
+    create.mockRestore();
   }
 });
+
+test.each(["returned billing", "thrown billing", "auth", "aborted"])(
+  "Claude naming %s failure stops the task and queued work with a visible error",
+  async (kind) => {
+    const { app } = await fixture();
+    fakeClaude(app);
+    app.service.setMode("claude-code");
+    const agent = app.service.createAgent({ name: "New Agent", instructions: "", color: "#fff" });
+    const error = kind === "auth" ? "Claude subscription login is required" : kind === "aborted" ? "Naming timed out" : "Claude Code billing: usage credits; will not retry";
+    const complete = spyOn(app.service.harness.runtime, "completeSimple").mockImplementation(async () => {
+      if (kind === "thrown billing" || kind === "auth") throw new Error(error);
+      return namingReply({ stopReason: kind === "aborted" ? "aborted" : "error", errorMessage: error });
+    });
+    const create = spyOn(app.service.harness, "create");
+    try {
+      app.service.start(agent.id, "naming-failure", "Review code");
+      app.service.start(agent.id, "queued-after-naming", "Do more work");
+      await app.service.settled();
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(app.store.agent(agent.id)?.name).toBe("New Agent");
+      expect(app.store.runs(agent.id)).toHaveLength(1);
+      expect(app.store.runs(agent.id)[0]).toMatchObject({ status: "failed", error });
+      expect(app.store.pendingMessage("queued-after-naming")?.status).toBe("cancelled");
+      expect(app.service.snapshot(agent.id).events.some(event => event.type === "run_failed" && event.data.error === error)).toBe(true);
+    } finally {
+      complete.mockRestore();
+      create.mockRestore();
+    }
+  },
+);
 
 test("Claude model and effort choices match the pinned explicit upstream catalog", () => {
   for (const model of modelsForMode("claude-code")) {

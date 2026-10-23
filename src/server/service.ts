@@ -510,7 +510,7 @@ export class JellyService {
     return this.setConfig({ mode });
   }
   setConfig(input: { agentId?: string; mode?: Mode; model?: ModelId; effort?: Effort } & Partial<ChromeSelection>) {
-    const chromeChanges = Object.fromEntries(Object.entries(input).filter(([key, value]) => ["chromeProfile", "chromeOrigins", "chromeSiteScope"].includes(key) && value !== undefined));
+    const chromeChanges = Object.fromEntries(Object.entries(input).filter(([key, value]) => key === "chromeProfile" && value !== undefined));
     const selection = { ...this.store.browserSelection(), ...chromeChanges };
     // Connection/model settings remain usable before Chrome has been configured.
     if (Object.keys(chromeChanges).length) {
@@ -756,8 +756,14 @@ export class JellyService {
           state.naming = new AbortController();
           let name: string | null = null;
           try { name = await this.harness.generateAgentName(prompt, config, state.naming.signal); }
-          catch { /* Naming is best-effort; never fail or replay the user's task. */ }
-          state.naming = undefined;
+          catch (error) {
+            // Claude can stop naming to protect subscription billing. Preserve
+            // that failure and do not follow it with a second model request.
+            if (config.activeMode === "claude-code") throw error;
+            // Other naming failures remain best-effort.
+          } finally {
+            state.naming = undefined;
+          }
           if (state.cancelled || failure) return;
           if (name) {
             const event = this.store.db.transaction(() => {

@@ -345,7 +345,8 @@ for (const mode of ["api", "chatgpt"] as const)
     );
     expect(name).toBe("Coral Coder");
     expect(request.model).toBe(config.model);
-    expect(JSON.stringify(request)).toContain("sea-themed name");
+    expect(JSON.stringify(request)).toContain("short, descriptive name");
+    expect(JSON.stringify(request)).not.toMatch(/sea-themed|ocean|sea-creature/);
     expect(JSON.stringify(request.input)).toContain("Help me build a website");
     expect(request.tools ?? []).toHaveLength(0);
     expect(app.store.history(app.store.agents()[0]!.id)).toHaveLength(0);

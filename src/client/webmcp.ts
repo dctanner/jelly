@@ -47,7 +47,7 @@ export function registerWorkspaceTools(actions: {
   register({
     name: "create_jelly_agent",
     description:
-      "Create a persistent Jelly agent, then select it. Omit name to start as New Agent and get a sea-themed name from the first message; supply name only when explicitly chosen.",
+      "Create a persistent Jelly agent, then select it. Omit name to start as New Agent and get a descriptive task-based name from the first message; supply name only when explicitly chosen.",
     inputSchema: {
       type: "object",
       properties: {

@@ -3,7 +3,9 @@ import { runInNewContext } from "node:vm";
 import { CHROME_PROTOCOL, CHROME_METHODS } from "../src/shared/chrome-protocol";
 const built = await Bun.build({ entrypoints: ["extensions/chrome/worker.js"], target: "browser", format: "iife" });
 const source = await built.outputs[0]!.text();
-const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+// Drain the worker's asynchronous startup chain instead of assuming a fixed
+// number of microtasks across Bun versions and bundle shapes.
+const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 function event() {
   const listeners: Function[] = [];
   return { addListener: (fn: Function) => listeners.push(fn), fire: (...args: any[]) => listeners.forEach(fn => fn(...args)) };
@@ -125,15 +127,15 @@ test("unresolved old debugger obligations block automatic pairing and retry with
   expect(blocked.ports).toHaveLength(1);
 });
 
-test("v7 automatic connection refuses v6 pairing without fallback", async () => {
+test("v8 automatic connection refuses v7 pairing without fallback", async () => {
   const f = await fixture();
-  expect(f.ports[0].messages[0].version).toBe(7);
-  f.ports[0].onMessage.fire({ type: "paired", version: 6, capabilities: CHROME_METHODS,
+  expect(f.ports[0].messages[0].version).toBe(8);
+  f.ports[0].onMessage.fire({ type: "paired", version: 7, capabilities: CHROME_METHODS,
     generation: f.ports[0].messages[0].generation, instance: "old-server" });
   await tick();
   expect(await f.rpc("status")).toMatchObject({ connected: false, connectionError: "protocol-error", sessions: [] });
   await f.alarm("jelly-connect-retry");
-  expect(f.ports[1].messages[0].version).toBe(7);
+  expect(f.ports[1].messages[0].version).toBe(8);
 });
 test("pending private pairing loss never publishes or reclaims sessions; old pending handback is fenced", async () => {
   const f = await fixture();

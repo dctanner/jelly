@@ -11,8 +11,6 @@ interface Task {
   id: string;
   profile: string;
   generation: string;
-  origins: string[];
-  siteScope: "approved" | "internet";
   run: string | null;
   authorityRun: string;
   begun: boolean;
@@ -129,34 +127,9 @@ export class ChromeSessions {
     if (
       typeof selection.chromeProfile !== "string" ||
       (selection.chromeProfile !== "" &&
-        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(selection.chromeProfile)) ||
-      !Array.isArray(selection.chromeOrigins) ||
-      selection.chromeOrigins.length > 20 ||
-      (selection.chromeSiteScope !== undefined &&
-        !["approved", "internet"].includes(selection.chromeSiteScope))
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(selection.chromeProfile))
     )
-      throw new HttpError(400, "Invalid Connected Chrome profile/site scope.");
-    try {
-      for (const o of selection.chromeOrigins)
-        if (chromeOrigin(o, this.protected) !== o) throw new Error();
-    } catch {
-      throw new HttpError(
-        400,
-        "Approve exact HTTP/HTTPS origins only; Jelly control endpoints and non-web URLs are unavailable.",
-      );
-    }
-    const unconfigured = !selection.chromeProfile &&
-      !selection.chromeOrigins.length && selection.chromeSiteScope !== "internet";
-    if (
-      !unconfigured &&
-      (!selection.chromeProfile ||
-        (selection.chromeSiteScope !== "internet" &&
-          !selection.chromeOrigins.length))
-    )
-      throw new HttpError(
-        400,
-        "Choose a connected Chrome profile and approve site origins or select unrestricted web.",
-      );
+      throw new HttpError(400, "Invalid Connected Chrome profile.");
   }
   allocate(
     agent: string,
@@ -171,7 +144,7 @@ export class ChromeSessions {
       if (!selection.chromeProfile)
         throw new HttpError(
           400,
-          "Choose a connected Chrome profile and approve site origins or select unrestricted web in Settings → Connected Chrome. No managed-browser fallback.",
+          "Choose a connected Chrome profile in Settings → Connected Chrome. No managed-browser fallback.",
         );
       const profile = this.bridge
         .profiles()
@@ -187,8 +160,6 @@ export class ChromeSessions {
         id: crypto.randomUUID(),
         profile: profile.id,
         generation: profile.generation,
-        origins: [...selection.chromeOrigins],
-        siteScope: selection.chromeSiteScope ?? "approved",
         run: null,
         authorityRun: run,
         begun: false,
@@ -240,8 +211,6 @@ export class ChromeSessions {
         const resumed = (await this.call(t, "begin", {
           name: name.slice(0, 75),
           agent,
-          origins: t.origins,
-          siteScope: t.siteScope,
           protected: this.protected,
         })) as { paused?: boolean; tabs?: string[] };
         if (resumed.paused) {
@@ -283,7 +252,7 @@ export class ChromeSessions {
             message: "This agent's browser session is already connected; nothing was reset. Use browser_snapshot for current references, or browser_open if no page is open.",
           };
         // A new empty session, never revival of old tabs/references or replay of
-        // an old RPC. Keep the exact pinned profile and original site scope.
+        // an old RPC. Keep the exact pinned profile.
         t.id = crypto.randomUUID();
         t.generation = profile.generation;
         t.authorityRun = run;
@@ -296,7 +265,7 @@ export class ChromeSessions {
         this.changed(agent);
         return {
           status: "reconnected" as const,
-          message: "A fresh empty session is ready on the same Chrome profile and site scope. No browser action was performed or replayed. A previous action may already have completed: verify its outcome rather than repeat it. Reopen the desired page with browser_open and take a fresh browser_snapshot before acting. Old tabs and references are not reusable.",
+          message: "A fresh empty session is ready on the same Chrome profile. No browser action was performed or replayed. A previous action may already have completed: verify its outcome rather than repeat it. Reopen the desired page with browser_open and take a fresh browser_snapshot before acting. Old tabs and references are not reusable.",
         };
       }),
       keepTab: (mark: "deliverable" | "handoff" = "deliverable") =>
@@ -345,7 +314,7 @@ export class ChromeSessions {
             method === "open" ||
             (method === "tabs" && params.operation === "new")
           )
-            this.url(t, params.url);
+            chromeOrigin(params.url, this.protected);
           if (
             method === "tabs" &&
             ["select", "close"].includes(String(params.operation)) &&
@@ -384,7 +353,7 @@ export class ChromeSessions {
           if (t.handoff !== id) return;
           try {
             await begin();
-            this.url(t, url);
+            chromeOrigin(url, this.protected);
             const result = (await this.call(t, "open", { url }, signal)) as { pageId: string };
             t.tabs.add(result.pageId);
             t.active = result.pageId;
@@ -422,11 +391,6 @@ export class ChromeSessions {
       });
     t.pausePending = pending;
     return pending;
-  }
-  private url(t: Task, value: unknown) {
-    const origin = chromeOrigin(value, this.protected);
-    if (t.siteScope !== "internet" && !t.origins.includes(origin))
-      throw new Error("Website is outside the approved Chrome scope.");
   }
   private async call(
     t: Task,
@@ -487,8 +451,6 @@ export class ChromeSessions {
             active: t.active,
             tabs: [...t.tabs],
             handoff: t.handoff,
-            origins: t.origins,
-            siteScope: t.siteScope,
           }
         : null,
     };

@@ -18,8 +18,6 @@ export interface ChromeStatus {
     tabs: string[];
     active: string | null;
     handoff: string | null;
-    origins: string[];
-    siteScope?: "approved" | "internet";
   } | null;
 }
 export function ChromeConnection({
@@ -39,12 +37,6 @@ export function ChromeConnection({
   type Scope = { agentId: string; request: number; controlling: boolean };
   const scopeRef = useRef<Scope | null>(null);
   const [profile, setProfile] = useState(data.config.chromeProfile ?? "");
-  const [origins, setOrigins] = useState(
-    (data.config.chromeOrigins ?? []).join("\n"),
-  );
-  const [siteScope, setSiteScope] = useState(
-    data.config.chromeSiteScope ?? "approved",
-  );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -96,8 +88,6 @@ export function ChromeConnection({
         operation === "settings"
           ? {
               chromeProfile: profile,
-              chromeOrigins: origins.split(/\s+/).filter(Boolean),
-              chromeSiteScope: siteScope,
             }
           : { agentId: scope.agentId, pageId },
       );
@@ -121,7 +111,7 @@ export function ChromeConnection({
       <h3>Connected Chrome</h3>
       <p className="settings-footnote">
         All agents use this profile’s signed-in accounts, with separate task tabs.
-        Site access applies to new sessions. This is not a network sandbox.
+        All websites are accessible by default. This is not a network sandbox.
       </p>
       <details>
         <summary>Connect your existing Chrome profile once</summary>
@@ -141,8 +131,7 @@ export function ChromeConnection({
             instance with this page.
           </li>
           <li>
-            Choose the connected profile below, select approved sites or
-            unrestricted web, and save once for all agents. No profile
+            Choose the connected profile below and save once for all agents. No profile
             copying, Chrome restart flags or debugging port.
           </li>
         </ol>
@@ -161,57 +150,30 @@ export function ChromeConnection({
           ))}
         </select>
       </label>
-      <label className="chat-form-field">
-        <span>Site access</span>
-        <select
-          value={siteScope}
-          onChange={(e) =>
-            setSiteScope(e.target.value as "approved" | "internet")
-          }
-        >
-          <option value="approved">Approved sites only</option>
-          <option value="internet">
-            Unrestricted web (HTTP and HTTPS)
-          </option>
-        </select>
-      </label>
-      {siteScope === "internet" && (
-        <p className="chat-form-hint">
-          Every persistent agent can use websites, including local/private services
-          reachable from this machine, with this profile’s signed-in accounts.
-          Not a network sandbox. Jelly control endpoints and non-web URLs remain blocked.
-        </p>
-      )}
-      {siteScope === "approved" && (
-        <label className="chat-form-field">
-          <span>Approved exact HTTP/HTTPS origins (one per line)</span>
-          <textarea
-            rows={4}
-            value={origins}
-            onChange={(e) => setOrigins(e.target.value)}
-            placeholder="https://example.com"
-          />
-        </label>
-      )}
       <p className="chat-form-hint">
-        Existing sessions keep their profile and site access until closed.
+        Every persistent agent can use websites, including local/private services
+        reachable from this machine, with this profile’s signed-in accounts.
+        Jelly control endpoints and non-web URLs remain blocked.
+      </p>
+      <p className="chat-form-hint">
+        Existing sessions keep their profile until closed.
         Personal tabs are not shared. Agents recover expired sessions using
         browser_reconnect. Close an idle session in Computer control → Advanced
-        only to change its profile/site access or perform operator repair.
+        only to change its profile or perform operator repair.
       </p>
       <button
         className="primary"
         disabled={busy}
         onClick={() => void act("settings")}
       >
-        Save Chrome profile and site scope
+        Save Chrome profile
       </button>
       <button disabled={busy} onClick={() => setShareOpen(true)}>Computer control</button>
       {shareOpen && <ComputerControlPanel agentId={agentId || undefined} onClose={() => setShareOpen(false)} onChange={() => { if (scopeRef.current) void load(scopeRef.current); void refresh(); }} />}
       {status.task && <details>
         <summary>Advanced session settings</summary>
         <p>{status.task.connected ? "Connected" : "Disconnected"} · {status.task.tabs.length} tabs</p>
-        <p>Close an idle session to use a different profile or site access.</p>
+        <p>Close an idle session to use a different profile.</p>
         <button disabled={busy} onClick={() => void act("close")}>Close session</button>
       </details>}
       {error && <p role="alert">{error}</p>}

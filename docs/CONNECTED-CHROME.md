@@ -63,7 +63,7 @@ after review; tests never modify the normal profile or live Jelly settings.
    only open status and never override Disconnect. Server-side Disconnect also records
    a durable profile block, cleared only by an authenticated explicit Reconnect.
    Failed task settlement conservatively requires the same explicit reconnect.
-   Upgrade the backend, native host and extension together (extension 0.3.2/protocol 7).
+   Upgrade the backend, native host and extension together (extension 0.4.0/protocol 8).
    Reload the unpacked extension after the backend update; mixed protocol versions
    refuse pairing, with no fallback. Existing persistent Disconnect intent is retained.
    Transport recovery always creates a new generation, never reclaiming old task tabs.
@@ -81,26 +81,23 @@ after review; tests never modify the normal profile or live Jelly settings.
    record at all, however, that new intent cannot be guaranteed across restart: repair
    storage and preserve the disconnect decision before restarting. Hardware/filesystem
    failures that lose even synchronized writes are also outside the guarantee.
-5. In **Settings → Connected Chrome**, choose the exact connected profile and **Site access**. Choose **Approved sites only** with exact HTTP/HTTPS
-   origins (one per line), or **Unrestricted web (HTTP and HTTPS)** with no
-   origin list, then **Save Chrome profile and site scope**. This is a global setting, not per-agent setup. Every
+5. In **Settings → Connected Chrome**, choose the exact connected profile, then
+   **Save Chrome profile**. This is a global setting, not per-agent setup. Every
    persistent agent's next unpinned browser session uses it.
 
-   Approved-site scope accepts exact canonical HTTP/HTTPS origins, including local
-   services and literal IPs, without wildcards. Approve required asset and identity-provider
-   origins deliberately. Unrestricted web allows public and local/private services
-   reachable from this machine, redirects, assets, frames and WebSocket resources
-   without an origin allowlist, using the profile's signed-in accounts. Other websites'
-   subresources may now reach local services intentionally. This is not a network
-   sandbox. Both modes reject credentials in navigation URLs, non-web navigation and
-   Jelly's exact control origins (including equivalent WebSocket endpoints); other ports
-   on the same host remain available. DNS aliases are not an isolation boundary, and
-   same-origin/CSRF protections do not prevent all cross-site side effects. A
-   disconnected selected profile never falls back to another profile or managed
-   browser. Already allocated sessions keep their target/profile/sites; stop the
-   agent and use **agent menu → Computer control → Advanced → Close session** to change those choices, including
-   switching between approved-site and unrestricted access. Existing settings
-   without a site-access mode retain approved-site behavior.
+   All websites are accessible by default, including public and local/private
+   services reachable from this machine, redirects, assets, frames and WebSocket
+   resources, using the profile's signed-in accounts. There is no allowed-sites
+   list or site-access mode; old saved site restrictions are ignored and dropped
+   when settings are saved. Other websites' subresources may reach local services
+   intentionally. This is not a network sandbox. Credentials in navigation URLs,
+   non-web navigation and Jelly's exact control origins (including equivalent
+   WebSocket endpoints) remain blocked; other ports on the same host remain
+   available. DNS aliases are not an isolation boundary, and same-origin/CSRF
+   protections do not prevent all cross-site side effects. A disconnected selected
+   profile never falls back to another profile or managed browser. Already
+   allocated sessions keep their profile; stop the agent and use **agent menu →
+   Computer control → Advanced → Close session** to change it.
 
 No Chrome restart, remote-debugging port, profile copy or cookie migration is
 needed. Browser-on-laptop/Jelly-on-server needs a separate authenticated remote
@@ -121,7 +118,7 @@ transport; local native messaging cannot bridge machines.
   untruncated text absence, or DOM readiness, never arbitrary evaluation.
 - Snapshots combine bounded visible text and exact references from authorized
   same-process and cross-site/OOPIF documents. References bind to connection,
-  session, tab, document and observation epochs. Frame origins must be granted;
+  session, tab, document and observation epochs. Frame origins need no site grant;
   hidden/clipped frames, srcdoc, object/embed and author shadow roots (open or
   closed) fail closed. The isolated extension uses Chrome's
   `chrome.dom.openOrClosedShadowRoot` on a bounded light-DOM scan; it rejects
@@ -133,13 +130,13 @@ transport; local native messaging cannot bridge machines.
   shadow root are rejected. Stable closed-root fields cannot bypass these guards;
   transient rendering/capture races remain a separate, unresolved rollout gate.
   Large images fail at the bounded cap rather than exporting to disk.
-- Each agent automatically controls its own Jelly-created task tabs and groups within
-  its approved site scope. No individual tab-grant workflow exists. Personal tabs and
+- Each agent automatically controls its own Jelly-created task tabs and groups on
+  any website. No individual tab-grant workflow exists. Personal tabs and
   other agents’ tabs cannot be claimed, even by hidden popup RPCs. Group membership is
   organization, not authority; reconnect never reclaims stale groups, tabs or capabilities.
 - Popups are adopted only from an exclusively leased opener during an authorized
   run, after installing policy and checking the destination. Adopted popups get
-  fresh capabilities and task groups; unapproved/failed popup adoption pauses the
+  fresh capabilities and task groups; protected-destination/failed popup adoption pauses the
   task and does not disclose its content. **Chrome can start popup networking
   before its creation notification**; see the rollout gate below.
 
@@ -151,7 +148,7 @@ be signing in or using the computer, but agents can continue useful browser work
 A disconnected viewer, failed native cleanup, an orphaned share after restart,
 or stale human-use status cannot block browser tools. Agents should re-observe
 pages changed by the human. Connection loss, explicit Disconnect, revoked tabs,
-site scope, stale references and secret-field protections remain enforced.
+control-endpoint denial, stale references and secret-field protections remain enforced.
 
 `request_browser_login` opens a scoped tab and waits for its explicit request.
 Its card offers Computer control and **Done** / **Cancel**, without credentials
@@ -180,7 +177,7 @@ the agent to call it after the pinned Chrome profile's transport reconnects.
 
 The tool drains previously admitted work, rechecks current run/cancellation and
 native-private authority, then creates a fresh empty task identity on the **same
-profile and original site scope**. It does not reconnect the extension, clear
+profile**. It does not reconnect the extension, clear
 pairing blocks, adopt existing tabs, navigate, send input or replay a previous
 operation. Work queued under the old identity is rejected. A healthy session is
 left unchanged. The agent must reopen the desired page with `browser_open`, take
@@ -192,7 +189,7 @@ An absent/revoked profile, pending sign-in request, native-private handoff or
 security/cleanup failure remains blocked. Operator **Reconnect** in the extension
 and/or completion of the relevant private handback may be required; the agent
 tool cannot manufacture that consent. Advanced idle-only **Close session** remains
-for operator repair and intentional profile/site-scope changes, not routine
+for operator repair and intentional profile changes, not routine
 agent-session recovery.
 
 Startup reconciles only cleanup: detach this extension's old
@@ -648,15 +645,15 @@ against unrestricted same-user shell/filesystem access.
 
 Permissions: nativeMessaging, debugger, tabs, tabGroups, storage, scripting,
 webNavigation, declarativeNetRequest, HTTP and HTTPS hosts. Packaged isolated-world scripts
-and document/lease/site checks implement observations/input, including OOPIFs;
+and document/lease/control-endpoint checks implement observations/input, including OOPIFs;
 CDP is internal for debugger lifecycle/screenshots. There are no page/content-
 script control RPCs, arbitrary eval/CDP tools, cookie/password/autofill/browser-
 storage reads, history/bookmarks tools or network response bodies.
 
-Agent tab DNR restrictions are installed before first navigation. Approved-site
-mode blocks unapproved main documents, redirects and subresources; unrestricted
-mode blocks known local/private and Jelly/control destinations across those
-request types. This is **not managed
+Agent tab DNR protections are installed before first navigation. All websites,
+including local/private services, are accessible without an allowlist. Exact
+Jelly/control destinations, credential-bearing URLs and non-web schemes are
+blocked for main documents, redirects and subresources. This is **not managed
 SOCKS egress isolation**. Outstanding signed-in rollout risks include:
 
 - Pre-notification popup traffic and service-worker/background requests without
@@ -702,15 +699,15 @@ native desktop boundaries, plus `bun run check`. Before deployment run
 `bun run check:full`. Optional disposable headed qualification:
 
 - `bun tests/chrome-extension.browser.ts`: actual extension/native bridge,
-  scope/refs, secret fields, debugger/security cleanup and retained tabs.
+  unrestricted websites/control-endpoint denial, refs, secret fields, debugger/security cleanup and retained tabs.
 - `bun run test:chrome-vnc`: actual X11/noVNC input, owner isolation, advisory
   browser operation, mobile fit and teardown.
 - `bun run test:chrome-owned-vnc`: owned desktop/authentication/persistence.
 
 Tests use disposable profiles, not the normal Chrome profile. Full-desktop
 fixture success is not remote-device validation. Reload the unpacked extension
-to update popup controls; protocol 7 is unchanged, so this UI/coordination update
-does not itself require a Chrome/profile restart. Preserve intentional Disconnect.
+after updating the backend/native host: protocol 8 removes the legacy site-scope
+fields and refuses mixed-version pairing. A Chrome/profile restart is not required. Preserve intentional Disconnect.
 
 ## Uninstall and activation
 

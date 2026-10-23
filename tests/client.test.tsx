@@ -3573,10 +3573,11 @@ test("composer selects Claude before a run, shows adjacent provider/model/effort
   });
   const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
   expect(model.value).toBe("claude-opus-5-5");
+  expect(trigger.nextElementSibling?.textContent).toBe("Claude · Opus 5.5 · Medium");
   expect(within(model).queryByRole("option", { name: "GPT-6 Astra" })).toBeNull();
   expect(within(model).getByRole("option", { name: "Claude Sonnet 5" })).toBeDefined();
   fireEvent.change(model, { target: { value: "claude-sonnet-5" } });
-  await waitFor(() => expect(trigger.nextElementSibling?.textContent).toBe("Claude subscription · Claude Sonnet 5 · Medium"));
+  await waitFor(() => expect(trigger.nextElementSibling?.textContent).toBe("Claude · Sonnet 5 · Medium"));
   await act(async () => {
     const run = app.store.createRun(id, "lock-claude-ui", "No live request", "claude-code", "claude-sonnet-5");
     app.store.finishRun(run.id, "failed", "Hermetic test");
@@ -3585,7 +3586,7 @@ test("composer selects Claude before a run, shows adjacent provider/model/effort
   await waitFor(() => expect(provider.disabled).toBe(true));
   expect(model.disabled).toBe(false);
   expect(screen.getByText(/Fresh Session keeps its context and provider/)).toBeDefined();
-  expect(trigger.nextElementSibling?.textContent).toContain("Claude subscription");
+  expect(trigger.nextElementSibling?.textContent).toContain("Claude ·");
   fireEvent.keyDown(model, { key: "Escape" });
   expect(document.activeElement).toBe(trigger);
   // The unrelated API default is ready, but this selected Claude agent is not.

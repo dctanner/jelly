@@ -80,7 +80,7 @@ export function interventionTools(
     define({
       name: "browser_reconnect",
       label: "Reconnect browser session",
-      description: "Recover this agent's expired Connected Chrome session on the same authorized profile and site scope. Creates an empty session; never replays actions or restores old tabs/references. Reopen the page and take a fresh snapshot; a previous action may already have completed. Cannot bypass revoked pairing, native privacy or security cleanup. A healthy session is left unchanged.",
+      description: "Recover this agent's expired Connected Chrome session on the same authorized profile. Creates an empty session; never replays actions or restores old tabs/references. Reopen the page and take a fresh snapshot; a previous action may already have completed. Cannot bypass revoked pairing, native privacy or security cleanup. A healthy session is left unchanged.",
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: async (_id, _args, signal) => {
         signal?.throwIfAborted();

@@ -150,7 +150,7 @@ Schema version 2 adds immutable intervention payloads with requesting agent/run,
 
 The sudo executor first launches an absolute executable and argument array with non-interactive `sudo -n`. When a password is required, it uses `sudo -k -A -- …` for the authentication handoff; it does not interpolate a shell command or retry ordinary command failures. A temporary owner-only directory contains an askpass helper and Unix socket. The password travels only through that socket and the helper's pipe to sudo, once. Command stdin is `/dev/null`, including when sudo grants NOPASSWD. Password buffers are cleared on completion; JavaScript/HTTP runtime copies are transient and cannot be guaranteed to be immediately erased. The executor redacts literal password occurrences before truncating captured command output. No password-bearing request bodies are logged or persisted. Execution has a two-minute limit; detached privileged children may outlive a command and cannot be generically rolled back.
 
-`BrowserSessions` routes exclusively to `ChromeSessions`. The selected extension profile and site scope are captured per run and pinned after a successful task allocation. Browser tools bind agent/run identity server-side and operate only on owned task tabs and exact snapshot references. Profiles share existing cookies and signed-in accounts; task capabilities are not independent account isolation. Missing/disconnected profiles fail closed, without launching Chromium or choosing an alternate backend. Stale managed settings are ignored; legacy browser-profile directories remain untouched and unused.
+`BrowserSessions` routes exclusively to `ChromeSessions`. The selected extension profile is captured per run and pinned after a successful task allocation. All websites are accessible without a site allowlist; legacy site settings are ignored. Browser tools bind agent/run identity server-side and operate only on owned task tabs and exact snapshot references. Profiles share existing cookies and signed-in accounts; task capabilities are not independent account isolation. Missing/disconnected profiles fail closed, without launching Chromium or choosing an alternate backend. Stale managed settings are ignored; legacy browser-profile directories remain untouched and unused.
 
 Computer control is human-only and advisory; browser tools may continue during human use. Native Mac desktop tools remain separate. Connected Chrome sharing retains native desktop exclusion, input cleanup and fixed Unix-socket VNC transport. Its explicit human-only text clipboard endpoints bind cookie/CSRF, owner, Take and connected generation to the original attested display, with bounded UTF-8 native helpers and no passive RFB clipboard synchronization. There is no agent clipboard API, managed Computer panel, coordinate browser input, upload or diagnostics API.
 
@@ -162,7 +162,7 @@ Control sessions use HttpOnly, SameSite=Strict cookies plus CSRF headers on muta
 | POST   | `/api/interventions/:id/approve` | Submit transient `{password}` for exactly one pending sudo request |
 | POST   | `/api/interventions/:id/deny`    | Deny a pending handoff                                             |
 | GET    | `/api/chrome`                   | Read connected profiles and the selected agent's task              |
-| POST   | `/api/chrome/settings`          | Save the connected profile and site scope                          |
+| POST   | `/api/chrome/settings`          | Save the connected profile                          |
 | GET    | `/api/chrome/share`             | Read human-only sharing state                                     |
 | POST   | `/api/chrome/share/:operation`  | Explicit private sharing, tickets and handback                      |
 | GET/WS | `/api/chrome/share/socket`      | Upgrade to the authorized Chrome desktop transport                 |
@@ -336,7 +336,7 @@ Supported tools are `browser_open`, `browser_screenshot`, `browser_snapshot`, re
 
 Snapshots expose bounded visible text and opaque element references without form values. References expire on navigation, tab changes and handoff; stale/foreign references fail rather than retargeting. Site-visible text can itself contain sensitive information. Never supply credentials as tool arguments: use private sign-in and explicit human handback.
 
-The extension enforces profile generations, task-tab authority, site scope and exact Jelly control-origin denial. Operations already issued cannot be undone. See [Connected Chrome](CONNECTED-CHROME.md) for the current observation limits, input semantics, privacy boundary and cleanup behavior.
+The extension enforces profile generations, task-tab authority and exact Jelly control-origin denial. Operations already issued cannot be undone. See [Connected Chrome](CONNECTED-CHROME.md) for the current observation limits, input semantics, privacy boundary and cleanup behavior.
 
 ## Codex-style apply_patch
 

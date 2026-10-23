@@ -84,5 +84,9 @@ export function modelSummary(
   model: ModelId,
   effort: Effort,
 ): string {
-  return `${MODE_OPTIONS.find((option) => option.id === mode)?.label ?? mode} · ${MODEL_OPTIONS.find((option) => option.id === model)?.label ?? model} · ${EFFORT_OPTIONS.find((option) => option.id === effort)?.label ?? effort}`;
+  const providerLabel = mode === "claude-code"
+    ? "Claude"
+    : MODE_OPTIONS.find((option) => option.id === mode)?.label ?? mode;
+  const modelLabel = MODEL_OPTIONS.find((option) => option.id === model)?.label ?? model;
+  return `${providerLabel} · ${mode === "claude-code" ? modelLabel.replace(/^Claude /, "") : modelLabel} · ${EFFORT_OPTIONS.find((option) => option.id === effort)?.label ?? effort}`;
 }

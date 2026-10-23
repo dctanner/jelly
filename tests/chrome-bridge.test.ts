@@ -27,7 +27,6 @@ import {
 } from "../src/shared/chrome-protocol";
 import { Store } from "../src/server/store";
 import {
-  chromeDenyRegexes,
   chromeInternetDenyRegexes,
 } from "../src/shared/chrome-policy";
 import { interventionTools } from "../src/server/agent-tools";
@@ -144,10 +143,6 @@ test("Chrome production policy allows local/private web endpoints but protects e
   }
   expect(() => chromeOrigin("ws://localhost/")).toThrow(); // navigation is HTTP(S) only
   expect(chromeOrigin("HTTP://LOCALHOST.:80/path")).toBe("http://localhost");
-  const approved = chromeDenyRegexes(["http://localhost:8080", "http://[::1]:8080"]).map(p => new RegExp(p));
-  expect(approved.some(r => r.test("http://localhost:8080/app"))).toBe(false);
-  expect(approved.some(r => r.test("http://localhost:8081/app"))).toBe(true);
-  expect(approved.some(r => r.test("http://localhost:8080.evil/app"))).toBe(true);
 });
 
 test("Chrome bridge authenticates profile/generation, isolates requests and rejects stale connections", async () => {
@@ -216,7 +211,7 @@ test("Chrome selection persists and disconnected profiles never fall back to a m
   const chrome = new ChromeSessions(dir, "instance");
   try {
     expect(store.browserSelection()).toEqual(defaultChromeSelection());
-    const selected = { chromeProfile: crypto.randomUUID(), chromeOrigins: ["https://example.com"] };
+    const selected = { chromeProfile: crypto.randomUUID() };
     store.setBrowserSelection(selected);
     expect(store.browserSelection()).toEqual(selected);
     const router = new BrowserSessions(chrome);
@@ -284,46 +279,42 @@ test("Jelly native installer/uninstaller preserves unrelated hosts and rejects a
   }
 });
 
-test("Chrome DNR deny rules match unapproved redirect origins, port changes and lookalikes", () => {
-  const rules = chromeDenyRegexes([
-    "https://example.com",
-    "https://example.org:8443",
-  ]).map((r) => new RegExp(r));
+test("Chrome DNR permits every website and port without configuration", () => {
+  const rules = chromeInternetDenyRegexes([]).map((r) => new RegExp(r));
   const denied = (url: string) => rules.some((r) => r.test(url));
   for (const url of [
     "https://example.com/",
     "https://example.com/path?x=1",
     "https://example.org:8443/",
-  ])
-    expect(denied(url)).toBe(false);
-  for (const url of [
     "http://example.com/",
     "https://example.com:8443/",
     "https://example.com.evil.test/",
     "https://example.org/",
     "https://other.test/",
     "http://127.0.0.1:5173/",
-    "file:///etc/passwd",
   ])
+    expect(denied(url)).toBe(false);
+  for (const url of ["file:///etc/passwd", "chrome://settings/", "data:text/html,test", "ftp://example.com/", "about:blank", "blob:https://example.com/id"])
     expect(denied(url)).toBe(true);
 });
 
-test("Approved DNR matches canonical dotted origins without admitting lookalikes or control endpoints", () => {
-  const origins = ["http://localhost:8080", "https://example.com", "https://example.com.child", "https://example.com.child:8443"];
+test("Chrome DNR permits dotted origins and arbitrary ports but protects control endpoints", () => {
   const protectedOrigins = ["http://control.local:5173", "https://control.local"];
-  const rules = [...chromeDenyRegexes([...origins, ...protectedOrigins]), ...chromeInternetDenyRegexes(protectedOrigins)].map(r => new RegExp(r));
+  const rules = chromeInternetDenyRegexes(protectedOrigins).map(r => new RegExp(r, "i"));
   // Like DNR, match the browser's parsed URL: host case/default ports normalize,
   // but DNS trailing dots remain in the serialized URL.
   const denied = (url: string) => rules.some(r => r.test(new URL(url).href));
   for (const url of ["http://LOCALHOST.:8080/app", "http://localhost...:8080/", "https://EXAMPLE.COM.:443/", "https://example.com.child./", "https://example.com.child.:8443/"])
     expect(denied(url)).toBe(false);
-  for (const url of ["http://localhost.:8081/", "https://example.com.evil/", "https://example.com..child/", "https://example.com.child.:9443/", "https://example.com.:444/", "http://user@localhost.:8080/", "http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
+  for (const url of ["http://localhost.:8081/", "https://example.com.evil/", "https://example.com..child/", "https://example.com.child.:9443/", "https://example.com.:444/"])
+    expect(denied(url)).toBe(false);
+  for (const url of ["http://user@localhost.:8080/", "http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
     expect(denied(url)).toBe(true);
   for (const url of ["http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
     expect(() => chromeOrigin(url, protectedOrigins)).toThrow("Jelly/control");
 });
 
-test("ChromeSessions pins unrestricted access and sends its scope to the extension", async () => {
+test("ChromeSessions defaults to all websites and sends no site restrictions to the extension", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-internet-"));
   const chrome = new ChromeSessions(dir, "instance");
   const profile = crypto.randomUUID();
@@ -345,18 +336,17 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
   chrome.protectOrigins(["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"]);
   const selection = {
     chromeProfile: profile,
-    chromeOrigins: [],
-    chromeSiteScope: "internet" as const,
   };
   try {
     const browser = chrome.allocate("agent", "run", selection, "Agent");
     await browser.action("open", { url: "http://unlisted.example/path" });
     await browser.action("open", { url: "https://another.example/path" });
-    expect(calls[0]?.params).toMatchObject({
-      siteScope: "internet",
-      origins: [],
+    expect(calls[0]?.params).toEqual({
+      name: "Agent", agent: "agent",
+      protected: ["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"],
     });
-    expect(chrome.state("agent").task?.siteScope).toBe("internet");
+    expect(chrome.state("agent").task).not.toHaveProperty("siteScope");
+    expect(chrome.state("agent").task).not.toHaveProperty("origins");
     await browser.action("open", { url: "http://localhost/" });
     await browser.action("open", { url: "http://127.0.0.1:8080/" });
     await browser.action("open", { url: "https://[::1]:8080/" });
@@ -370,17 +360,11 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
     const next = chrome.allocate(
       "agent",
       "next",
-      {
-        ...selection,
-        chromeSiteScope: "approved",
-        chromeOrigins: ["https://approved.example"],
-      },
+      selection,
       "Agent",
     );
     await next.action("open", { url: "https://still-unlisted.example/" });
-    expect(
-      calls.filter((c) => c.method === "begin").at(-1)?.params.siteScope,
-    ).toBe("internet");
+    expect(calls.filter((c) => c.method === "begin").at(-1)?.params).not.toHaveProperty("siteScope");
     await chrome.settle("agent", "next");
   } finally {
     await chrome.close();
@@ -388,7 +372,7 @@ test("ChromeSessions pins unrestricted access and sends its scope to the extensi
   }
 });
 
-test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools and loss fail closed", async () => {
+test("ChromeSessions pins profile and exact caps; pause, unsupported tools and loss fail closed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-sessions-"));
   const chrome = new ChromeSessions(dir, "instance");
   const calls: {
@@ -417,14 +401,11 @@ test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools
   };
   const selection = {
     chromeProfile: profile,
-    chromeOrigins: ["https://example.com"],
   };
   try {
     const browser = chrome.allocate("a", "run1", selection, "Agent");
     await browser.action("open", { url: "https://example.com/" });
-    await expect(
-      browser.action("open", { url: "https://outside.example/" }),
-    ).rejects.toThrow("scope");
+    await browser.action("open", { url: "https://outside.example/" });
     await expect(
       browser.action("tabs", { operation: "select", pageId: "foreign" }),
     ).rejects.toThrow("foreign");
@@ -468,7 +449,6 @@ test("ChromeSessions pins profile/scope and exact caps; pause, unsupported tools
       {
         ...selection,
         chromeProfile: "different",
-        chromeOrigins: ["https://elsewhere.example"],
       },
       "Agent",
     );
@@ -581,7 +561,6 @@ test("ChromeSessions forgets human-closed tabs, rejects foreign removal and open
       "run",
       {
         chromeProfile: profile,
-        chromeOrigins: ["https://example.com"],
       },
       "Agent",
     );
@@ -656,7 +635,6 @@ test("ChromeSessions retains handoffs across runs and reuses them without explic
   };
   const selection = {
     chromeProfile: profile,
-    chromeOrigins: ["https://example.com"],
   };
   try {
     const first = chrome.allocate("agent", "first", selection, "Researcher");
@@ -799,7 +777,6 @@ async function pauseFixture() {
     "run",
     {
       chromeProfile: profile,
-      chromeOrigins: ["https://example.com"],
     },
     "Agent",
   );

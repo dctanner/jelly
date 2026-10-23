@@ -29,7 +29,7 @@ export interface BrowserPort {
   reserveLogin(id: string, url: string, signal?: AbortSignal): Promise<unknown>;
   cancelLogin(id: string): void;
 }
-/** Successfully allocated Chrome profile/site scope choices stay pinned until released. */
+/** Successfully allocated Chrome profile choices stay pinned until released. */
 export class BrowserSessions {
   private pins = new Map<string, ChromeSelection>();
   constructor(readonly chrome: ChromeSessions) {}

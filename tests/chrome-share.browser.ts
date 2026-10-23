@@ -374,7 +374,6 @@ try {
   expect(JSON.stringify(peer)).not.toMatch(/Xauthority|DISPLAY|\/tmp\//);
   app.service.setConfig({
     chromeProfile: peer.id,
-    chromeOrigins: ["https://example.com"],
   });
   const selected = app.store.browserSelection();
   const a = app.service.browsers

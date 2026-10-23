@@ -54,7 +54,7 @@ are explicitly unavailable. See [architecture](docs/ARCHITECTURE.md#subagent-obs
 ## Browser and patch tools
 
 **Connected Chrome is the only browser integration.** Install the Chrome extension
-and native host, then select a profile and site scope in **Settings → Connected Chrome**.
+and native host, then select a profile in **Settings → Connected Chrome**. All websites are accessible by default.
 Agents use separate task tabs in your existing signed-in profile; cookies and accounts
 are shared. There is no managed Chromium, Playwright/AgentBrowser controller, or fallback.
 See [setup, privacy and limitations](docs/CONNECTED-CHROME.md).
@@ -182,20 +182,24 @@ Name edits save with Enter or on blur (Escape cancels); avatar changes save when
 After the first message, the pill moves to the header and opens the profile edit form
 directly. The separate options button still exposes workspace and agent actions.
 When its first message is sent, Jelly makes
-one small, tool-free OpenAI request through the selected ChatGPT subscription or
-API connection to suggest a sea-themed name related to that message. The new name
+one small, tool-free request through the selected ChatGPT subscription, Claude
+subscription, or OpenAI API connection to suggest a descriptive, task-based name
+without a required theme. The new name
 appears in the agent list and conversation header before the agent begins work.
 
 Editing and saving the name before sending the first message opts out—even if you
 change it back to **New Agent**. Editing only instructions or the avatar does not.
-Existing agents retain their names. Naming failures/timeouts keep **New Agent** and
-do not stop the task or retry the naming request on subsequent messages.
+Existing agents retain their names. Invalid name output keeps **New Agent**.
+ChatGPT/OpenAI naming failures remain best-effort. Claude request errors, including
+billing stops and timeouts, stop the run before the task or queued work is sent,
+and show the error rather than silently issuing another model request.
+Naming is not retried on subsequent messages.
 
 ### Agent browser sessions
 
 Agents have exclusive task-tab capabilities within the selected Connected Chrome
 profile, not independent cookies or browser profiles. Existing task sessions keep
-their selected profile and scope until closed. Disconnected profiles fail closed;
+their selected profile until closed; there is no allowed-sites list. Disconnected profiles fail closed;
 Jelly never starts a managed browser as a fallback. Legacy managed-browser profile
 data is left untouched on disk, but is no longer opened or used.
 

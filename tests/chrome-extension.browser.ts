@@ -53,6 +53,16 @@ const fixture = Bun.serve({
         `<h1>Internet assets</h1><script src="/local-asset.js"></script><script>new WebSocket('ws://${fixture.url.host}/socket'); new WebSocket('ws://${protectedFixture.url.host}/socket');</script><iframe src="${childFixture.url.origin}/"></iframe><img src="${protectedFixture.url.origin}/secret.png"><script src="${protectedFixture.url.origin}/secret.js"></script>`,
         { headers: { "Content-Type": "text/html" } },
       );
+    if (path === "/blank-frame")
+      return new Response(
+        `<h1>Blank frame host</h1><script>for (const hidden of [true, false]) { const f = document.createElement('iframe'); if (hidden) f.style.display = 'none'; document.body.appendChild(f); }</script>`,
+        { headers: { "Content-Type": "text/html" } },
+      );
+    if (path === "/hidden-blank-frame")
+      return new Response(
+        `<h1>Hidden blank helper</h1><script>setTimeout(() => { const f = document.createElement('iframe'); f.style.display = 'none'; document.body.appendChild(f); }, 50);</script>`,
+        { headers: { "Content-Type": "text/html" } },
+      );
     if (path === "/redirect")
       return Response.redirect(`${denied.url.origin}/forbidden`);
     if (path === "/visibility")
@@ -258,8 +268,7 @@ try {
       }) as Promise<any>;
   await call("begin", {
     name: "Headed fixture",
-    origins: [fixture.url.origin, childFixture.url.origin],
-    protected: [],
+    protected: [denied.url.origin],
     agent: "persistent-agent-one",
   });
   await call("name", { name: "Fixture comparison" });
@@ -284,7 +293,7 @@ try {
   const dottedSession = crypto.randomUUID();
   const dottedOrigin = `http://localhost:${fixture.port}`;
   const dottedControl = `http://localhost:${protectedFixture.port}`;
-  await call("begin", { name: "Dotted approved", origins: [dottedOrigin], protected: [dottedControl] }, dottedSession);
+  await call("begin", { name: "Dotted web", protected: [dottedControl] }, dottedSession);
   const assetsBefore = assetHits;
   const dotted = await call("open", { url: `http://LOCALHOST.:${fixture.port}/dotted-assets` }, dottedSession);
   for (let i = 0; i < 40 && assetHits === assetsBefore; i++) await delay();
@@ -299,16 +308,35 @@ try {
   await delay(300);
   expect(protectedHits).toBe(0);
   await call("end", { discard: true }, dottedSession);
-  console.log("PASS: approved production policy accepts dotted navigation, redirect and script; dotted control navigation/redirect/assets denied.");
-  // No origin allowlist in internet mode, including cross-site frames/assets.
+  // Sites such as Facebook constantly insert about:blank helper frames. These
+  // inherit the parent's origin and must not trip the out-of-scope pause.
+  {
+    const blankSession = crypto.randomUUID();
+    await call("begin", { name: "Blank frames", protected: [protectedFixture.url.origin] }, blankSession);
+    const helper = await call("open", { url: `${fixture.url.origin}/hidden-blank-frame` }, blankSession);
+    await delay(400);
+    let helperSnapshot: any;
+    for (let i = 0; i < 40 && !helperSnapshot; i++)
+      helperSnapshot = await call("snapshot", { tab: helper.pageId }, blankSession).catch(() => delay());
+    expect(helperSnapshot.text).toContain("Hidden blank helper");
+    const visibleBlank = await call("open", { url: `${fixture.url.origin}/blank-frame` }, blankSession);
+    await delay(400);
+    // A rendered blank frame is still refused for observation, but the session stays usable.
+    await expect(call("snapshot", { tab: visibleBlank.pageId }, blankSession)).rejects.toThrow();
+    const blankStatus = await popup.evaluate(() => (globalThis as any).chrome.runtime.sendMessage({ action: "status" }));
+    expect(blankStatus.sessions.find((x: any) => x.id === blankSession)).toMatchObject({ paused: false });
+    expect((await call("snapshot", { tab: helper.pageId }, blankSession)).text).toContain("Hidden blank helper");
+    await call("end", { discard: true }, blankSession);
+    console.log("PASS: about:blank helper frames neither pause the session nor become observable.");
+  }
+  console.log("PASS: default policy accepts dotted navigation, redirect and script; dotted control navigation/redirect/assets denied.");
+  // No origin allowlist or opt-in mode, including cross-site frames/assets.
   // Exact control-endpoint denies apply before navigation and subresource requests.
   const internetSession = crypto.randomUUID();
   await call(
     "begin",
     {
       name: "Internet fixture",
-      origins: [],
-      siteScope: "internet",
       protected: [protectedFixture.url.origin],
     },
     internetSession,
@@ -350,10 +378,7 @@ try {
   const internetStatus = await popup.evaluate(() =>
     (globalThis as any).chrome.runtime.sendMessage({ action: "status" }),
   );
-  expect(
-    internetStatus.sessions.find((s: any) => s.id === internetSession)
-      .siteScope,
-  ).toBe("internet");
+  expect(internetStatus.sessions.find((s: any) => s.id === internetSession)).not.toHaveProperty("siteScope");
   await call("end", { discard: true }, internetSession);
   console.log("PASS: production local-address policy permits same-host different-port main frame, local redirect, cross-site frame, script and WebSocket; exact local control navigation/redirect/assets/WebSocket have zero hits.");
   // Private control survives run settlement for explicit and protective pauses.
@@ -363,7 +388,7 @@ try {
     const url = `${fixture.url.origin}/private-takeover-${mode}`;
     await call(
       "begin",
-      { name: "Private takeover", origins: [fixture.url.origin], protected: [] },
+      { name: "Private takeover", protected: [] },
       takeover,
     );
     const humanTab = await call("open", { url }, takeover);
@@ -420,7 +445,7 @@ try {
     if (mode === "server") {
       await call(
         "begin",
-        { name: "Private takeover", origins: [fixture.url.origin], protected: [] },
+        { name: "Private takeover", protected: [] },
         takeover,
       );
       await call("resume", {}, takeover);
@@ -513,7 +538,6 @@ try {
       "begin",
       {
         name: "Retained reset fixture",
-        origins: [fixture.url.origin],
         protected: [],
       },
       sid,
@@ -601,7 +625,7 @@ try {
   const other = crypto.randomUUID();
   await call(
     "begin",
-    { name: "Other agent", origins: [fixture.url.origin], protected: [] },
+    { name: "Other agent", protected: [] },
     other,
   );
   await expect(call("snapshot", { tab }, other)).rejects.toThrow();
@@ -1116,8 +1140,7 @@ try {
   await call("begin", {
     name: "Headed fixture",
     agent: "persistent-agent-one",
-    origins: [fixture.url.origin, childFixture.url.origin],
-    protected: [],
+    protected: [denied.url.origin],
   });
   await expect(call("snapshot", { tab: retained.pageId })).rejects.toThrow();
   await expect(
@@ -1138,7 +1161,7 @@ try {
   const localTakeover = crypto.randomUUID();
   await call(
     "begin",
-    { name: "Local takeover", origins: [fixture.url.origin], protected: [] },
+    { name: "Local takeover", protected: [] },
     localTakeover,
   );
   const takeoverTab = await call(
@@ -1241,12 +1264,11 @@ try {
     secondSession,
     run,
     "begin",
-    { name: "Second instance", origins: [fixture.url.origin], protected: [] },
+    { name: "Second instance", protected: [] },
   );
   await call("begin", {
     name: "Restart task",
     agent: "persistent-agent-one",
-    origins: [fixture.url.origin],
     protected: [],
   });
   const restartTab = await call("open", { url: fixture.url.href });
@@ -1345,7 +1367,7 @@ try {
     serverRestartSession,
     run,
     "begin",
-    { name: "Server restart", origins: [fixture.url.origin], protected: [] },
+    { name: "Server restart", protected: [] },
   );
   const serverRestartTab = (await bridge.call(
     beforeServerRestart.id,
@@ -1403,7 +1425,6 @@ try {
     ) as Promise<any>;
   await cleanupCall("begin", {
     name: "Cleanup obligation",
-    origins: [fixture.url.origin],
     protected: [],
   });
   const cleanupTab = await cleanupCall("open", { url: cleanupURL });
@@ -1501,7 +1522,6 @@ try {
     "begin",
     {
       name: "Fresh explicit grant",
-      origins: [fixture.url.origin],
       protected: [],
     },
   );

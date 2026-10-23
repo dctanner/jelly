@@ -25,16 +25,12 @@ import type {
 const assistantMessageFilter = `type='message' AND json_extract(data, '$.role')='assistant'
   AND length(trim(COALESCE(json_extract(data, '$.text'), ''))) > 0`;
 
-/** Project persisted selections onto Chrome settings; legacy target/backend keys have no authority. */
+/** Only the profile is persisted; legacy backend and site restrictions have no authority. */
 function chromeSelection(value: unknown): ChromeSelection {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultChromeSelection();
   const selection = value as Record<string, unknown>;
   return {
     chromeProfile: typeof selection.chromeProfile === "string" ? selection.chromeProfile : "",
-    chromeOrigins: Array.isArray(selection.chromeOrigins) && selection.chromeOrigins.every(origin => typeof origin === "string")
-      ? [...selection.chromeOrigins] : [],
-    ...(selection.chromeSiteScope === "approved" || selection.chromeSiteScope === "internet"
-      ? { chromeSiteScope: selection.chromeSiteScope } : {}),
   };
 }
 

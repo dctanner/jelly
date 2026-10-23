@@ -20,7 +20,7 @@ async function fixture(guard?: () => void) {
   const profile = crypto.randomUUID();
   let generation = crypto.randomUUID(), connected = true;
   const calls: { profile: string; generation: string; session: string; run: string; method: string; params: Record<string, unknown> }[] = [];
-  const selection = { chromeProfile: profile, chromeOrigins: ["https://example.com"], chromeSiteScope: "approved" as const };
+  const selection = { chromeProfile: profile };
   chrome.bridge.profiles = () => connected ? [{ id: profile, generation, connected: true }] : [];
   chrome.bridge.canReconnect = (p, g) => connected && p === profile && g === generation;
   let handle = async (method: string, _params: Record<string, unknown>): Promise<unknown> =>
@@ -42,7 +42,7 @@ async function fixture(guard?: () => void) {
   };
 }
 
-test("browser_reconnect is the explicit path: fresh identity, same pinned profile/scope, no RPC/replay or old tabs", async () => {
+test("browser_reconnect is the explicit path: fresh identity, same pinned profile, no RPC/replay or old tabs", async () => {
   const f = await fixture();
   try {
     await f.browser.action("open", { url: "https://example.com" });
@@ -54,29 +54,31 @@ test("browser_reconnect is the explicit path: fresh identity, same pinned profil
     expect(await f.browser.reconnect!()).toMatchObject({ status: "reconnected" });
     expect(f.calls.length).toBe(before); // No browser operation, even begin, is replayed.
     expect(f.scoped.get("agent")).toBe(f.browser); // Cached tool port now uses the fresh identity.
-    expect(f.chrome.state("agent").task).toMatchObject({ connected: true, active: null, tabs: [], origins: ["https://example.com"] });
+    expect(f.chrome.state("agent").task).toMatchObject({ connected: true, active: null, tabs: [], profile: f.profile });
     await expect(f.browser.action("tabs", { operation: "select", pageId: oldTab })).rejects.toThrow("Stale or foreign");
-    await expect(f.browser.action("open", { url: "https://unapproved.example" })).rejects.toThrow("outside");
+    await f.browser.action("open", { url: "https://any-website.example" });
     await f.browser.action("open", { url: "https://example.com/fresh" });
     const begin = f.calls.filter(c => c.method === "begin").at(-1)!;
     expect(begin.session).not.toBe(oldSession);
-    expect(begin).toMatchObject({ profile: f.profile, generation: f.generation, run: "run", params: { origins: ["https://example.com"], siteScope: "approved" } });
+    expect(begin).toMatchObject({ profile: f.profile, generation: f.generation, run: "run", params: { name: "Agent", protected: [] } });
+    expect(begin.params).not.toHaveProperty("siteScope");
+    expect(begin.params).not.toHaveProperty("origins");
   } finally { await f.close(); }
 });
 
-test("new runs do not auto-renew stale sessions or adopt newly configured scope", async () => {
+test("new runs do not auto-renew stale sessions or adopt a newly configured profile", async () => {
   const f = await fixture();
   try {
     await f.browser.action("open", { url: "https://example.com" });
     f.lose();
     await f.chrome.settle("agent", "run");
-    const next = f.router.forRun("agent", "next", { chromeProfile: crypto.randomUUID(), chromeOrigins: [], chromeSiteScope: "internet" }, "Agent").get("agent");
+    const next = f.router.forRun("agent", "next", { chromeProfile: crypto.randomUUID() }, "Agent").get("agent");
     await expect(next.action("snapshot")).rejects.toThrow("browser_reconnect");
     await expect(f.browser.reconnect!()).rejects.toThrow("run authority expired");
     expect(await next.reconnect!()).toMatchObject({ status: "reconnected" });
     await next.action("open", { url: "https://example.com" });
     expect(f.calls.at(-1)).toMatchObject({ profile: f.profile, run: "next" });
-    expect(f.chrome.state("agent").task).toMatchObject({ origins: ["https://example.com"], siteScope: "approved" });
+    expect(f.chrome.state("agent").task).toMatchObject({ profile: f.profile });
   } finally { await f.close(); }
 });
 
@@ -241,7 +243,7 @@ test("service rejects reconnect during native private handoff, cancellation, for
   service.chrome.bridge.call = async () => ({ ok: true });
   const active = { agentId: agent, cancelled: false, done: Promise.resolve() };
   service.active.set(run, active);
-  const port = service.scopedBrowser(agent, run, { chromeProfile: profile, chromeOrigins: ["https://example.com"] }, "Agent").get(agent);
+  const port = service.scopedBrowser(agent, run, { chromeProfile: profile }, "Agent").get(agent);
   try {
     service.chrome.bridge.onLoss(profile); generation = crypto.randomUUID();
     service.desktopHandoff = { id: "private", safe: false };

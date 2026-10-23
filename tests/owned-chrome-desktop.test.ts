@@ -52,7 +52,7 @@ test("owned native attestation pairs immediately during human use without browse
   try {
     expect(f.messages[0].type).toBe("paired");
     expect(f.chrome.bridge.profiles().map(p => p.id)).toEqual([f.profile]);
-    expect(() => f.chrome.allocate("a", "run", { chromeProfile: f.profile, chromeOrigins: ["https://example.com"] }, "A")).not.toThrow();
+    expect(() => f.chrome.allocate("a", "run", { chromeProfile: f.profile }, "A")).not.toThrow();
     expect(f.chrome.humanState()).toBe(true);
     expect(f.messages.filter(m => m.method)).toEqual([]);
     expect(f.chrome.bridge.desktop(f.profile, f.generation).available).toBe(true);

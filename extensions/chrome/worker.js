@@ -7,7 +7,6 @@ import {
 } from "../../src/shared/chrome-protocol";
 import { observation } from "./observation";
 import {
-  chromeDenyRegexes,
   chromeInternetDenyRegexes,
 } from "../../src/shared/chrome-policy";
 let port = null,
@@ -367,10 +366,7 @@ async function establish(explicit, epoch) {
   });
 }
 async function protect(tabId, s) {
-  const regexes =
-    s.siteScope === "internet"
-      ? chromeInternetDenyRegexes(s.protected)
-      : [...chromeDenyRegexes(s.origins), ...chromeInternetDenyRegexes(s.protected)];
+  const regexes = chromeInternetDenyRegexes(s.protected);
   if (regexes.length > 500) unavailable();
   const ids = regexes.map(() => ruleId++);
   await chrome.declarativeNetRequest.updateSessionRules({
@@ -381,7 +377,7 @@ async function protect(tabId, s) {
       condition: {
         tabIds: [tabId],
         regexFilter,
-        isUrlFilterCaseSensitive: s.siteScope !== "internet",
+        isUrlFilterCaseSensitive: false,
         resourceTypes: [
           "main_frame",
           "sub_frame",
@@ -452,15 +448,20 @@ async function create(s, run, url) {
     throw e;
   }
 }
+// Subframe about:blank/about:srcdoc documents never leave the parent's origin.
+// They are not separately observed: the parent guard rejects every such frame
+// that renders, so their pixels and text are never disclosed.
+function inheritedFrame(frameId, url) {
+  return frameId !== 0 && /^about:(blank|srcdoc)(?:[?#]|$)/.test(String(url));
+}
 function checkURL(s, url) {
-  const origin = chromeOrigin(
+  chromeOrigin(
     url,
     s.protected,
   );
   if (
     typeof url !== "string" ||
-    url.length > 4096 ||
-    (s.siteScope !== "internet" && !s.origins.includes(origin))
+    url.length > 4096
   )
     unavailable();
 }
@@ -476,12 +477,14 @@ async function documentGuard(s, run, tab) {
   if (
     !frames ||
     !frames.length ||
-    frames.length > 16 ||
+    frames.length > 64 ||
     !frames.some((f) => f.frameId === 0 && f.url === info.url)
   )
     unavailable();
-  for (const frame of frames) checkURL(s, frame.url);
-  return frames.map((f) => ({
+  const observed = frames.filter((f) => !inheritedFrame(f.frameId, f.url));
+  if (observed.length > 16) unavailable();
+  for (const frame of observed) checkURL(s, frame.url);
+  return observed.map((f) => ({
     documentId: f.documentId,
     frameId: f.frameId,
     origin: new URL(f.url).origin,
@@ -601,8 +604,6 @@ async function dispatch(r) {
         !retained.idle ||
         !retained.paused ||
         retained.pauseFailed ||
-        JSON.stringify(retained.origins) !== JSON.stringify(p.origins) ||
-        retained.siteScope !== (p.siteScope ?? "approved") ||
         JSON.stringify(retained.protected) !== JSON.stringify(p.protected)
       )
         unavailable();
@@ -613,21 +614,10 @@ async function dispatch(r) {
     }
     if (
       sessions.size >= 8 ||
-      !Array.isArray(p.origins) ||
-      (p.siteScope !== "internet" && !p.origins.length) ||
-      p.origins.length > 20 ||
       !Array.isArray(p.protected) ||
       typeof p.name !== "string"
     )
       unavailable();
-    const origins = p.origins.map((o) => {
-      const canonical = chromeOrigin(
-        o,
-        p.protected,
-      );
-      if (canonical !== o) unavailable();
-      return canonical;
-    });
     sessions.set(r.session, {
       id: r.session,
       run: r.run,
@@ -638,8 +628,6 @@ async function dispatch(r) {
       epoch: crypto.randomUUID(),
       tabs: new Map(),
       groups: new Map(),
-      origins,
-      siteScope: p.siteScope ?? "approved",
       protected: p.protected,
       agentName: p.name.slice(0, 55),
       name: `🔎 Jelly · ${p.name.slice(0, 55)} · Browse`,
@@ -906,6 +894,9 @@ chrome.webNavigation.onCommitted.addListener((details) => {
       details.url === "about:blank"
     )
       return;
+    // Pages such as Facebook create blank helper iframes constantly. These are
+    // not navigations away from scope and must not revoke the whole session.
+    if (inheritedFrame(details.frameId, details.url)) return;
     if (tab) tab.initializing = false;
     s.epoch = crypto.randomUUID();
     try {
@@ -1086,7 +1077,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       sessions: [...sessions.values()].map((s) => ({
         id: s.id,
         name: s.name,
-        siteScope: s.siteScope,
         paused: s.paused && !s.pausing && !s.pauseFailed,
         pausing: !!s.pausing,
         failed: !!s.pauseFailed,

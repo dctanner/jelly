@@ -400,7 +400,7 @@ export async function startApp(options: AppOptions) {
               controls.require(req);
               const operation = url.pathname.slice("/api/chrome/".length);
               const input = await body(req);
-              if (operation === "settings") return json(service.setConfig({ chromeProfile: input.chromeProfile as string, chromeOrigins: input.chromeOrigins as string[], chromeSiteScope: input.chromeSiteScope as "approved" | "internet" | undefined }));
+              if (operation === "settings") return json(service.setConfig({ chromeProfile: input.chromeProfile as string }));
               const agentId = text(input.agentId, "Agent ID", 100);
               if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
               if (operation === "close" && ["running", "waiting"].includes(store.agent(agentId)!.status)) throw new HttpError(409, "Stop or finish the run before resetting its pinned Chrome session.");
