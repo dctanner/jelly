@@ -3,17 +3,25 @@ import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import {
   MODEL_OPTIONS,
+  MODE_OPTIONS,
+  modelsForMode,
+  effortsForModel,
+  modelSummary,
   EFFORT_OPTIONS,
   modelSpeedNotice,
   type ModelId,
   type Effort,
 } from "../shared/models";
+import type { Mode } from "../shared/types";
 import { api } from "./api";
 import { Modal } from "./Modal";
 import { useAnchoredPopover } from "./useAnchoredPopover";
 
 export function ComposerSettings({
   agentId,
+  mode = "auto",
+  activeMode,
+  providerLocked = false,
   model,
   effort,
   disabled,
@@ -22,6 +30,9 @@ export function ComposerSettings({
   onBusy,
 }: {
   agentId: string;
+  mode?: Mode;
+  activeMode?: Exclude<Mode, "auto"> | null;
+  providerLocked?: boolean;
   model: ModelId;
   effort: Effort;
   disabled: boolean;
@@ -68,7 +79,7 @@ export function ComposerSettings({
       document.removeEventListener("keydown", escape);
     };
   }, [open, mobile]);
-  async function save(change: { model?: ModelId; effort?: Effort }) {
+  async function save(change: { mode?: Mode; model?: ModelId; effort?: Effort }) {
     if (readOnly) return;
     setBusy(true);
     onBusy(true);
@@ -122,6 +133,19 @@ export function ComposerSettings({
       }}
     >
       <label>
+        Provider
+        <select aria-label="Provider" value={mode}
+          disabled={busy || disabled || readOnly || providerLocked}
+          aria-describedby="provider-lock-note"
+          onChange={(event) => void save({ mode: event.target.value as Mode })}>
+          {MODE_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>
+      </label>
+      <p className="subtle" id="provider-lock-note">
+        {providerLocked ? "Provider locked for this agent. Create a new agent to use another provider; Fresh Session keeps its context and provider."
+          : "Choose a provider before the first run. It stays locked afterward, even if that run fails or is cancelled."}
+      </p>
+      <label>
         Model
         <select
           aria-label="Model"
@@ -129,7 +153,7 @@ export function ComposerSettings({
           disabled={busy || disabled || readOnly}
           onChange={(e) => void save({ model: e.target.value as ModelId })}
         >
-          {MODEL_OPTIONS.map((m) => (
+          {modelsForMode(mode).map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
             </option>
@@ -144,7 +168,7 @@ export function ComposerSettings({
           disabled={busy || disabled || readOnly}
           onChange={(e) => void save({ effort: e.target.value as Effort })}
         >
-          {EFFORT_OPTIONS.map((e) => (
+          {effortsForModel(model).map((e) => (
             <option key={e.id} value={e.id}>
               {e.label}
             </option>
@@ -210,6 +234,7 @@ export function ComposerSettings({
       >
         <Settings2 size={20} />
       </button>
+      <small className="composer-model-summary">{modelSummary(activeMode ?? mode, model, effort)}</small>
       {open &&
         (mobile
           ? createPortal(

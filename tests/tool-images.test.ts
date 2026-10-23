@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +22,7 @@ afterEach(async () => {
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jelly-tool-image-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const app = await startApp({
+  const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,

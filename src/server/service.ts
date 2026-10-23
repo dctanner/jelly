@@ -1,3 +1,4 @@
+import { compatibleModel, defaultModelForMode, effortsForModel } from "../shared/models";
 import type { ModelId, Effort } from "../shared/models";
 import type { AgentSession, FileEntry } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
@@ -356,6 +357,7 @@ export class JellyService {
       historyBefore: page.before,
       cursor: this.store.cursor(),
       config: { ...this.harness.config(instance.mode, instance), ...this.store.browserSelection() },
+      agentConfig: selected ? this.agentConfig(selected) : undefined,
       interventions: page.interventions,
     };
   }
@@ -496,6 +498,14 @@ export class JellyService {
     if (!this.store.agent(id)) throw new HttpError(404, "Agent not found.");
     return this.store.historyPage(id, before);
   }
+  private agentConfig(agent: AgentRecord) {
+    const config = this.harness.config(agent.mode ?? "auto", agent);
+    if (agent.providerLocked && (!agent.mode || agent.mode === "auto"))
+      return { ...config, ready: false, activeMode: null, notice: "This legacy agent’s provider could not be identified. Create a new agent; its historical session will not be retargeted." };
+    if (!compatibleModel(agent.mode ?? "auto", agent.model) || !effortsForModel(agent.model).some(option => option.id === agent.effort))
+      return { ...config, ready: false, notice: "This agent’s model or effort is incompatible with its provider. Choose supported settings in the model panel." };
+    return config;
+  }
   setMode(mode: Mode) {
     return this.setConfig({ mode });
   }
@@ -507,23 +517,29 @@ export class JellyService {
       if (input.agentId !== undefined) throw new HttpError(400, "Chrome settings are global.");
       this.chrome.validate(selection);
     }
-    if (input.mode !== undefined && !["auto", "chatgpt", "api"].includes(input.mode))
+    if (input.mode !== undefined && !["auto", "chatgpt", "api", "claude-code"].includes(input.mode))
       throw new HttpError(400, "Unknown connection mode.");
     const current = this.store.instance();
     const agent = input.agentId !== undefined ? this.store.agent(input.agentId) : null;
     if (input.agentId !== undefined && !agent)
       throw new HttpError(404, "Agent not found.");
-    const switching = input.model !== undefined || input.effort !== undefined;
-    const baseline = agent && switching ? agent : current;
+    const switching = input.mode !== undefined || input.model !== undefined || input.effort !== undefined;
+    const baseline = agent ?? current;
+    const mode = input.mode ?? baseline.mode ?? "auto";
+    if (agent?.providerLocked && mode !== agent.mode)
+      throw new HttpError(409, "This agent’s provider is locked. Create a new agent to use another provider; Fresh Session retains context and provider.");
     const next = {
-      mode: input.mode ?? current.mode,
-      model: input.model ?? baseline.model,
+      mode,
+      model: input.model ?? (compatibleModel(mode, baseline.model) ? baseline.model : defaultModelForMode(mode)),
       effort: input.effort ?? baseline.effort,
     };
+    if (!compatibleModel(next.mode, next.model)) throw new HttpError(400, "Model is not supported by this provider.");
+    if (!effortsForModel(next.model).some(option => option.id === next.effort))
+      throw new HttpError(400, "Reasoning effort is not supported by this model.");
     const event = this.store.db.transaction(() => {
       this.store.setConfig(next.mode, next.model, next.effort);
       this.store.setBrowserSelection(selection);
-      if (agent && switching) this.store.setAgentConfig(agent.id, next.model, next.effort);
+      if (agent && switching) this.store.setAgentConfig(agent.id, next.model, next.effort, next.mode);
       return this.store.event(null, null, "config_changed", { ...next, agentId: agent?.id ?? null });
     })();
     this.notify(event);
@@ -541,8 +557,7 @@ export class JellyService {
     if (!agent) throw new HttpError(404, "Agent not found.");
     if (agent.archivedAt) throw new HttpError(409, "Restore this agent before starting a fresh session.");
     if (this.activeFor(agentId)) throw new HttpError(409, "Wait for this agent to finish before starting a fresh session.");
-    const instance = this.store.instance();
-    this.harness.requireConnection(this.harness.config(instance.mode, agent));
+    this.harness.requireConnection(this.agentConfig(agent));
     return this.startRun(agent, `fresh-session:${requestId}`, "Fresh Session", "queue", true);
   }
   start(
@@ -580,8 +595,7 @@ export class JellyService {
     if (!agent) throw new HttpError(404, "Agent not found.");
     if (agent.archivedAt)
       throw new HttpError(409, "Restore this agent before sending a message.");
-    const instance = this.store.instance();
-    this.harness.requireConnection(this.harness.config(instance.mode, agent));
+    this.harness.requireConnection(this.agentConfig(agent));
     const active = this.activeFor(agentId);
     if (active?.cancelled)
       throw new HttpError(
@@ -618,10 +632,9 @@ export class JellyService {
   }
   steer(agentId: string, messageId: string) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
-    const instance = this.store.instance();
     const agent = this.store.agent(agentId);
     if (!agent) throw new HttpError(404, "Agent not found.");
-    this.harness.requireConnection(this.harness.config(instance.mode, agent));
+    this.harness.requireConnection(this.agentConfig(agent));
     const message = this.store.pendingMessage(messageId);
     if (!message || message.agentId !== agentId)
       throw new HttpError(404, "Message not found.");
@@ -669,7 +682,7 @@ export class JellyService {
   ) {
     const agentId = agent.id;
     const instance = this.store.instance();
-    const config = this.harness.config(instance.mode, agent);
+    const config = this.agentConfig(agent);
     const browserSelection = this.store.browserSelection();
     this.harness.requireConnection(config);
     const events: Activity[] = [];

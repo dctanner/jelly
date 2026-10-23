@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { useTestModel } from "./fixtures/app";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -25,7 +26,7 @@ afterEach(async () => {
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jelly-render-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const app = await startApp({
+  const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
     dataDir: dir,
     configDir: join(dir, "config"),
     port: 0,
@@ -167,7 +168,7 @@ test("rendered attachments survive service restart", async () => {
   const agent = f.app.store.agents()[0]!;
   f.app.service.emit(agent.id, null, "file_rendered", { files: [saved] });
   await f.app.close();
-  const next = await startApp({
+  const next = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
     dataDir: f.dir,
     configDir: join(f.dir, "config"),
     port: 0,

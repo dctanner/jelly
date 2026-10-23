@@ -1,3 +1,4 @@
+import { HttpError } from "./errors";
 import { defaultChromeSelection, type ChromeSelection } from "../shared/chrome-protocol";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
@@ -51,7 +52,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 15)
+    if (version > 16)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -173,9 +174,9 @@ export class Store {
               model = "gpt-6-astra-ultrafast";
           }
           const effort = recorded.effort ?? defaults.effort;
-          this.setAgentConfig(agent.id,
+          this.db.query("UPDATE agents SET model=?,effort=? WHERE id=?").run(
             MODEL_OPTIONS.some(option => option.id === model) ? model : defaults.model,
-            EFFORT_OPTIONS.some(option => option.id === effort) ? effort : defaults.effort);
+            EFFORT_OPTIONS.some(option => option.id === effort) ? effort : defaults.effort, agent.id);
         }
         this.db.exec("PRAGMA user_version=10;");
       })();
@@ -188,6 +189,18 @@ export class Store {
         ); PRAGMA user_version=11;`);
       })();
     if (version < 12) this.db.exec("PRAGMA user_version=12;");
+    if (version < 16) this.db.transaction(() => {
+      this.db.exec(`
+        ALTER TABLE agents ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';
+        ALTER TABLE agents ADD COLUMN providerLocked INTEGER NOT NULL DEFAULT 0;
+        UPDATE agents SET mode=COALESCE(
+          (SELECT CASE WHEN mode IN ('chatgpt','api','claude-code') THEN mode ELSE 'auto' END
+           FROM runs WHERE agentId=agents.id ORDER BY rowid DESC LIMIT 1),
+          (SELECT mode FROM instance)),
+          providerLocked=EXISTS(SELECT 1 FROM runs WHERE agentId=agents.id);
+        PRAGMA user_version=16;
+      `);
+    })();
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, record TEXT NOT NULL);
@@ -429,6 +442,8 @@ export class Store {
     const { nameEdited, ...profile } = input;
     const agent: AgentRecord = {
       ...profile,
+      mode: defaults.mode,
+      providerLocked: 0,
       model: defaults.model,
       effort: defaults.effort,
       projectId: input.projectId ?? null,
@@ -444,7 +459,7 @@ export class Store {
     };
     this.db
       .query(
-        "INSERT INTO agents (id,name,instructions,color,status,createdAt,projectId,cwd,managedCwd,avatarId,model,effort) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agents (id,name,instructions,color,status,createdAt,projectId,cwd,managedCwd,avatarId,model,effort,mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
       )
       .run(
         agent.id,
@@ -459,13 +474,17 @@ export class Store {
         agent.avatarId,
         agent.model,
         agent.effort,
+        agent.mode!,
       );
     this.db.query("INSERT INTO agent_naming(agentId,state) VALUES (?,?)")
       .run(id, agent.name === DEFAULT_AGENT_NAME && !nameEdited ? "pending" : "manual");
     return agent;
   }
-  setAgentConfig(id: string, model: ModelId, effort: Effort) {
-    this.db.query("UPDATE agents SET model=?,effort=? WHERE id=?").run(model, effort, id);
+  setAgentConfig(id: string, model: ModelId, effort: Effort, mode = this.agent(id)?.mode ?? "auto") {
+    const agent = this.agent(id);
+    if (agent?.providerLocked && agent.mode !== mode)
+      throw new HttpError(409, "This agent’s provider is locked. Create a new agent to use another provider; Fresh Session retains context and provider.");
+    this.db.query("UPDATE agents SET model=?,effort=?,mode=? WHERE id=?").run(model, effort, mode, id);
   }
   updateAgent(id: string, input: AgentInput) {
     if (input.nameEdited || input.name !== this.agent(id)?.name)
@@ -579,21 +598,29 @@ export class Store {
     mode: string,
     model: string,
   ): RunRecord {
-    const id = crypto.randomUUID();
-    this.db
-      .query(
-        "INSERT INTO runs (id,agentId,requestId,prompt,status,mode,model,startedAt) VALUES (?,?,?,?,'running',?,?,?)",
-      )
-      .run(
-        id,
-        agentId,
-        requestId,
-        prompt,
-        mode,
-        model,
-        new Date().toISOString(),
-      );
-    return this.run(id)!;
+    return this.db.transaction(() => {
+      const agent = this.agent(agentId);
+      if (agent?.providerLocked && agent.mode !== mode)
+        throw new HttpError(409, "This agent’s provider is locked. Create a new agent to use another provider.");
+      if (agent?.mode !== "auto" && agent?.mode !== mode)
+        throw new HttpError(409, "Run provider does not match this agent.");
+      this.db.query("UPDATE agents SET mode=?,providerLocked=1 WHERE id=?").run(mode, agentId);
+      const id = crypto.randomUUID();
+      this.db
+        .query(
+          "INSERT INTO runs (id,agentId,requestId,prompt,status,mode,model,startedAt) VALUES (?,?,?,?,'running',?,?,?)",
+        )
+        .run(
+          id,
+          agentId,
+          requestId,
+          prompt,
+          mode,
+          model,
+          new Date().toISOString(),
+        );
+      return this.run(id)!;
+    })();
   }
   run(id: string) {
     return this.db

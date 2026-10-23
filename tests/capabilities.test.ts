@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { useTestModel } from "./fixtures/app";
 import { test, expect, afterAll } from "bun:test";
 import { Harness } from "../src/server/harness";
@@ -72,7 +73,7 @@ test("preparePi disables only the two Claude profiles for new and existing setti
       const expected = structuredClone(existing);
       Object.assign(expected.subagents.agentOverrides["claude-code"], { disabled: true });
       Object.assign(expected.subagents.agentOverrides["claude-code-writer"], { disabled: true });
-      expect(settings).toEqual(expected);
+      expect(settings).toEqual({ ...expected, extensions: [fileURLToPath(new URL("../src/server/claude-code-provider.ts", import.meta.url))] });
     } else {
       expect(settings.defaultTools).toEqual(ALL_PI_TOOLS);
       expect(settings.subagents.agentOverrides.worker.disabled).toBeUndefined();
@@ -81,6 +82,17 @@ test("preparePi disables only the two Claude profiles for new and existing setti
     preparePi(dataDir);
     expect(readFileSync(path, "utf8")).toBe(first);
   }
+});
+test("preparePi replaces only the exact raw Claude extension with the shared subscription guard", () => {
+  const dataDir = mkdtempSync(join(dir, "claude-settings-"));
+  const path = join(dataDir, "settings.json");
+  const upstream = fileURLToPath(import.meta.resolve("@earendil-works/pi-claude-code/src/index.ts"));
+  writeFileSync(path, JSON.stringify({ extensions: ["/fixture/other.ts", upstream] }));
+  preparePi(dataDir);
+  expect(JSON.parse(readFileSync(path, "utf8")).extensions).toEqual([
+    "/fixture/other.ts",
+    fileURLToPath(new URL("../src/server/claude-code-provider.ts", import.meta.url)),
+  ]);
 });
 test("preparePi refuses malformed settings without overwriting them", () => {
   for (const contents of ["{", "[]", '{"subagents":[]}', '{"subagents":{"agentOverrides":{"claude-code":false}}}']) {
@@ -182,10 +194,10 @@ test("Harness composes Pi guidance with Jelly policy, append instructions, proje
       profile.instructions,
       "All tools and subagent delegation are pre-authorized by the operator.",
       "Use the same provider/model and effort as this parent for delegated work unless asked otherwise.",
-      "Exception for Claude subagents:",
-      "Use the Bash tool to run claude -p directly instead",
+      "The native Pi claude-code provider is available to normal subagent profiles.",
+      "Only when explicitly asked for direct Claude CLI work",
       "command -v claude",
-      "/home/dctanner/.local/bin/claude",
+      "PI_CLAUDE_CODE_COMMAND",
       "Use Claude CLI's own authentication, not Jelly/Pi credentials",
       "native --model option",
       "never use permission-bypass flags",

@@ -209,21 +209,14 @@ try {
       )
         throw new Error("Long draft does not scroll");
       await composerStaysStable(page);
-      if (running) {
-        const mode = page.getByRole("combobox", { name: "Message delivery" });
-        if (
-          (await mode.evaluate((element) =>
-            parseFloat(getComputedStyle(element).fontSize),
-          )) < 16
-        )
-          throw new Error("Delivery select can trigger focus zoom");
-        await mode.selectOption("steer");
-      }
+      if (await page.getByRole("combobox", { name: "Message delivery" }).count())
+        throw new Error("Obsolete delivery dropdown occupies model-summary space");
+      await fits(page, ".composer-model-summary");
       await page.getByRole("button", { name: "Model and effort" }).click();
       const popup =
         width! < 768 ? ".composer-settings-sheet" : ".composer-settings-menu";
       await fits(page, popup);
-      for (const name of ["Model", "Reasoning effort"]) {
+      for (const name of ["Provider", "Model", "Reasoning effort"]) {
         if (
           (await page
             .getByRole("combobox", { name, exact: true })

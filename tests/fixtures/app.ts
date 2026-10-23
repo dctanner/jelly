@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./claude-code";
 /** Explicit test/preview injection; production has no scripted provider or bypass. */
 import "./bun-extra-stdio";
 import { startApp as startProductionApp, type AppOptions } from "../../src/server/app";
@@ -21,6 +22,7 @@ export function useTestModel(harness: Harness, options: FixtureOptions = {}) {
 }
 export async function startApp(options: AppOptions & FixtureOptions) {
   const app = await startProductionApp({
+    claudeStatusCheck: unavailableClaudeStatus,
     ...options,
     desktopOptions: {
       leaseRoot: join(options.dataDir, "desktop-fixture-leases"),

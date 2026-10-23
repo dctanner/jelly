@@ -1,3 +1,4 @@
+import type { ClaudeStatusCheck } from "./claude-code";
 import "./runtime-network";
 import { COMPUTER_CLIPBOARD_BODY_BYTES } from "../shared/computer-clipboard";
 import { tailnetAddresses } from "../shared/network";
@@ -33,6 +34,7 @@ export interface AppOptions {
   authPath?: string;
   configDir?: string;
   chatgptLogin?: ChatGPTLogin;
+  claudeStatusCheck?: ClaudeStatusCheck;
   loginTtlMs?: number;
   port?: number;
   allowedOrigins?: string[];
@@ -139,15 +141,12 @@ export async function startApp(options: AppOptions) {
       join(dataDir, "workspaces"),
     );
     cleanup = async () => store.close();
-    const service = new JellyService(
-      store,
-      await Harness.create(
-        dataDir,
-        options.authPath,
-        options.configDir,
-      ),
-      options,
-    );
+    const harness = await Harness.create(dataDir, options.authPath, options.configDir, options.claudeStatusCheck);
+    // One bounded check on startup makes restored Claude agents ready without
+    // visiting Settings. Snapshots remain synchronous and never spawn probes.
+    await harness.claude.refresh();
+    await harness.runtime.refresh({ providers: ["claude-code"], allowNetwork: false });
+    const service = new JellyService(store, harness, options);
     cleanup = () => service.close();
     const controls = new ControlSessions(options.allowedOrigins);
     service.chromeShare.ownerValid = id => controls.valid(id);
@@ -452,7 +451,9 @@ export async function startApp(options: AppOptions) {
             ) {
               const session = controls.require(req);
               if (url.pathname === "/api/auth/status")
-                return json(connections.status(session.id));
+                return json({ ...connections.status(session.id), ...await service.harness.claude.refresh() });
+              if (url.pathname === "/api/auth/claude-code/refresh")
+                return json(await service.harness.claude.refresh(true));
               if (url.pathname === "/api/auth/api-key") {
                 const input = await body(req);
                 try {
@@ -741,7 +742,7 @@ export async function startApp(options: AppOptions) {
               const input = await body(req);
               if (
                 input.mode !== undefined &&
-                !["auto", "chatgpt", "api"].includes(String(input.mode))
+                !["auto", "chatgpt", "api", "claude-code"].includes(String(input.mode))
               )
                 throw new HttpError(400, "Unknown connection mode.");
               if (

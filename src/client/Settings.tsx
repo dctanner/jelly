@@ -10,6 +10,9 @@ import { BrowserNotifications } from "./BrowserNotifications";
 import { api } from "./api";
 import {
   MODEL_OPTIONS,
+  modelsForMode,
+  effortsForModel,
+  defaultModelForMode,
   modelSpeedNotice,
   EFFORT_OPTIONS,
   type ModelId,
@@ -123,6 +126,7 @@ export function Settings({
         ? "Connected through Pi"
         : "Connect your account in Settings.",
     },
+    { id: "claude-code" as const, label: "Claude subscription", detail: data.config.claudeNotice ?? "Check Claude Code on this Jelly computer." },
     {
       id: "api" as const,
       label: "OpenAI API",
@@ -225,7 +229,7 @@ export function Settings({
             <h3>Connections</h3>
             <div className="settings-group">
               <SettingsRow
-                label="Model access"
+                label="New agent provider"
                 value={modes.find((m) => m.id === mode)?.label}
                 onClick={() => setPage("Model access")}
               />
@@ -234,6 +238,7 @@ export function Settings({
                 value={data.config.chatgptReady ? "Connected" : "Not connected"}
                 onClick={() => setPage("ChatGPT")}
               />
+              <SettingsRow label="Claude subscription" value={data.config.claudeReady ? "Ready" : "Setup required"} onClick={() => setPage("Claude subscription")} />
               <SettingsRow
                 label="OpenAI API"
                 value={data.config.apiReady ? "Connected" : "Not connected"}
@@ -285,7 +290,7 @@ export function Settings({
           <Choices
             label="Model"
             value={model}
-            options={MODEL_OPTIONS}
+            options={modelsForMode(mode)}
             onChange={setModel}
           />
           {speedNotice && (
@@ -298,7 +303,7 @@ export function Settings({
           <Choices
             label="Reasoning effort"
             value={effort}
-            options={EFFORT_OPTIONS}
+            options={effortsForModel(model)}
             onChange={setEffort}
           />
           <p className="settings-footnote">
@@ -308,20 +313,17 @@ export function Settings({
       )}
       {page === "Model access" && (
         <Choices
-          label="Model access"
+          label="New agent provider"
           value={mode}
           options={modes}
-          onChange={setMode}
+          onChange={(next) => { setMode(next); if (!modelsForMode(next).some(option => option.id === model)) setModel(defaultModelForMode(next)); }}
         />
       )}
-      {(page === "ChatGPT" || page === "OpenAI API") && (
+      {(page === "ChatGPT" || page === "OpenAI API" || page === "Claude subscription") && (
         <Connections
           onDirty={setDetailDirty}
-          only={page === "ChatGPT" ? "chatgpt" : "api"}
-          onConnected={(next) => {
-            setMode(next);
-            void refresh();
-          }}
+          only={page === "Claude subscription" ? "claude-code" : page === "ChatGPT" ? "chatgpt" : "api"}
+          onConnected={() => { void refresh(); }}
         />
       )}
       {page === "MCP connections" && <McpConnections />}

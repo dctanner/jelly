@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdtempSync,
@@ -20,7 +21,7 @@ afterEach(async () => {
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jelly-uploads-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const app = await startApp({ dataDir: join(dir, "state"), configDir: join(dir, "config"), port: 0 });
+  const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus, dataDir: join(dir, "state"), configDir: join(dir, "config"), port: 0 });
   cleanups.push(() => app.close());
   const base = `http://127.0.0.1:${app.server.port}`;
   const session = await fetch(base + "/api/control-session");

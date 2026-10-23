@@ -9,7 +9,7 @@ export function Connections({
   onDirty,
 }: {
   onConnected: (mode: Mode) => void;
-  only?: "chatgpt" | "api";
+  only?: "chatgpt" | "api" | "claude-code";
   onDirty?: (dirty: boolean) => void;
 }) {
   const [status, setStatus] = useState<ConnectionStatus | null>(null),
@@ -70,7 +70,7 @@ export function Connections({
     onDirty?.(false);
     void act(async () => {
       await control("/auth/api-key", { key: value });
-      setNotice("API key saved. It will be used for your next message.");
+      setNotice("API key saved. Agents using OpenAI API can use it on their next run.");
       notify.current("api");
     });
   }
@@ -79,13 +79,13 @@ export function Connections({
   return (
     <fieldset className="account-connections">
       <legend>
-        {only === "chatgpt"
+        {only === "claude-code" ? "Claude subscription" : only === "chatgpt"
           ? "ChatGPT account"
           : only === "api"
             ? "API credentials"
             : "Connect an account"}
       </legend>
-      {only !== "api" && (
+      {(!only || only === "chatgpt") && (
         <div className="account-block">
           <div className="account-title">
             <strong>ChatGPT</strong>
@@ -204,7 +204,7 @@ export function Connections({
           )}
         </div>
       )}
-      {only !== "chatgpt" && (
+      {(!only || only === "api") && (
         <div className="account-block">
           <div className="account-title">
             <strong>OpenAI API key</strong>
@@ -269,6 +269,19 @@ export function Connections({
             Saved privately on this Jelly computer, never in chat or browser
             storage. The next model request checks access.
           </p>
+        </div>
+      )}
+      {(!only || only === "claude-code") && (
+        <div className="account-block">
+          <div className="account-title"><strong>Claude Code</strong><span>{status?.claudeReady ? "Ready" : "Setup required"}</span></div>
+          <p className="subtle">{status?.claudeNotice ?? "Checking Claude Code…"}</p>
+          <p className="subtle">On this Jelly computer, as the Jelly service user, install the official CLI with <code>npm install -g @anthropic-ai/claude-code</code>, then run <code>claude auth login</code> with your Claude subscription. Ensure <code>claude</code> is on the service PATH, or set <code>PI_CLAUDE_CODE_COMMAND</code>.</p>
+          <p className="subtle">Claude Code owns login and logout (<code>claude auth logout</code>). Jelly never copies its credentials. No browser sign-in flow is provided here. ChatGPT can stay connected alongside Claude.</p>
+          <p className="subtle">Experimental subscription access: plan limits apply; Anthropic may change billing or availability. API/proxy/backend overrides are rejected, and upstream usage-credit safeguards apply.</p>
+          <button type="button" disabled={busy} onClick={() => void act(async () => {
+            await control("/auth/claude-code/refresh");
+            notify.current("claude-code");
+          })}>Refresh Claude status</button>
         </div>
       )}
       {error && (

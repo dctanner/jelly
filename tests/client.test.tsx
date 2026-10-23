@@ -1079,7 +1079,7 @@ test("chat model menu persists choices without changing connection mode and dism
   expect(app.service.snapshot().config).toMatchObject({
     selectedModel: "gpt-6-astra-ultrafast",
     effort: "high",
-    mode: "api",
+    mode: "auto",
   });
   fireEvent.keyDown(effort, { key: "Escape" });
   fireEvent.click(trigger);
@@ -1440,7 +1440,7 @@ test("composer upload button opens the shared modal and partial failures retry o
   expect(readFileSync(join(retryFolder, "existing.txt"), "utf8")).toBe("new");
 });
 
-test("busy composer defaults to Queued, can promote a sent message, and resets Steer after sending", async () => {
+test("busy composer always queues without a delivery dropdown and preserves Steer now", async () => {
   const app = await setup({ fixtureDelayMs: 800 });
   const id = app.store.agents()[0]!.id;
   let ui = render(<App />);
@@ -1450,9 +1450,7 @@ test("busy composer defaults to Queued, can promote a sent message, and resets S
     expect(screen.getByRole("button", { name: "Queue message" })).toBeDefined(),
   );
   const textarea = screen.getByRole("textbox", { name: "Message Jelly" });
-  expect(
-    (screen.getByLabelText("Message delivery") as HTMLSelectElement).value,
-  ).toBe("queue");
+  expect(screen.queryByLabelText("Message delivery")).toBeNull();
   fireEvent.change(textarea, { target: { value: "Do this later" } });
   fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
   await waitFor(() =>
@@ -1474,13 +1472,10 @@ test("busy composer defaults to Queued, can promote a sent message, and resets S
     expect(app.store.pendingMessages(id)[0]?.mode).toBe("steer"),
   );
   expect(screen.queryByRole("button", { name: "Steer now" })).toBeNull();
-  fireEvent.change(screen.getByLabelText("Message delivery"), {
-    target: { value: "steer" },
-  });
   fireEvent.change(screen.getByRole("textbox", { name: "Message Jelly" }), {
     target: { value: "One more correction" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Steer agent" }));
+  fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
   await waitFor(() =>
     expect(
       (
@@ -1490,16 +1485,14 @@ test("busy composer defaults to Queued, can promote a sent message, and resets S
       ).value,
     ).toBe(""),
   );
-  expect(
-    (screen.getByLabelText("Message delivery") as HTMLSelectElement).value,
-  ).toBe("queue");
+  expect(screen.queryByLabelText("Message delivery")).toBeNull();
   await act(async () => {
     await app.service.settled();
   });
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Send message" })).toBeDefined(),
   );
-  expect(app.store.runs(id)).toHaveLength(1);
+  expect(app.store.runs(id)).toHaveLength(2);
   expect(
     app.store.history(id).filter((message) => message.role === "user"),
   ).toHaveLength(3);
@@ -2880,8 +2873,8 @@ test("a connection is required to send, Settings has no demo option, and connect
   fireEvent.keyDown(input, { key: "Enter" });
   expect(app.store.runs(app.store.agents()[0]!.id)).toEqual([]);
   fireEvent.click(screen.getByRole("button", { name: "Connect an account" }));
-  fireEvent.click(screen.getByRole("button", { name: "Model access" }));
-  expect(screen.getAllByRole("radio")).toHaveLength(3);
+  fireEvent.click(screen.getByRole("button", { name: "New agent provider" }));
+  expect(screen.getAllByRole("radio")).toHaveLength(4);
   expect(screen.queryByRole("radio", { name: /demo/i })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -3560,4 +3553,68 @@ test("render_file audio and video use native controls without autoplay, with dow
   await within(card).findByLabelText("Video: movie.mp4");
   ui.unmount(); render(<App />);
   await screen.findByLabelText("Audio: sound.wav"); await screen.findByLabelText("Video: movie.mp4");
+});
+
+test("composer selects Claude before a run, shows adjacent provider/model/effort, and locks only provider afterward", async () => {
+  const app = await setup();
+  const id = app.store.agents()[0]!.id;
+  render(<App />);
+  await waitForConnectedAgent();
+  const trigger = screen.getByRole("button", { name: "Model and effort" });
+  expect(trigger.nextElementSibling?.className).toBe("composer-model-summary");
+  expect(trigger.nextElementSibling?.textContent).toContain("GPT-6 Astra · Medium");
+  fireEvent.click(trigger);
+  const provider = screen.getByRole("combobox", { name: "Provider" }) as HTMLSelectElement;
+  expect(provider.disabled).toBe(false);
+  fireEvent.change(provider, { target: { value: "claude-code" } });
+  await waitFor(() => {
+    expect(app.store.agent(id)?.mode).toBe("claude-code");
+    expect(provider.disabled).toBe(false);
+  });
+  const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+  expect(model.value).toBe("claude-opus-5-5");
+  expect(within(model).queryByRole("option", { name: "GPT-6 Astra" })).toBeNull();
+  expect(within(model).getByRole("option", { name: "Claude Sonnet 5" })).toBeDefined();
+  fireEvent.change(model, { target: { value: "claude-sonnet-5" } });
+  await waitFor(() => expect(trigger.nextElementSibling?.textContent).toBe("Claude subscription · Claude Sonnet 5 · Medium"));
+  await act(async () => {
+    const run = app.store.createRun(id, "lock-claude-ui", "No live request", "claude-code", "claude-sonnet-5");
+    app.store.finishRun(run.id, "failed", "Hermetic test");
+    app.service.setMode("api");
+  });
+  await waitFor(() => expect(provider.disabled).toBe(true));
+  expect(model.disabled).toBe(false);
+  expect(screen.getByText(/Fresh Session keeps its context and provider/)).toBeDefined();
+  expect(trigger.nextElementSibling?.textContent).toContain("Claude subscription");
+  fireEvent.keyDown(model, { key: "Escape" });
+  expect(document.activeElement).toBe(trigger);
+  // The unrelated API default is ready, but this selected Claude agent is not.
+  expect(screen.getByRole("button", { name: "Connect an account" })).toBeDefined();
+  expect(screen.queryByLabelText("Message delivery")).toBeNull();
+});
+
+test("Claude Settings offers host CLI instructions and status refresh without OAuth or retargeting agents", async () => {
+  const app = await setup();
+  const id = app.store.agents()[0]!.id;
+  app.service.setConfig({ agentId: id, mode: "api" });
+  let refreshes = 0;
+  app.service.harness.claude.refresh = async () => {
+    refreshes++;
+    return { claudeReady: true, claudeNotice: "Claude subscription fixture ready" };
+  };
+  render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Claude subscription" }));
+  expect(await screen.findByText("Claude subscription fixture ready")).toBeDefined();
+  expect(screen.getByText("claude auth login")).toBeDefined();
+  expect(screen.getByText("PI_CLAUDE_CODE_COMMAND")).toBeDefined();
+  expect(screen.queryByRole("link", { name: /Continue to Claude/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh Claude status" }));
+  await waitFor(() => expect(refreshes).toBeGreaterThan(1));
+  expect(app.store.agent(id)?.mode).toBe("api");
+  expect(app.store.instance().mode).toBe("api");
+  fireEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(screen.getByRole("button", { name: "ChatGPT" })).toBeDefined();
 });

@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -113,7 +114,7 @@ for (const mode of ["api", "chatgpt"] as const)
           );
         },
       });
-      const app = await startApp({
+      const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
         dataDir: dir,
         configDir: join(dir, "config"),
         port: 0,

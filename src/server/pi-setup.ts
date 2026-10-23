@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 export const ALL_PI_TOOLS = [
@@ -53,7 +54,16 @@ export function preparePi(dataDir: string) {
   const current = settingsObject(JSON.parse(readFileSync(settings, "utf8")));
   const subagents = settingsObject(current.subagents ?? {});
   const overrides = settingsObject(subagents.agentOverrides ?? {});
-  let changed = false;
+  const claudeExtension = fileURLToPath(new URL("./claude-code-provider.ts", import.meta.url));
+  const upstreamClaudeExtension = fileURLToPath(import.meta.resolve("@earendil-works/pi-claude-code/src/index.ts"));
+  const extensions = current.extensions ?? [];
+  if (!Array.isArray(extensions) || !extensions.every(value => typeof value === "string"))
+    throw new Error("Expected extension paths in Pi settings; refusing to overwrite settings.");
+  // Replace only our previous exact upstream path; preserve other resources.
+  const guardedExtensions = extensions.filter(path => path !== upstreamClaudeExtension);
+  if (!guardedExtensions.includes(claudeExtension)) guardedExtensions.push(claudeExtension);
+  let changed = JSON.stringify(extensions) !== JSON.stringify(guardedExtensions);
+  if (changed) current.extensions = guardedExtensions;
   for (const name of ["claude-code", "claude-code-writer"]) {
     const override = settingsObject(overrides[name] ?? {});
     if (override.disabled === true) continue;

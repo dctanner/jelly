@@ -64,9 +64,9 @@ Iframe load is not proof of rendering; cross-origin failures cannot always be di
 
 ## Model and effort scope
 
-- The composer switcher shows the current agent’s saved model and effort. A change updates that agent and the defaults for agents created afterward, never other existing agents.
-- Settings labels its model/effort group **New agent defaults**. Changes there do not update existing agents; connection mode remains instance-wide.
-- Changes take effect on the selected agent’s next run. Active runs retain their captured settings; new subagents inherit that run’s settings, and resumed subagents retain their persisted model and effort.
+- The composer switcher shows the current agent’s saved provider, model and effort in small text immediately right of its button. Ordinary active-run submissions are queued; per-message **Steer now** remains available, without a delivery dropdown. A change updates that agent and the defaults for agents created afterward, never other existing agents.
+- Settings labels its model/effort group **New agent defaults**. Changes there do not update existing agents; provider selection also defaults only new agents. ChatGPT and Claude subscriptions can coexist.
+- Provider selection locks durably on the first accepted run, including failures and cancellation. Fresh Session retains context and provider; create a new agent to change providers. Model and effort changes take effect on the selected agent’s next run. Active runs retain their captured settings; new subagents inherit that run’s settings, and resumed subagents retain their persisted model and effort.
 - On phones, model/effort opens in the shared bottom sheet and focuses its heading, not a native select. Wider layouts keep an anchored popup with trigger focus and logical Tab/Escape navigation. Reset it when changing agents.
 
 ## Mobile controls, overlays, and composer

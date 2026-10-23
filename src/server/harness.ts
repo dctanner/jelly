@@ -1,3 +1,5 @@
+import { createJellyClaudeProvider } from "./claude-code-provider";
+import { ClaudeCodeConnection, type ClaudeStatusCheck } from "./claude-code";
 import { generatedAgentName } from "../shared/agent-names";
 import { Mcps } from "./mcps";
 import { ChatGPTTransport } from "./chatgpt-transport";
@@ -57,6 +59,7 @@ export class Harness {
     readonly runtime: ModelRuntime,
     authPath: string,
     configDir?: string,
+    readonly claude = new ClaudeCodeConnection(),
   ) {
     this.images = new GeneratedImages(dataDir);
     this.files = new RenderedFiles(dataDir);
@@ -68,6 +71,7 @@ export class Harness {
     dataDir: string,
     authPath = join(dataDir, "auth.json"),
     configDir?: string,
+    claudeStatusCheck?: ClaudeStatusCheck,
   ) {
     preparePi(dataDir);
     prepareSubagentLiveness();
@@ -76,7 +80,16 @@ export class Harness {
       modelsPath: fileURLToPath(new URL("./models.json", import.meta.url)),
       allowModelNetwork: false,
     });
-    return new Harness(dataDir, runtime, authPath, configDir);
+    const harness = new Harness(dataDir, runtime, authPath, configDir, new ClaudeCodeConnection(claudeStatusCheck));
+    const provider = createJellyClaudeProvider();
+    // Runtime availability refreshes must not spawn CLI auth probes. Settings
+    // refreshes the bounded status cache; upstream still owns request auth.
+    runtime.registerNativeProvider({ ...provider, auth: {
+      ...provider.auth,
+      apiKey: { ...provider.auth!.apiKey!, check: async () => harness.claude.status().claudeReady
+        ? { type: "oauth", source: "Claude Code subscription" } : undefined },
+    } });
+    return harness;
   }
   config(
     mode: Mode,
@@ -88,12 +101,13 @@ export class Harness {
     this.auth.reload();
     const chatgptReady = this.auth.hasAuth("openai-codex");
     const apiReady = this.auth.hasAuth("openai");
+    const { claudeReady, claudeNotice } = this.claude.status();
     const activeMode =
       mode === "auto"
         ? chatgptReady ? "chatgpt" : apiReady ? "api" : null
         : mode;
-    const ready = activeMode === "chatgpt" ? chatgptReady : activeMode === "api" && apiReady;
-    const provider = activeMode === "chatgpt" ? "openai-codex" : activeMode === "api" ? "openai" : "";
+    const ready = activeMode === "claude-code" ? claudeReady : activeMode === "chatgpt" ? chatgptReady : activeMode === "api" && apiReady;
+    const provider = activeMode === "claude-code" ? "claude-code" : activeMode === "chatgpt" ? "openai-codex" : activeMode === "api" ? "openai" : "";
     return {
       mode,
       selectedModel: settings.model,
@@ -102,9 +116,11 @@ export class Harness {
       ready,
       provider,
       model: upstreamModel(settings.model),
+      claudeReady,
+      claudeNotice,
       chatgptReady,
       apiReady,
-      notice: !ready
+      notice: activeMode === "claude-code" ? claudeNotice : !ready
         ? activeMode === "chatgpt"
           ? "ChatGPT is not connected. Connect your ChatGPT subscription in Settings."
           : activeMode === "api"
@@ -119,6 +135,10 @@ export class Harness {
     if (!config.ready || !config.activeMode) throw new HttpError(409, config.notice);
   }
   async generateAgentName(prompt: string, config: ConnectionConfig, signal: AbortSignal) {
+    // Naming is best-effort and its failures are deliberately swallowed. Do not
+    // issue an optional Claude request whose billing-stop error could be lost
+    // before the actual task is sent.
+    if (config.activeMode === "claude-code") return null;
     this.requireConnection(config);
     const model = this.registry.find(config.provider, config.model);
     if (!model) return null;
@@ -182,12 +202,19 @@ export class Harness {
       additionalExtensionPaths: [
         fileURLToPath(import.meta.resolve("pi-subagents")),
       ],
+      extensionsOverride: (loaded) => {
+        // Detached Pi children discover the provider through settings.json.
+        // This shared host runtime already owns it: do not stack one per session.
+        loaded.runtime.pendingNativeProviderRegistrations = loaded.runtime.pendingNativeProviderRegistrations
+          .filter(({ provider }) => provider.id !== "claude-code");
+        return loaded;
+      },
       // Empty (not undefined) bypasses SYSTEM.md discovery while retaining Pi's
       // default sections. Append Jelly policy without hiding tool-use guidance
       // or the previously supported APPEND_SYSTEM.md instructions.
       systemPrompt: "",
       appendSystemPromptOverride: (prompts) => [
-        `You are ${agent.name}, a persistent agent in Jelly.\n${agent.instructions}\nYou can inspect this Jelly instance with instance_info. All tools and subagent delegation are pre-authorized by the operator. Execute tasks directly without approval prompts. You can browse directories, read/write/edit files, run shell commands, and delegate to subagents. Use the same provider/model and effort as this parent for delegated work unless asked otherwise. Prefer asynchronous subagent workflows (async:true) so you can supervise children and respond to status updates. Yield while children work; native completion notifications and approximately five-minute status checkpoints wake this session. Do not block with bg_wait merely to await ordinary async subagents. Use async:false only for deliberately short blocking work. Use the installed subagent tool schema; do not ask for delegation approval. Exception for Claude subagents: the Pi built-in claude-code and claude-code-writer profiles are disabled. Use the Bash tool to run claude -p directly instead, in the intended working directory with an explicit task and relevant context. Locate the executable with command -v claude; on this host /home/dctanner/.local/bin/claude is also available if executable. Use Claude CLI's own authentication, not Jelly/Pi credentials, and its native --model option when the user requests a Claude model; do not pass Pi provider/model or effort settings. Preserve Claude's permission safeguards; never use permission-bypass flags or weaken settings to get past a denial. Report missing CLI, authentication, or permission failures rather than claiming success. Check the process exit status and actual output, and verify any requested file changes/tests before reporting completion. Direct CLI work is not a Pi-managed subagent and has no Pi completion notifications or supervisor lifecycle. Use render_file to show existing images, audio, video, or text files in chat without reading their contents into model context; no prior read call is needed. Whenever you create or update a file intended for human review (such as a plan, document, report, or draft), always call render_file to show the latest version inline in chat so the user can read it; a file path, link, or summary alone is not enough. You may use all Pi tools; the workspace directory is a default working directory, not a sandbox. Use request_sudo for privileged commands; it executes automatically when the OS allows, and requests a password only if authentication is needed. Never ask for passwords in chat. Browser target: Connected Chrome only, using the user's existing profile. No managed-browser fallback is available. The human can open global Computer control from Settings or any agent menu. Use only the advertised Chrome tools and exact snapshot references; no coordinates, free typing, diagnostics, or uploads. For sign-in use request_browser_login. Browser results include humanUsing: the human may be using the computer or signing in. This is advisory, not a permission lock; stale status must not stop useful browser work. Done notifies the requesting agent. If this agent's Chrome session expires, use browser_reconnect: it creates a fresh empty session on the same profile/site scope without replaying anything. Reopen the desired page and take a fresh snapshot; verify the outcome of any unconfirmed action rather than repeating it. There is no automatic session renewal. Do not repair browser authority through shell/API calls or by editing pairing/session state. If reconnect reports revoked pairing, native privacy or security cleanup, ask the operator to resolve that boundary. Re-observe after human changes, respect real connection/scope/stale-reference errors, and never claim human control is an exclusive privacy lock. Do not put credentials in tool arguments. Be clear about your capabilities.\n${WEB_RESEARCH_INSTRUCTIONS}\n${APPS_INSTRUCTIONS}\n${this.mcps.instructions()}`,
+        `You are ${agent.name}, a persistent agent in Jelly.\n${agent.instructions}\nYou can inspect this Jelly instance with instance_info. All tools and subagent delegation are pre-authorized by the operator. Execute tasks directly without approval prompts. You can browse directories, read/write/edit files, run shell commands, and delegate to subagents. Use the same provider/model and effort as this parent for delegated work unless asked otherwise. Prefer asynchronous subagent workflows (async:true) so you can supervise children and respond to status updates. Yield while children work; native completion notifications and approximately five-minute status checkpoints wake this session. Do not block with bg_wait merely to await ordinary async subagents. Use async:false only for deliberately short blocking work. Use the installed subagent tool schema; do not ask for delegation approval. The native Pi claude-code provider is available to normal subagent profiles. The external claude-code and claude-code-writer profiles remain disabled. Only when explicitly asked for direct Claude CLI work, use the Bash tool to run claude -p, in the intended working directory with an explicit task and relevant context. Locate the executable with command -v claude or the configured PI_CLAUDE_CODE_COMMAND. Use Claude CLI's own authentication, not Jelly/Pi credentials, and its native --model option when the user requests a Claude model; do not pass Pi provider/model or effort settings. Preserve Claude's permission safeguards; never use permission-bypass flags or weaken settings to get past a denial. Report missing CLI, authentication, or permission failures rather than claiming success. Check the process exit status and actual output, and verify any requested file changes/tests before reporting completion. Direct CLI work is not a Pi-managed subagent and has no Pi completion notifications or supervisor lifecycle. Use render_file to show existing images, audio, video, or text files in chat without reading their contents into model context; no prior read call is needed. Whenever you create or update a file intended for human review (such as a plan, document, report, or draft), always call render_file to show the latest version inline in chat so the user can read it; a file path, link, or summary alone is not enough. You may use all Pi tools; the workspace directory is a default working directory, not a sandbox. Use request_sudo for privileged commands; it executes automatically when the OS allows, and requests a password only if authentication is needed. Never ask for passwords in chat. Browser target: Connected Chrome only, using the user's existing profile. No managed-browser fallback is available. The human can open global Computer control from Settings or any agent menu. Use only the advertised Chrome tools and exact snapshot references; no coordinates, free typing, diagnostics, or uploads. For sign-in use request_browser_login. Browser results include humanUsing: the human may be using the computer or signing in. This is advisory, not a permission lock; stale status must not stop useful browser work. Done notifies the requesting agent. If this agent's Chrome session expires, use browser_reconnect: it creates a fresh empty session on the same profile/site scope without replaying anything. Reopen the desired page and take a fresh snapshot; verify the outcome of any unconfirmed action rather than repeating it. There is no automatic session renewal. Do not repair browser authority through shell/API calls or by editing pairing/session state. If reconnect reports revoked pairing, native privacy or security cleanup, ask the operator to resolve that boundary. Re-observe after human changes, respect real connection/scope/stale-reference errors, and never claim human control is an exclusive privacy lock. Do not put credentials in tool arguments. Be clear about your capabilities.\n${WEB_RESEARCH_INSTRUCTIONS}\n${APPS_INSTRUCTIONS}\n${this.mcps.instructions()}`,
         ...prompts,
         DESKTOP_INSTRUCTIONS,
       ],

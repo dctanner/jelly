@@ -2655,18 +2655,6 @@ main > .connection-error + .conversation {
   }
 }
 
-.message-mode {
-  width: auto;
-  flex-shrink: 0;
-  min-height: 36px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.8rem;
-}
 .message-delivery {
   display: flex;
   align-items: center;

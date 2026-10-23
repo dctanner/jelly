@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { zstdDecompressSync } from "node:zlib";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startApp } from "../src/server/app";
 import { serviceTierOptions } from "../src/server/service-tier";
-import { MODEL_OPTIONS, modelServiceTier, upstreamModel } from "../src/shared/models";
+import { modelsForMode, modelServiceTier, upstreamModel } from "../src/shared/models";
 import { getModel } from "@earendil-works/pi-ai/compat";
 
 const MODEL_CHOICES = [
@@ -20,7 +21,7 @@ const MODEL_CHOICES = [
 ] as const;
 
 test("speed selections map to upstream models and tiers", () => {
-  expect(MODEL_OPTIONS.map(m => m.id).sort()).toEqual(MODEL_CHOICES.map(([id]) => id).sort());
+  expect(modelsForMode("api").map(m => m.id).sort()).toEqual(MODEL_CHOICES.map(([id]) => id).sort());
   for (const [selection, model, tier] of MODEL_CHOICES) {
     expect(upstreamModel(selection)).toBe(model);
     expect(modelServiceTier(selection)).toBe(tier);
@@ -153,7 +154,7 @@ for (const mode of ["api", "chatgpt"] as const)
       },
     });
     const dir = mkdtempSync(join(tmpdir(), "jelly-api-"));
-    const app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
+    const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus, dataDir: dir, configDir: join(dir, "config"), port: 0 });
     try {
       if (mode === "api")
         await app.service.harness.auth.setRuntimeApiKey(provider, token);
@@ -552,7 +553,7 @@ test("ChatGPT uses cached WebSockets across runs, isolates agents, and reconnect
     },
   });
   const dir = mkdtempSync(join(tmpdir(), "jelly-websocket-"));
-  const app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
+  const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus, dataDir: dir, configDir: join(dir, "config"), port: 0 });
   const until = async (condition: () => boolean) => {
     const deadline = Date.now() + 4000;
     while (!condition()) {

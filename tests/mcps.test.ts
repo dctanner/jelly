@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { useTestModel } from "./fixtures/app";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -133,7 +134,7 @@ test("settings reports sign-in and unavailable servers without leaking secrets; 
 
 test("MCP status requires the private control session and exposes no editing endpoint", async () => {
   const root = directory();
-  const app = await startApp({
+  const app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
     dataDir: join(root, "data"),
     configDir: join(root, "config"),
     port: 0,

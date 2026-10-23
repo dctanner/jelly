@@ -78,7 +78,6 @@ import type {
   HistoryPage,
   RunRecord,
   Snapshot,
-  MessageMode,
 } from "../shared/types";
 import { api, control, post, appsApi, recordAppLaunch } from "./api";
 import type { AppRecord } from "../shared/apps";
@@ -820,7 +819,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [uploadTarget, setUploadTarget] = useState<AgentRecord | null>(null);
   const [sending, setSending] = useState(false);
-  const [messageMode, setMessageMode] = useState<MessageMode>("queue");
   const [steering, setSteering] = useState<string | null>(null);
   const [savingModel, setSavingModel] = useState(false);
   const composerInput = useRef<HTMLTextAreaElement>(null);
@@ -1183,10 +1181,11 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     });
   }, []);
   // A newly built client can briefly be served by the previous backend.
-  const connectionReady = data?.config.ready ?? (
-    data?.config.activeMode === "chatgpt"
-      ? data.config.chatgptReady
-      : data?.config.activeMode === "api" && data.config.apiReady
+  const selectedConfig = data?.agentConfig ?? data?.config;
+  const connectionReady = selectedConfig?.ready ?? (
+    selectedConfig?.activeMode === "chatgpt" ? selectedConfig.chatgptReady
+      : selectedConfig?.activeMode === "claude-code" ? selectedConfig.claudeReady
+        : selectedConfig?.activeMode === "api" && selectedConfig.apiReady
   );
   const agent = data?.agents.find(
     (a) =>
@@ -1405,14 +1404,13 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
       await post(`/agents/${target}/messages`, {
         text,
         requestId: pending.current.id,
-        mode: messageMode,
+        mode: "queue",
       });
       setDrafts((d) => ({
         ...d,
         [target]: d[target]?.trim() === text ? "" : (d[target] ?? ""),
       }));
       pending.current = null;
-      setMessageMode("queue");
       if (nav.current.selected === target) jumpToBottom();
       await refresh.current();
     } catch (error) {
@@ -1835,7 +1833,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
         <div className="composer-wrap">
           {data && !connectionReady && (
             <div className="connection-required" role="status">
-              <span>{data.config.notice}</span>
+              <span>{selectedConfig?.notice}</span>
               <button type="button" onClick={() => setModal("settings")}>
                 Connect an account
               </button>
@@ -1908,15 +1906,16 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
               </button>
               <span>
                 {running
-                  ? messageMode === "queue"
-                    ? "Send after this run finishes"
-                    : "Guide the current run at its next interruption point"
+                  ? "Send after this run finishes"
                   : "Enter to send · Shift + Enter for a new line"}
               </span>
               {agent && data && (
                 <ComposerSettings
                   key={agent.id}
                   agentId={agent.id}
+                  mode={agent.mode ?? selectedConfig?.mode}
+                  activeMode={selectedConfig?.activeMode}
+                  providerLocked={!!agent.providerLocked}
                   model={agent.model ?? data.config.selectedModel}
                   effort={agent.effort ?? "high"}
                   readOnly={agent.model == null || agent.effort == null}
@@ -1924,20 +1923,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                   refresh={() => refresh.current()}
                   onBusy={setSavingModel}
                 />
-              )}
-              {running && (
-                <select
-                  className="message-mode"
-                  aria-label="Message delivery"
-                  value={messageMode}
-                  onChange={(e) =>
-                    setMessageMode(e.target.value as MessageMode)
-                  }
-                  disabled={sending}
-                >
-                  <option value="queue">Queued</option>
-                  <option value="steer">Steer</option>
-                </select>
               )}
               {running && (
                 <button
@@ -1954,9 +1939,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                 className="send"
                 aria-label={
                   running
-                    ? messageMode === "queue"
-                      ? "Queue message"
-                      : "Steer agent"
+                    ? "Queue message"
                     : "Send message"
                 }
                 disabled={!canSend}

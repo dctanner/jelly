@@ -1,5 +1,5 @@
 import type { ModelId, Effort } from "./models";
-export type Mode = "auto" | "chatgpt" | "api";
+export type Mode = "auto" | "chatgpt" | "api" | "claude-code";
 export type Status = "idle" | "running" | "waiting" | "error" | "interrupted";
 export type MessageMode = "queue" | "steer";
 export interface PendingMessage {
@@ -23,6 +23,8 @@ export type AgentInput = Pick<AgentRecord, "name" | "instructions" | "color"> &
     nameEdited?: boolean;
   };
 export interface AgentRecord {
+  mode?: Mode;
+  providerLocked?: number;
   model: ModelId;
   effort: Effort;
   projectId: string | null;
@@ -62,10 +64,12 @@ export interface ConnectionConfig {
   selectedModel: ModelId;
   effort: Effort;
   mode: Mode;
-  activeMode: "chatgpt" | "api" | null;
+  activeMode: Exclude<Mode, "auto"> | null;
   ready: boolean;
   provider: string;
   model: string;
+  claudeReady?: boolean;
+  claudeNotice?: string;
   chatgptReady: boolean;
   apiReady: boolean;
   notice: string;
@@ -97,6 +101,7 @@ export interface Snapshot {
   cursor: number;
   historyBefore: number | null;
   config: ConnectionConfig;
+  agentConfig?: ConnectionConfig;
   interventions: Intervention[];
 }
 
@@ -127,6 +132,8 @@ export interface LoginFlow {
   error: string | null;
 }
 export interface ConnectionStatus {
+  claudeReady?: boolean;
+  claudeNotice?: string;
   chatgptReady: boolean;
   apiReady: boolean;
   apiStored: boolean;

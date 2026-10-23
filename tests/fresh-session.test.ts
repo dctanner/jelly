@@ -1,3 +1,4 @@
+import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -119,7 +120,7 @@ async function fixture(mode: "api" | "chatgpt" = "api") {
     release();
     void fake.stop(true);
   });
-  let app = await startApp({
+  let app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
     dataDir: dir,
     port: 0,
     configDir: join(dir, "config"),
@@ -178,7 +179,7 @@ async function fixture(mode: "api" | "chatgpt" = "api") {
     },
     async restart() {
       await app.close();
-      app = await startApp({
+      app = await startApp({ claudeStatusCheck: unavailableClaudeStatus,
         dataDir: dir,
         port: 0,
         configDir: join(dir, "config"),
@@ -241,6 +242,8 @@ for (const mode of ["api", "chatgpt"] as const)
     const started = (await request.json()) as any;
     await f.app.service.settled();
     expect(f.app.store.run(started.run.id)!.status).toBe("completed");
+    expect(f.app.store.agent(f.id)).toMatchObject({ mode, providerLocked: 1 });
+    expect(() => f.app.service.setConfig({ agentId: f.id, mode: "claude-code" })).toThrow("new agent");
     const fresh = f.app.store.context(f.id)!;
     expect(fresh[0]!.id).not.toBe(old[0]!.id);
     expect(f.app.service.chrome).toBe(browser);
@@ -269,6 +272,7 @@ for (const mode of ["api", "chatgpt"] as const)
     const restoredBrowser = f.app.service.chrome;
     expect(restoredBrowser).not.toBe(browser);
     expect(f.app.service.freshSession(f.id, requestId).reused).toBe(true);
+    expect(f.app.store.agent(f.id)).toMatchObject({ mode, providerLocked: 1 });
     f.app.service.start(
       f.id,
       crypto.randomUUID(),
@@ -362,7 +366,7 @@ test("empty sessions rotate without invented summaries; unconnected, missing and
   f.app.service.harness.auth.hasAuth = () => false;
   f.app.service.setMode("auto");
   expect(() => f.app.service.freshSession(f.id, crypto.randomUUID())).toThrow(
-    "Connect ChatGPT",
+    "No OpenAI API key",
   );
 });
 

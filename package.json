@@ -26,7 +26,7 @@
     "check": "bun run typecheck",
     "check:full": "bun run check && bun run test && bun run build",
     "login": "bun scripts/login.ts",
-    "test:server": "bun test --timeout 30000 tests/test-fixtures.test.ts tests/control-session.test.ts tests/chrome-extension-connection.test.ts tests/chrome-native-host.test.ts tests/chrome-bridge.test.ts tests/chrome-api.test.ts tests/chrome-share.test.ts tests/chrome-reconnect.test.ts tests/owned-chrome-desktop.test.ts tests/subagent-api.test.ts tests/subagent-ownership.test.ts tests/subagent-lifecycle.test.ts tests/subagent-transcript.test.ts tests/session-work.test.ts tests/agent-naming.test.ts tests/dev-files.test.ts tests/fresh-session.test.ts tests/server.test.ts tests/openai.test.ts tests/restart.test.ts tests/interventions.test.ts tests/connections.test.ts tests/projects.test.ts tests/mcps.test.ts tests/web-tools.test.ts tests/uploads.test.ts tests/image-generation.test.ts tests/tool-images.test.ts tests/rendered-files.test.ts tests/apply-patch.test.ts tests/apply-patch-transport.test.ts",
+    "test:server": "bun test --timeout 30000 tests/test-fixtures.test.ts tests/control-session.test.ts tests/chrome-extension-connection.test.ts tests/chrome-native-host.test.ts tests/chrome-bridge.test.ts tests/chrome-api.test.ts tests/chrome-share.test.ts tests/chrome-reconnect.test.ts tests/owned-chrome-desktop.test.ts tests/subagent-api.test.ts tests/subagent-ownership.test.ts tests/subagent-lifecycle.test.ts tests/subagent-transcript.test.ts tests/session-work.test.ts tests/agent-naming.test.ts tests/dev-files.test.ts tests/fresh-session.test.ts tests/server.test.ts tests/openai.test.ts tests/restart.test.ts tests/interventions.test.ts tests/connections.test.ts tests/claude-code.test.ts tests/projects.test.ts tests/mcps.test.ts tests/web-tools.test.ts tests/uploads.test.ts tests/image-generation.test.ts tests/tool-images.test.ts tests/rendered-files.test.ts tests/apply-patch.test.ts tests/apply-patch-transport.test.ts",
     "test:agent-identity": "bun run build && bun tests/agent-identity.browser.ts",
     "test:notifications": "bun run build && bun tests/notifications.browser.ts",
     "test:history-scroll": "bun run build && bun tests/history-scroll.browser.ts",
@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-claude-code": "github:earendil-works/pi-claude-code#70abb65186592ca788b29b3db22c3160d629c41f",
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@novnc/novnc": "^1.7.0",
