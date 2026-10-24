@@ -743,6 +743,7 @@ export class JellyService {
       let modelFailure: string | null = null;
       let checkpoint: FileEntry[] | undefined;
       let compacted = false;
+      let checkpointed = false;
       let stopping: Promise<void> | undefined;
       const deadline = setTimeout(() => {
         failure ??=
@@ -877,6 +878,11 @@ export class JellyService {
             const saved: Activity[] = [];
             this.store.db.transaction(() => {
               this.store.saveMessage(agentId, run.id, message);
+              // Pi's earlier core listener has already persisted this boundary.
+              // Commit model context with the transcript, including tool results,
+              // so a process crash cannot revert to the last successful run.
+              this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
+              checkpointed = true;
               if (message.role === "assistant") {
                 // Only the provider's displayable thinking text belongs in the UI.
                 // Never project redacted blocks or opaque reasoning signatures.
@@ -902,6 +908,9 @@ export class JellyService {
                 ? message.errorMessage ||
                   "The model could not complete this turn."
                 : null;
+          } else if (event.type === "message_end") {
+            this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
+            checkpointed = true;
           } else if (event.type === "tool_execution_start") {
             this.emit(agentId, run.id, "tool_started", {
               toolCallId: event.toolCallId,
@@ -950,8 +959,6 @@ export class JellyService {
         )
           failure ??=
             last.errorMessage || "The model could not complete this turn.";
-        if (!failure && !state.cancelled)
-          checkpoint = this.harness.checkpoint(session);
       } catch (error) {
         failure ??= error instanceof Error ? error.message : "The run failed.";
       } finally {
@@ -959,6 +966,14 @@ export class JellyService {
         clearTimeout(state.thinkingTimer);
         clearTimeout(deadline);
         await stopping;
+        if (!freshSession && checkpointed && state.session)
+          try {
+            // Preserve final compaction/extension state even when the last
+            // request failed or the operator stopped the run.
+            checkpoint = this.harness.checkpoint(state.session);
+          } catch (error) {
+            failure ??= error instanceof Error ? error.message : "Could not checkpoint session";
+          }
         if (state.session)
           try {
             await this.harness.dispose(state.session, !freshSession && !failure && !state.cancelled);
@@ -981,7 +996,7 @@ export class JellyService {
         let freshEvent: Activity | undefined;
         this.store.db.transaction(() => {
           this.store.finishRun(run.id, status, failure);
-          if (status === "completed" && checkpoint) {
+          if (checkpoint && (!freshSession || status === "completed")) {
             this.store.saveContext(agentId, run.id, checkpoint);
             if (freshSession)
               freshEvent = this.store.event(agentId, run.id, "session_started", {

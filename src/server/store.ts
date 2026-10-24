@@ -1,7 +1,7 @@
 import { HttpError } from "./errors";
 import { defaultChromeSelection, type ChromeSelection } from "../shared/chrome-protocol";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
-import type { FileEntry } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
 import { MODEL_OPTIONS, EFFORT_OPTIONS, type ModelId, type Effort } from "../shared/models";
 import { activityPreview, thinkingPreview } from "./activity-preview";
 import { Database } from "bun:sqlite";
@@ -573,9 +573,22 @@ export class Store {
   }
   context(agentId: string): FileEntry[] | null {
     const row = this.db
-      .query("SELECT entries FROM contexts WHERE agentId=?")
-      .get(agentId) as { entries: string } | null;
-    return row ? JSON.parse(row.entries) : null;
+      .query("SELECT entries,runId FROM contexts WHERE agentId=?")
+      .get(agentId) as { entries: string; runId: string } | null;
+    if (!row) return null;
+    const entries: FileEntry[] = JSON.parse(row.entries);
+    // A run can fail before creating a session (or old versions may have
+    // discarded its checkpoint). Keep the compacted prefix authoritative and
+    // append only later settled runs, never resurrect summarized history.
+    const tail = this.db.query(`SELECT m.payload FROM messages m
+      JOIN runs r ON r.id=m.runId WHERE m.agentId=?
+      AND r.status IN ('completed','failed','cancelled','interrupted')
+      AND r.rowid > (SELECT rowid FROM runs WHERE id=?) ORDER BY m.id`)
+      .all(agentId, row.runId) as { payload: string }[];
+    if (!tail.length) return entries;
+    const manager = SessionManager.inMemory(undefined, undefined, entries);
+    for (const message of tail) manager.appendMessage(JSON.parse(message.payload));
+    return [manager.getHeader()!, ...manager.getBranch()];
   }
   saveContext(agentId: string, runId: string, entries: FileEntry[]) {
     this.db
@@ -647,10 +660,12 @@ export class Store {
       .run(agentId, runId, JSON.stringify(message));
   }
   history(agentId: string): Message[] {
-    // Only settled, successful runs form model context. Partial runs stay visible in activity.
+    // Completed work within unsuccessful runs is still conversation history.
+    // The harness omits failed assistant attempts from model context on restore.
+    // Exclude the current run: prompt() adds its user message exactly once.
     const rows = this.db
       .query(
-        "SELECT m.payload FROM messages m JOIN runs r ON r.id=m.runId WHERE m.agentId=? AND r.status='completed' ORDER BY m.id",
+        "SELECT m.payload FROM messages m JOIN runs r ON r.id=m.runId WHERE m.agentId=? AND r.status IN ('completed','failed','cancelled','interrupted') ORDER BY m.id",
       )
       .all(agentId) as { payload: string }[];
     return rows.map((row) => JSON.parse(row.payload));

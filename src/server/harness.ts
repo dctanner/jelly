@@ -236,6 +236,15 @@ export class Harness {
     );
     if (!context)
       for (const message of history) sessionManager.appendMessage(message);
+    // Failed/aborted provider attempts can contain incomplete tool calls or
+    // reasoning blocks. Omit only those attempts, not earlier successful work.
+    // Context edits preserve compaction boundaries and raw transcript evidence.
+    for (const entry of sessionManager.buildSessionProjection().entries) {
+      if (entry.sourceEntry.type === "message" && entry.messages.some(
+        (message) => message.role === "assistant" &&
+          ["error", "aborted", "pending"].includes(message.stopReason),
+      )) sessionManager.appendContextEdit(entry.sourceEntry.id, null);
+    }
     const { session } = await createAgentSession({
       cwd,
       agentDir: this.dataDir,

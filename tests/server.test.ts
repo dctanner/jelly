@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { fixtureStream } from "./fixtures/model";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -136,6 +137,86 @@ test.each(["turns", "duration"] as const)(
       dispose.mockRestore();
       stop.mockRestore();
       create.mockRestore();
+    }
+  },
+);
+
+test("failure before prompt acceptance does not advance the checkpoint past the undelivered input", async () => {
+  const { app, id } = await fixture();
+  const first = app.service.start(id, "seed-before-rejection", "Remember the blue lantern");
+  await app.service.settled();
+  const harness = app.service.harness;
+  const create = harness.create.bind(harness);
+  const spy = spyOn(harness, "create").mockImplementation(async (...args) => {
+    const session = await create(...args);
+    session.prompt = async () => { throw new Error("Fixture prompt hook rejected input"); };
+    return session;
+  });
+  try {
+    app.service.start(id, "rejected-input", "Keep the silver lighthouse request");
+    await app.service.settled();
+    expect(app.store.runs(id).at(-1)?.status).toBe("failed");
+    expect(app.store.db.query("SELECT runId FROM contexts WHERE agentId=?").get(id))
+      .toMatchObject({ runId: first.run!.id });
+  } finally {
+    spy.mockRestore();
+  }
+  app.service.start(id, "after-rejected-input", "Continue");
+  await app.service.settled();
+  const messages = SessionManager.inMemory(undefined, undefined, app.store.context(id)!).buildSessionContext().messages;
+  expect(messages.filter(message => message.role === "user")).toHaveLength(3);
+  expect(JSON.stringify(messages)).toContain("Keep the silver lighthouse request");
+});
+
+test.each(["failed", "cancelled"] as const)(
+  "%s runs retain completed tool work and resume without replaying the failed attempt",
+  async (outcome) => {
+    const { app, id } = await fixture();
+    const harness = app.service.harness;
+    const create = harness.create.bind(harness);
+    let interrupt = true;
+    let requests = 0;
+    const inputs: unknown[] = [];
+    const spy = spyOn(harness, "create").mockImplementation(async (...args) => {
+      const session = await create(...args);
+      const stream = session.agent.streamFunction;
+      session.agent.streamFunction = (model, context, options) => {
+        requests++;
+        inputs.push(structuredClone(context.messages));
+        if (interrupt && context.messages.at(-1)?.role === "toolResult")
+          return fixtureStream(outcome === "cancelled" ? 30000 : 1, true)(model, context, options);
+        return stream(model, context, options);
+      };
+      return session;
+    });
+    try {
+      const started = app.service.start(id, `partial-${outcome}`, "Audit the blue lantern; retain the tool evidence.");
+      if (outcome === "cancelled") {
+        for (let n = 0; requests < 2 && n < 1000; n++) await Bun.sleep(5);
+        expect(requests).toBe(2);
+        // Already durable before the request settles, including its tool output.
+        expect(JSON.stringify(app.store.context(id))).toContain('"role":"toolResult"');
+        await app.service.stop(id);
+      }
+      await app.service.settled();
+      expect(app.store.run(started.run!.id)?.status).toBe(outcome);
+      const checkpoint = app.store.context(id)!;
+      const saved = SessionManager.inMemory(undefined, undefined, checkpoint).buildSessionContext().messages;
+      expect(saved.some(message => message.role === "toolResult")).toBe(true);
+      expect(saved.some(message => message.role === "assistant" && message.stopReason === (outcome === "failed" ? "error" : "aborted"))).toBe(true);
+      interrupt = false;
+      const before = inputs.length;
+      app.service.start(id, `resume-${outcome}`, "Continue");
+      await app.service.settled();
+      const restored = inputs[before] as { role: string; stopReason?: string; content: unknown }[];
+      expect(restored.filter(message => message.role === "user")).toHaveLength(2);
+      expect(JSON.stringify(restored)).toContain("Audit the blue lantern");
+      expect(restored.some(message => message.role === "toolResult")).toBe(true);
+      expect(restored.some(message => ["error", "aborted"].includes(message.stopReason ?? ""))).toBe(false);
+      expect(app.store.runs(id).at(-1)?.status).toBe("completed");
+      expect(app.store.context(id)![0]!.id).toBe(checkpoint[0]!.id);
+    } finally {
+      spy.mockRestore();
     }
   },
 );
@@ -291,7 +372,8 @@ describe("Jelly local client/server foundation", () => {
     );
     expect(app.store.runs(id)[0]?.status).toBe("cancelled");
     expect(app.store.agent(id)?.status).toBe("idle");
-    expect(app.store.history(id)).toHaveLength(0);
+    expect(app.store.history(id).filter(message => message.role === "user"))
+      .toMatchObject([{ content: "Stop me" }]);
     app.service.start(id, "after-stop", "Continue");
     await app.service.settled();
     expect(app.store.runs(id)[1]?.status).toBe("completed");

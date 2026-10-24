@@ -165,8 +165,8 @@ async function fixture(mode: "api" | "chatgpt" = "api") {
     },
     id,
     requests,
-    fail() {
-      fail = true;
+    fail(value = true) {
+      fail = value;
     },
     hold() {
       gate = new Promise<void>((resolve) => {
@@ -288,6 +288,68 @@ for (const mode of ["api", "chatgpt"] as const)
       f.app.store.runs(f.id).every((run) => run.status === "completed"),
     ).toBe(true);
   });
+
+for (const seeded of [false, true])
+  test(`failed turns survive restart without losing prior context (seeded=${seeded})`, async () => {
+    const f = await fixture();
+    if (seeded) {
+      await f.seed();
+      f.app.service.freshSession(f.id, crypto.randomUUID());
+      await f.app.service.settled();
+    }
+    f.fail();
+    const run = f.app.service.start(f.id, crypto.randomUUID(), "Investigate the silver lighthouse.").run!;
+    await f.app.service.settled();
+    expect(f.app.store.run(run.id)?.status).toBe("failed");
+    const checkpoint = f.app.store.context(f.id)!;
+    expect(JSON.stringify(checkpoint)).toContain("Investigate the silver lighthouse.");
+    if (seeded) expect(checkpoint.some(entry => entry.type === "compaction")).toBe(true);
+    await f.restart();
+    f.fail(false);
+    f.app.service.start(f.id, crypto.randomUUID(), "Continue");
+    await f.app.service.settled();
+    const input = JSON.stringify(f.requests.at(-1).input);
+    expect(input).toContain("Investigate the silver lighthouse.");
+    expect(input.match(/Continue/g)).toHaveLength(1);
+    expect(input).not.toContain("Summary unavailable");
+    if (seeded) expect(input).toContain("lantern-checkpoint");
+    expect(f.app.store.context(f.id)![0]!.id).toBe(checkpoint[0]!.id);
+  });
+
+test("legacy failed runs without checkpoints are restored after the compacted prefix exactly once", async () => {
+  const f = await fixture();
+  await f.seed();
+  f.app.service.freshSession(f.id, crypto.randomUUID());
+  await f.app.service.settled();
+  const old = f.app.store.context(f.id)!;
+  // Simulate an old-version failure or a crash during session creation.
+  const run = f.app.store.createRun(f.id, crypto.randomUUID(), "Keep the missed audit request", "api", "gpt-6-astra");
+  f.app.store.saveMessage(f.id, run.id, { role: "user", content: "Keep the missed audit request", timestamp: Date.now() });
+  f.app.store.finishRun(run.id, "interrupted", "Fixture process crash");
+  const restored = f.app.store.context(f.id)!;
+  expect(restored[0]!.id).toBe(old[0]!.id);
+  expect(restored.some(entry => entry.type === "compaction")).toBe(true);
+  expect(JSON.stringify(restored).match(/Keep the missed audit request/g)).toHaveLength(1);
+  f.app.service.start(f.id, crypto.randomUUID(), "Continue");
+  await f.app.service.settled();
+  const input = JSON.stringify(f.requests.at(-1).input);
+  expect(input).toContain("lantern-checkpoint");
+  expect(input.match(/Keep the missed audit request/g)).toHaveLength(1);
+  expect(JSON.stringify(f.app.store.context(f.id)).match(/Keep the missed audit request/g)).toHaveLength(1);
+});
+
+test("legacy first failed run is restored without a checkpoint", async () => {
+  const f = await fixture();
+  const run = f.app.store.createRun(f.id, crypto.randomUUID(), "Recover the original audit", "api", "gpt-6-astra");
+  f.app.store.saveMessage(f.id, run.id, { role: "user", content: "Recover the original audit", timestamp: Date.now() });
+  f.app.store.finishRun(run.id, "failed", "Fixture rate limit");
+  expect(f.app.store.context(f.id)).toBeNull();
+  f.app.service.start(f.id, crypto.randomUUID(), "Continue");
+  await f.app.service.settled();
+  const input = JSON.stringify(f.requests.at(-1).input);
+  expect(input.match(/Recover the original audit/g)).toHaveLength(1);
+  expect(input.match(/Continue/g)).toHaveLength(1);
+});
 
 test("failed or cancelled compaction never replaces the previous checkpoint", async () => {
   const f = await fixture();

@@ -152,7 +152,7 @@ test("a fresh process recovers SQLite identity, profiles, transcript and interru
     const continued = await waitFor((s) => s.runs[2]?.status === "completed");
     expect(
       continued.events.filter((e) => e.type === "message").at(-1)?.data.text,
-    ).toContain("2 saved user messages");
+    ).toContain("3 saved user messages");
     expect(continued.agents[0]?.status).toBe("idle");
   } finally {
     process.child.kill("SIGTERM");
