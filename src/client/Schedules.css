@@ -1,0 +1,79 @@
+.schedules-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.schedule-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+.schedule-fields :is(input, textarea, select) {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+}
+.schedule-list,
+.schedule-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.schedule-list .settings-row {
+  width: 100%;
+  text-align: left;
+  min-height: 44px;
+}
+.schedule-list .settings-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.schedule-list small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.schedule-prompt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  max-width: 100%;
+}
+.schedule-times {
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.schedule-times dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.schedule-history li {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.schedules-panel :is(button, summary),
+.schedule-link {
+  min-height: 44px;
+}
+.schedule-link {
+  display: inline-flex;
+  align-items: center;
+}
+.schedule-details > summary {
+  min-height: 44px;
+  padding: 12px 0;
+  cursor: pointer;
+}
+@media (max-width: 767px), (pointer: coarse) {
+  .schedule-fields :is(input, textarea, select) {
+    font-size: 16px;
+  }
+  .schedule-times {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

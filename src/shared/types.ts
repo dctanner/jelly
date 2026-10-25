@@ -3,6 +3,7 @@ export type Mode = "auto" | "chatgpt" | "api" | "claude-code";
 export type Status = "idle" | "running" | "waiting" | "error" | "interrupted";
 export type MessageMode = "queue" | "steer";
 export interface PendingMessage {
+  timezone?: string | null;
   id: string;
   agentId: string;
   text: string;
@@ -40,6 +41,7 @@ export interface AgentRecord {
   archivedAt: string | null;
 }
 export interface RunRecord {
+  source?: import("./schedules").ScheduleSource | null;
   id: string;
   agentId: string;
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -82,7 +84,7 @@ export interface HistoryPage {
 export interface AgentNotification {
   id: number;
   agentId: string;
-  type: "run_completed" | "run_failed" | "run_interrupted" | "intervention_requested";
+  type: "run_completed" | "run_failed" | "run_interrupted" | "intervention_requested" | "schedule_blocked" | "schedule_expired";
 }
 export interface Snapshot {
   agentNotifications?: AgentNotification[];

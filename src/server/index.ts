@@ -13,6 +13,7 @@ const tailnet = process.env.JELLY_TAILSCALE === "1" ? await tailscaleNetwork(por
 const app = await startApp({
   dataDir,
   authPath: process.env.JELLY_AUTH_FILE,
+  schedulerOptions: { concurrency: Number(process.env.JELLY_SCHEDULE_CONCURRENCY ?? 2) },
   port,
   listenAddresses: tailnet?.addresses,
   allowedOrigins: [

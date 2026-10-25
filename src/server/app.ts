@@ -29,6 +29,8 @@ import { APP_ICON_MAX_BYTES } from "./apps-icons";
 import type { DesktopSessions } from "./desktop-sessions";
 export interface AppOptions {
   dataDir: string;
+  scheduleClock?: () => number;
+  schedulerOptions?: { concurrency?: number; batchSize?: number; pollMs?: number };
   sudoExecutor?: SudoExecutor;
   interventionTtlMs?: number;
   authPath?: string;
@@ -764,6 +766,22 @@ export async function startApp(options: AppOptions) {
                 }),
               );
             }
+            if (url.pathname === "/api/schedules/timezone") {
+              if (req.method === "GET") return json({ timezone: service.schedules.suggestedTimezone("instance") });
+              if (req.method === "PUT") return json(service.schedules.saveTimezone("instance", (await body(req)).timezone));
+            }
+            const scheduleMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/schedules(?:\/([^/]+)(?:\/(pause|resume|cancel|occurrences))?)?$/);
+            if (scheduleMatch) {
+              const [, agentId, scheduleId, action] = scheduleMatch;
+              if (!store.agent(agentId!)) throw new HttpError(404, "Agent not found.");
+              if (scheduleId === "preview" && req.method === "POST" && !action) return json(service.schedules.preview(await body(req)));
+              if (!scheduleId && req.method === "GET") return json(service.schedules.list(agentId!, { before: url.searchParams.get("before") ?? undefined, limit: Number(url.searchParams.get("limit") ?? 30), state: url.searchParams.get("state") ?? undefined }));
+              if (!scheduleId && req.method === "POST") return json(service.schedules.create(agentId!, await body(req)), 201);
+              if (scheduleId && !action && req.method === "GET") return json(service.schedules.receipt(service.schedules.get(agentId!, scheduleId)));
+              if (scheduleId && !action && req.method === "PATCH") return json(service.schedules.change(agentId!, scheduleId, "update", await body(req)));
+              if (scheduleId && action === "occurrences" && req.method === "GET") return json(service.schedules.occurrences(agentId!, scheduleId, url.searchParams.get("before") ?? undefined, Number(url.searchParams.get("limit") ?? 30)));
+              if (scheduleId && action && action !== "occurrences" && req.method === "POST") return json(service.schedules.change(agentId!, scheduleId, action as "pause" | "resume" | "cancel", await body(req)));
+            }
             const match = url.pathname.match(
               /^\/api\/agents\/([^/]+)(?:\/(messages|stop|archive|restore|history|project|steer|fresh-session))?$/,
             );
@@ -809,6 +827,7 @@ export async function startApp(options: AppOptions) {
               }
               if (req.method === "POST" && action === "messages") {
                 const input = await body(req);
+                if ("source" in input || "scheduleId" in input || "occurrenceId" in input) throw new HttpError(400, "Scheduled provenance is server-owned.");
                 const prompt = text(input.text, "Message", 24000);
                 const requestId = text(input.requestId, "Request ID", 100);
                 if (
@@ -821,7 +840,7 @@ export async function startApp(options: AppOptions) {
                     "Message mode must be queue or steer.",
                   );
                 return json(
-                  service.start(id!, requestId, prompt, input.mode ?? "queue"),
+                  service.start(id!, requestId, prompt, input.mode ?? "queue", input.timezone === undefined ? undefined : text(input.timezone, "Timezone", 100)),
                   202,
                 );
               }
@@ -898,6 +917,7 @@ export async function startApp(options: AppOptions) {
     }
     service.apps.configureOrigins([server.url.origin, `http://localhost:${server.port}`, ...listenerOrigins]);
     service.chrome.protectOrigins([server.url.origin, `http://localhost:${server.port}`, ...listenerOrigins]);
+    service.scheduler.start();
     let closing: Promise<void> | undefined;
     return {
       server,

@@ -1,4 +1,6 @@
 import { HttpError } from "./errors";
+import { migrateSchedules } from "./schedule-schema";
+import type { ScheduleSource } from "../shared/schedules";
 import { defaultChromeSelection, type ChromeSelection } from "../shared/chrome-protocol";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
@@ -48,7 +50,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 16)
+    if (version > 17)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -197,6 +199,7 @@ export class Store {
         PRAGMA user_version=16;
       `);
     })();
+    if (version < 17) this.db.transaction(() => migrateSchedules(this.db))();
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, record TEXT NOT NULL);
@@ -211,7 +214,7 @@ export class Store {
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_timeline_notifications ON timeline(agentId, id)
-        WHERE type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested');
+        WHERE type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired');
       CREATE INDEX IF NOT EXISTS idx_timeline_thinking ON timeline(runId, id) WHERE type='thinking';
       CREATE INDEX IF NOT EXISTS idx_timeline_tool_starts
         ON timeline(runId, id) WHERE type='tool_started';
@@ -232,12 +235,12 @@ export class Store {
       )
       .all(...(agentId ? [agentId] : [])) as PendingMessage[];
   }
-  enqueueMessage(id: string, agentId: string, text: string, mode: MessageMode) {
+  enqueueMessage(id: string, agentId: string, text: string, mode: MessageMode, timezone?: string) {
     this.db
       .query(
-        "INSERT INTO pending_messages(id,agentId,text,mode,createdAt) VALUES (?,?,?,?,?)",
+        "INSERT INTO pending_messages(id,agentId,text,mode,createdAt,timezone) VALUES (?,?,?,?,?,?)",
       )
-      .run(id, agentId, text, mode, new Date().toISOString());
+      .run(id, agentId, text, mode, new Date().toISOString(), timezone ?? null);
     return this.pendingMessage(id)!;
   }
   deliverMessage(id: string, runId: string) {
@@ -368,11 +371,11 @@ export class Store {
     return this.db.query(`
       SELECT t.id, t.agentId, t.type FROM agents a JOIN timeline t ON t.id = (
         SELECT id FROM timeline WHERE agentId=a.id
-          AND type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested')
+          AND type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired')
         ORDER BY id DESC LIMIT 1
       )
       WHERE a.archivedAt IS NULL AND (
-        t.type='run_completed' OR a.status IN ('waiting', 'error', 'interrupted')
+        t.type IN ('run_completed','schedule_blocked','schedule_expired') OR a.status IN ('waiting', 'error', 'interrupted')
       )
       ORDER BY t.id
     `).all() as AgentNotification[];
@@ -631,33 +634,39 @@ export class Store {
       return this.run(id)!;
     })();
   }
+  private parseRun(row: unknown): RunRecord | null {
+    if (!row) return null;
+    const value = row as RunRecord & { source: string | null };
+    return { ...value, source: value.source ? JSON.parse(value.source) : null };
+  }
   run(id: string) {
-    return this.db
+    return this.parseRun(this.db
       .query(
-        "SELECT id,agentId,status,mode,model,startedAt,endedAt,error FROM runs WHERE id=?",
+        "SELECT id,agentId,status,mode,model,startedAt,endedAt,error,source FROM runs WHERE id=?",
       )
-      .get(id) as RunRecord | null;
+      .get(id));
   }
   byRequest(id: string) {
-    return this.db.query("SELECT * FROM runs WHERE requestId=?").get(id) as
-      (RunRecord & { prompt: string }) | null;
+    return this.parseRun(this.db.query("SELECT * FROM runs WHERE requestId=?").get(id)) as (RunRecord & { prompt: string }) | null;
   }
   runs(agentId: string) {
     return this.db
       .query(
-        "SELECT id,agentId,status,mode,model,startedAt,endedAt,error FROM runs WHERE agentId=? ORDER BY startedAt",
+        "SELECT id,agentId,status,mode,model,startedAt,endedAt,error,source FROM runs WHERE agentId=? ORDER BY startedAt",
       )
-      .all(agentId) as RunRecord[];
+      .all(agentId).map(row => this.parseRun(row)!) as RunRecord[];
   }
   finishRun(id: string, status: RunRecord["status"], error: string | null) {
-    this.db
-      .query("UPDATE runs SET status=?,error=?,endedAt=? WHERE id=?")
-      .run(status, error, new Date().toISOString(), id);
+    this.db.transaction(() => {
+      const finishedAt = new Date().toISOString();
+      this.db.query("UPDATE runs SET status=?,error=?,endedAt=? WHERE id=?").run(status, error, finishedAt, id);
+      this.db.query("UPDATE schedule_occurrences SET state=?,reason=?,reasonCode=?,finishedAt=? WHERE runId=? AND state='running'").run(status, error, ["failed", "cancelled", "interrupted"].includes(status) ? status : null, finishedAt, id);
+    })();
   }
-  saveMessage(agentId: string, runId: string, message: Message) {
+  saveMessage(agentId: string, runId: string, message: Message, source?: ScheduleSource) {
     this.db
-      .query("INSERT INTO messages (agentId,runId,payload) VALUES (?,?,?)")
-      .run(agentId, runId, JSON.stringify(message));
+      .query("INSERT INTO messages (agentId,runId,payload,source) VALUES (?,?,?,?)")
+      .run(agentId, runId, JSON.stringify(message), source ? JSON.stringify(source) : null);
   }
   history(agentId: string): Message[] {
     // Completed work within unsuccessful runs is still conversation history.
@@ -743,9 +752,9 @@ export class Store {
     const runs = runIds.length
       ? (this.db
           .query(
-            `SELECT id,agentId,status,mode,model,startedAt,endedAt,error FROM runs WHERE id IN (${runIds.map(() => "?").join(",")}) ORDER BY startedAt`,
+            `SELECT id,agentId,status,mode,model,startedAt,endedAt,error,source FROM runs WHERE id IN (${runIds.map(() => "?").join(",")}) ORDER BY startedAt`,
           )
-          .all(...runIds) as RunRecord[])
+          .all(...runIds).map(row => this.parseRun(row)!) as RunRecord[])
       : [];
     return {
       events,
@@ -812,7 +821,7 @@ export class Store {
           "The server stopped before this run finished. Send a new message to continue.";
         this.finishRun(run.id, "interrupted", error);
         this.setStatus(run.agentId, "interrupted");
-        this.event(run.agentId, run.id, "run_interrupted", { error });
+        this.event(run.agentId, run.id, "run_interrupted", { ...this.run(run.id)?.source, error });
       }
     })();
   }

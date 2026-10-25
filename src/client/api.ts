@@ -103,3 +103,17 @@ export function recordAppLaunch(id: string, navigationId: string) {
   }
   return pending;
 }
+
+const schedulesPath = (agentId: string, id?: string) => `/agents/${encodeURIComponent(agentId)}/schedules${id ? `/${encodeURIComponent(id)}` : ""}`;
+export const schedulesApi = {
+  list: (agentId: string, query: { before?: string; limit?: number; state?: "active" | "paused" | "terminal" } = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+    return api<import("../shared/schedules").SchedulesPage>(`${schedulesPath(agentId)}?${params}`);
+  },
+  get: (agentId: string, id: string) => api<import("../shared/schedules").ScheduleReceipt>(schedulesPath(agentId, id)),
+  create: (agentId: string, input: Record<string, unknown>) => post<import("../shared/schedules").ScheduleReceipt>(schedulesPath(agentId), input),
+  preview: (agentId: string, input: Record<string, unknown>) => post<{ preview: string[] }>(`${schedulesPath(agentId)}/preview`, input),
+  change: (agentId: string, id: string, action: "update" | "pause" | "resume" | "cancel", input: Record<string, unknown>) => api<import("../shared/schedules").ScheduleReceipt>(`${schedulesPath(agentId, id)}${action === "update" ? "" : `/${action}`}`, { method: action === "update" ? "PATCH" : "POST", body: JSON.stringify(input) }),
+  history: (agentId: string, id: string, before?: string) => api<import("../shared/schedules").OccurrencesPage>(`${schedulesPath(agentId, id)}/occurrences${before ? `?before=${encodeURIComponent(before)}` : ""}`),
+};

@@ -646,3 +646,58 @@ test("macOS idle helper never claims readiness for a failed HTTP probe or a stop
     ),
   ).toBe(true);
 });
+
+test("durable pending schedule survives a process crash; admitted scheduled tools never replay after another crash", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jelly-schedule-restart-"));
+  let server = await launch(dir);
+  let authenticated = "";
+  let headers: Record<string, string> = {};
+  const request = async (path: string, method = "GET", input?: unknown) => {
+    if (authenticated !== server.url) {
+      const response = await fetch(server.url + "/api/control-session");
+      headers = { cookie: response.headers.get("set-cookie")!.split(";")[0]!, "x-jelly-csrf": (await response.json()).csrf };
+      authenticated = server.url;
+    }
+    const response = await fetch(server.url + path, { method, headers: { ...headers, "content-type": "application/json" }, body: input === undefined ? undefined : JSON.stringify(input) });
+    if (!response.ok) throw new Error(`Fixture API ${response.status}: ${await response.text()}`);
+    return response.json();
+  };
+  const until = async (predicate: () => Promise<boolean>) => {
+    for (let i = 0; i < 600; i++) { if (await predicate()) return; await Bun.sleep(20); }
+    throw new Error("Schedule crash fixture timed out");
+  };
+  try {
+    const initial = await request("/api/state") as Snapshot;
+    const agentId = initial.agents[0]!.id;
+    await request(`/api/agents/${agentId}`, "PATCH", { name: "Scheduled crash fixture", instructions: "Remember context", color: "#a4c8e8" });
+    await request(`/api/agents/${agentId}/messages`, "POST", { requestId: "hold", text: "/fixture sudo" });
+    await until(async () => (await request("/api/state") as Snapshot).agents[0]?.status === "waiting");
+    await request(`/api/agents/${agentId}/messages`, "POST", { requestId: "disposable-draft", text: "Do not send after restart" });
+    const created = await request(`/api/agents/${agentId}/schedules`, "POST", { requestId: "schedule", title: "Crash-safe task", prompt: "  Durable exact task\n  ", kind: "once", timezone: "UTC", runAt: new Date(Date.now() + 150).toISOString() });
+    const historyPath = `/api/agents/${agentId}/schedules/${created.schedule.id}/occurrences`;
+    await until(async () => (await request(historyPath)).items[0]?.state === "pending");
+    const occurrenceId = (await request(historyPath)).items[0].id;
+    server.child.kill("SIGKILL"); await server.child.exited;
+    server = await launch(dir);
+    await until(async () => {
+      const state = await request("/api/state") as Snapshot;
+      return state.events.some(event => event.type === "tool_started" && state.runs.find(run => run.id === event.runId)?.source?.occurrenceId === occurrenceId);
+    });
+    const admitted = (await request(historyPath)).items[0];
+    expect(admitted.state).toBe("running");
+    server.child.kill("SIGKILL"); await server.child.exited;
+    server = await launch(dir);
+    const recovered = (await request(historyPath)).items[0];
+    expect(recovered.id).toBe(occurrenceId); expect(recovered.runId).toBe(admitted.runId); expect(recovered.state).toBe("interrupted");
+    const state = await request("/api/state") as Snapshot;
+    expect(state.runs.filter(run => run.source?.occurrenceId === occurrenceId)).toHaveLength(1);
+    expect(state.events.find(event => event.data.messageId === "disposable-draft" && event.type === "message")?.data.deliveryStatus).toBe("cancelled");
+    const message = state.events.find(event => event.type === "message" && event.data.role === "user" && event.data.occurrenceId === occurrenceId)!;
+    expect(message.data.taskSnapshot).toBe("  Durable exact task\n  ");
+    expect(message.data.source).toBe("schedule");
+    expect((await request(`/api/agents/${agentId}/schedules/${created.schedule.id}`)).schedule.state).toBe("completed");
+  } finally {
+    server.child.kill("SIGTERM"); await server.child.exited;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 45000);

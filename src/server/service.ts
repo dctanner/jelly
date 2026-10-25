@@ -13,6 +13,10 @@ import type {
   PendingMessage,
 } from "../shared/types";
 import { Store } from "./store";
+import { Schedules, scheduledWake } from "./schedules";
+import { Scheduler } from "./scheduler";
+import { scheduleTools } from "./schedule-tools";
+import type { ScheduleOccurrence, ScheduleSource } from "../shared/schedules";
 import { SubagentStore } from "./subagent-store";
 import { thinkingPreview } from "./activity-preview";
 import { Harness } from "./harness";
@@ -58,6 +62,8 @@ export class JellyService {
   readonly interventions: Interventions;
   readonly subagents: SubagentStore;
   readonly apps: AppsService;
+  readonly schedules: Schedules;
+  readonly scheduler: Scheduler;
   readonly desktop: DesktopSessions;
   private desktopPrivate = false;
   private privateBoundaries = new Set<string>();
@@ -66,6 +72,8 @@ export class JellyService {
     readonly store: Store,
     readonly harness: Harness,
     options: {
+      schedulerOptions?: { concurrency?: number; batchSize?: number; pollMs?: number };
+      scheduleClock?: () => number;
       sudoExecutor?: SudoExecutor;
       interventionTtlMs?: number;
       allowedOrigins?: string[];
@@ -73,6 +81,8 @@ export class JellyService {
     } = {},
   ) {
     store.recover();
+    this.schedules = new Schedules(store, options.scheduleClock, event => { this.notify(event); this.scheduler?.wake(); });
+    this.scheduler = new Scheduler(this.schedules, occurrence => this.startScheduled(occurrence), options.schedulerOptions);
     this.subagents = new SubagentStore(store.db);
     this.apps = new AppsService(store, {
       dataDir: harness.dataDir,
@@ -483,6 +493,7 @@ export class JellyService {
     let event: Activity;
     const agent = this.store.db.transaction(() => {
       const agent = this.store.archiveAgent(id, archived);
+      if (archived) this.schedules.pauseAgent(id);
       event = this.store.event(
         id,
         null,
@@ -565,8 +576,10 @@ export class JellyService {
     requestId: string,
     prompt: string,
     mode: MessageMode = "queue",
+    browserTimezone?: string,
   ) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
+    if (requestId.startsWith("schedule:")) throw new HttpError(400, "Schedule admission request IDs are reserved for the server.");
     if (mode !== "queue" && mode !== "steer")
       throw new HttpError(400, "Message mode must be queue or steer.");
     const existing = this.store.pendingMessage(requestId);
@@ -595,6 +608,7 @@ export class JellyService {
     if (!agent) throw new HttpError(404, "Agent not found.");
     if (agent.archivedAt)
       throw new HttpError(409, "Restore this agent before sending a message.");
+    const requestedTimezone = browserTimezone === undefined ? undefined : this.schedules.saveTimezone(agentId, browserTimezone).timezone;
     this.harness.requireConnection(this.agentConfig(agent));
     const active = this.activeFor(agentId);
     if (active?.cancelled)
@@ -612,6 +626,7 @@ export class JellyService {
           agentId,
           prompt,
           mode,
+          requestedTimezone,
         );
         event = this.store.event(agentId, null, "message_pending", {
           messageId: message.id,
@@ -623,7 +638,7 @@ export class JellyService {
       if (mode === "steer") this.injectSteering(active, message);
       return { message, run: null, reused: false };
     }
-    return this.startRun(agent, requestId, prompt, mode);
+    return this.startRun(agent, requestId, prompt, mode, false, undefined, requestedTimezone);
   }
   private activeFor(agentId: string) {
     return [...this.active].find(
@@ -673,13 +688,28 @@ export class JellyService {
     state.session.agent.steer(message);
     this.harness.wakeSteering(state.session);
   }
+  private startScheduled(occurrence: ScheduleOccurrence) {
+    if (this.closing || this.activeFor(occurrence.agentId) || this.store.pendingMessages(occurrence.agentId).length) return false;
+    const current = this.schedules.occurrence(occurrence.id);
+    if (!current || current.state !== "pending") return false;
+    const agent = this.store.agent(occurrence.agentId);
+    if (!agent || agent.archivedAt) return false;
+    const wake = scheduledWake(current, new Date(this.schedules.now()).toISOString());
+    this.startRun(agent, current.requestId, wake.text, "queue", false, wake.source);
+    return true;
+  }
   private startRun(
     agent: AgentRecord,
     requestId: string,
     prompt: string,
     mode: MessageMode = "queue",
     freshSession = false,
+    source?: ScheduleSource,
+    browserTimezone?: string,
   ) {
+    // Admission owns its transaction. Launching harness/model work under an outer
+    // transaction would break crash guarantees even if the nested savepoint committed.
+    if (this.store.db.inTransaction) throw new Error("Run admission cannot execute inside an outer transaction.");
     const agentId = agent.id;
     const instance = this.store.instance();
     const config = this.agentConfig(agent);
@@ -688,9 +718,9 @@ export class JellyService {
     const events: Activity[] = [];
     let nameAgent = false;
     const run = this.store.db.transaction(() => {
-      if (!freshSession) nameAgent = this.store.claimAgentName(agentId);
-      if (!freshSession && !this.store.pendingMessage(requestId))
-        this.store.enqueueMessage(requestId, agentId, prompt, mode);
+      if (!freshSession && !source) nameAgent = this.store.claimAgentName(agentId);
+      if (!freshSession && !source && !this.store.pendingMessage(requestId))
+        this.store.enqueueMessage(requestId, agentId, prompt, mode, browserTimezone);
       const run = this.store.createRun(
         agentId,
         requestId,
@@ -698,16 +728,21 @@ export class JellyService {
         config.activeMode!,
         config.model,
       );
+      if (source) {
+        this.schedules.admit(source.occurrenceId, run.id, source);
+        this.store.db.query("UPDATE runs SET source=? WHERE id=?").run(JSON.stringify(source), run.id);
+      }
       this.store.setStatus(agentId, "running");
       if (!freshSession) {
-        this.store.deliverMessage(requestId, run.id);
+        if (!source) this.store.deliverMessage(requestId, run.id);
         this.store.saveMessage(agentId, run.id, {
           role: "user",
           content: prompt,
           timestamp: Date.now(),
-        });
+        }, source);
         events.push(
           this.store.event(agentId, run.id, "message", {
+            ...source,
             role: "user",
             text: prompt,
             messageId: requestId,
@@ -717,6 +752,7 @@ export class JellyService {
       }
       events.push(
         this.store.event(agentId, run.id, "run_started", {
+          ...source,
           operation: freshSession ? "fresh_session" : "message",
           mode: config.activeMode,
           model: config.model,
@@ -725,8 +761,28 @@ export class JellyService {
           status: "running",
         }),
       );
-      return run;
+      return this.store.run(run.id)!;
     })();
+    return this.executeRun({ agent, run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, events });
+  }
+  /** Post-commit execution only; scheduler and interactive admission share this lifecycle. */
+  private executeRun(input: {
+    agent: AgentRecord;
+    run: RunRecord;
+    requestId: string;
+    prompt: string;
+    config: ReturnType<JellyService["agentConfig"]>;
+    instance: ReturnType<Store["instance"]>;
+    browserSelection: ChromeSelection;
+    nameAgent: boolean;
+    freshSession: boolean;
+    source?: ScheduleSource;
+    events: Activity[];
+  }) {
+    let { agent } = input;
+    const { run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, events } = input;
+    const agentId = agent.id;
+    // Only after the complete admission commits may naming, tools or provider work start.
     const state: ActiveRun = {
       agentId,
       freshSession,
@@ -777,6 +833,12 @@ export class JellyService {
         }
         if (state.cancelled || failure) return;
         const context = this.store.context(agentId);
+        let deliveredRequestId = requestId;
+        const schedulingTools = scheduleTools(
+          this.schedules, agent.id, run.id,
+          () => !this.closing && !state.cancelled && this.store.run(run.id)?.status === "running",
+          () => deliveredRequestId,
+        );
         const session = await this.harness.create(
           agent,
           context ? [] : this.store.history(agentId),
@@ -794,6 +856,7 @@ export class JellyService {
             ...desktopTools(this.desktop, agentId, run.id,
               (reason, signal) => this.requestDesktopHandoff(agentId, run.id, reason, signal)),
             ...appsTools(this.apps, agent),
+            ...schedulingTools,
           ],
           (type, data) => this.emit(agentId, run.id, type, data),
           context,
@@ -861,6 +924,7 @@ export class JellyService {
                 });
               })();
               state.steering.delete(event.message);
+              deliveredRequestId = pending.id;
               this.notify(saved);
             }
           } else if (
@@ -877,7 +941,7 @@ export class JellyService {
                     .join("\n");
             const saved: Activity[] = [];
             this.store.db.transaction(() => {
-              this.store.saveMessage(agentId, run.id, message);
+              this.store.saveMessage(agentId, run.id, message, source);
               // Pi's earlier core listener has already persisted this boundary.
               // Commit model context with the transcript, including tool results,
               // so a process crash cannot revert to the last successful run.
@@ -897,6 +961,7 @@ export class JellyService {
                 }
                 if (text)
                   saved.push(this.store.event(agentId, run.id, "message", {
+                    ...source,
                     role: "assistant",
                     text,
                   }));
@@ -1005,6 +1070,7 @@ export class JellyService {
           }
           this.store.setStatus(agentId, status === "failed" ? "error" : "idle");
           event = this.store.event(agentId, run.id, `run_${status}`, {
+            ...source,
             status,
             error: failure,
           });
@@ -1012,6 +1078,7 @@ export class JellyService {
         if (freshEvent) this.notify(freshEvent);
         this.notify(event!);
         this.active.delete(run.id);
+        this.scheduler.wake();
         if (status === "completed" && !this.closing) {
           const next = this.store.pendingMessages(agentId)[0];
           if (next) {
@@ -1038,13 +1105,14 @@ export class JellyService {
     })();
     return {
       run,
-      message: this.store.pendingMessage(requestId)!,
+      message: this.store.pendingMessage(requestId),
       reused: false,
     };
   }
   async stop(agentId: string) {
     if (!this.store.agent(agentId))
       throw new HttpError(404, "Agent not found.");
+    this.store.db.transaction(() => this.schedules.stopAgent(agentId))();
     for (const [id, state] of this.active)
       if (this.store.run(id)?.agentId === agentId) {
         state.cancelled = true;
@@ -1064,6 +1132,7 @@ export class JellyService {
     }
   }
   async close() {
+    this.scheduler.stop();
     this.closing = true;
     const states = [...this.active.values()];
     for (const state of states) { state.cancelled = true; state.naming?.abort(); }

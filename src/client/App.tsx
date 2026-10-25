@@ -1,4 +1,6 @@
 import { AppRegistration } from "./AppRegistration";
+import { SchedulesPanel, ScheduledMessage, ScheduleNotice, ScheduleLink } from "./Schedules";
+import type { SchedulesPage } from "../shared/schedules";
 import { Avatar } from "./Avatar";
 import { InitialAgentIdentity } from "./InitialAgentIdentity";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
@@ -79,7 +81,7 @@ import type {
   RunRecord,
   Snapshot,
 } from "../shared/types";
-import { api, control, post, appsApi, recordAppLaunch } from "./api";
+import { api, control, post, appsApi, recordAppLaunch, schedulesApi } from "./api";
 import type { AppRecord } from "../shared/apps";
 import { AppsHome } from "./AppsHome";
 import { AppViewer } from "./AppViewer";
@@ -394,8 +396,18 @@ export function AgentDetails({
   const [busy, setBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const [computerOpen, setComputerOpen] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [schedules, setSchedules] = useState<Pick<SchedulesPage, "activeCount" | "nextRunAt"> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => schedulesApi.list(agent.id, { limit: 1 }).then(page => { if (alive) setSchedules(page); }).catch(() => {});
+    void refresh(); const timer = setInterval(refresh, 5000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [agent.id]);
+  const nextSchedule = schedules?.nextRunAt;
   const project =
     projects.find((p) => p.id === agent.projectId)?.name ?? "Ungrouped";
+  if (schedulesOpen) return <SchedulesPanel key={agent.id} agentId={agent.id} onClose={() => setSchedulesOpen(false)} />;
   if (computerOpen) return <ComputerControlPanel agentId={agent.id} onClose={() => setComputerOpen(false)} onChange={onSaved} />;
   return (
     <Modal
@@ -457,6 +469,12 @@ export function AgentDetails({
               icon={<RefreshCw size={19} />}
               disabled={running || !connected || refreshing || !!agent.archivedAt || !canCompact}
               onClick={onFreshSession}
+            />
+            <SettingsRow
+              label={schedules ? `Schedules (${schedules.activeCount} active)` : "Schedules"}
+              value={nextSchedule ? `Next: ${nextSchedule}` : schedules ? "No upcoming runs" : "Open to view schedules"}
+              disabled={!connected}
+              onClick={() => setSchedulesOpen(true)}
             />
             <SettingsRow
               label="Computer control"
@@ -534,6 +552,10 @@ function EventItem({
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [copyVisible, setCopyVisible] = useState(false);
+  if (event.type === "message" && event.data.role === "user" && event.data.source === "schedule")
+    return <ScheduledMessage event={event} />;
+  if (["schedule_changed", "schedule_blocked", "schedule_expired"].includes(event.type))
+    return <ScheduleNotice event={event} />;
   if (event.type === "image_generated")
     return <GeneratedImages images={event.data.images} />;
   if (event.type === "file_rendered")
@@ -830,6 +852,8 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const creationPending = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [stopping, setStopping] = useState<string | null>(null);
+  const [stoppedScheduleNotice, setStoppedScheduleNotice] = useState<string | null>(null);
+  const [linkedSchedule, setLinkedSchedule] = useState<string | null>(() => new URLSearchParams(window.location.search).get("schedule"));
   const [history, setHistory] = useState<{
     agentId: string;
     page: HistoryPage;
@@ -1405,6 +1429,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
         text,
         requestId: pending.current.id,
         mode: "queue",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       setDrafts((d) => ({
         ...d,
@@ -1426,6 +1451,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     setStopping(target);
     try {
       await post(`/agents/${target}/stop`, {});
+      setStoppedScheduleNotice(target);
       await refresh.current();
     } catch (error) {
       if (nav.current.selected === target)
@@ -1839,6 +1865,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
               </button>
             </div>
           )}
+          {stoppedScheduleNotice === agent?.id && <p className="chat-form-hint" role="status">Stopped current work and unstarted due tasks. Future cron ticks remain enabled. <ScheduleLink agentId={agent.id}>Pause schedules</ScheduleLink></p>}
           {actionError && (
             <p role="alert" className="error-text">
               {actionError}
@@ -2015,6 +2042,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           }}
         />
       )}
+      {active && linkedSchedule !== null && agent && agent.id === explicitAgentId && <SchedulesPanel key={agent.id} agentId={agent.id} initialId={linkedSchedule} onClose={() => setLinkedSchedule(null)} />}
       {modal === "profile" && agent && (
         <Profile
           key={agent.id}
