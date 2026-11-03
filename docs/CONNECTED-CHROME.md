@@ -118,16 +118,25 @@ transport; local native messaging cannot bridge machines.
   untruncated text absence, or DOM readiness, never arbitrary evaluation.
 - Snapshots combine bounded visible text and exact references from authorized
   same-process and cross-site/OOPIF documents. References bind to connection,
-  session, tab, document and observation epochs. Frame origins need no site grant;
-  hidden/clipped frames, srcdoc, object/embed and author shadow roots (open or
-  closed) fail closed. The isolated extension uses Chrome's
+  session, tab, document and observation epochs. Frame origins need no site grant.
+  If hidden/clipped, inherited or srcdoc frames prevent complete frame-tree
+  inspection, text observations fall back to the **main document only**. All
+  child documents (including visible siblings) are omitted, rather than guessed
+  from URLs or inspected using their own viewport. Snapshots report
+  `framesOmitted` and an explanatory notice; references to omitted child frames
+  cannot be acted on. Changes to observation scope invalidate old references,
+  and pre/post checks discard results whose scope changed during collection.
+  Object/embed and author shadow roots (open or closed) still fail closed.
+  The isolated extension uses Chrome's
   `chrome.dom.openOrClosedShadowRoot` on a bounded light-DOM scan; it rejects
   the entire document rather than inspecting private root contents. Missing API
-  support also fails closed. A secret field anywhere makes the whole tab unobservable. Actions
-  cannot use another document's/agent's stale reference.
+  support also fails closed. A secret field in any included document blocks
+  observation. Excluded child documents are never returned or given actionable
+  references. Actions cannot use another document's/agent's stale reference.
 - Screenshots return PNG tool image content, never base64 text in model output.
-  Screenshots with detected secret/nonempty/contenteditable fields or any author
-  shadow root are rejected. Stable closed-root fields cannot bypass these guards;
+  Screenshots never use the main-document-only fallback: unobservable or inherited
+  frames, detected secret/nonempty/contenteditable fields or any author shadow
+  root are rejected. Stable closed-root fields cannot bypass these guards;
   transient rendering/capture races remain a separate, unresolved rollout gate.
   Large images fail at the bounded cap rather than exporting to disk.
 - Each agent automatically controls its own Jelly-created task tabs and groups on
@@ -700,6 +709,11 @@ native desktop boundaries, plus `bun run check`. Before deployment run
 
 - `bun tests/chrome-extension.browser.ts`: actual extension/native bridge,
   unrestricted websites/control-endpoint denial, refs, secret fields, debugger/security cleanup and retained tabs.
+- `bun run test:chrome-frames`: focused disposable headed-Chrome regression for
+  main-document-only fallback with hidden/clipped/cross-site/nested helpers,
+  retained main-page actions, omitted child content, secret-field guards and
+  rejection of screenshots and stale child references. This does not qualify the
+  entire lifecycle suite or verify a live Gmail session.
 - `bun run test:chrome-vnc`: actual X11/noVNC input, owner isolation, advisory
   browser operation, mobile fit and teardown.
 - `bun run test:chrome-owned-vnc`: owned desktop/authentication/persistence.

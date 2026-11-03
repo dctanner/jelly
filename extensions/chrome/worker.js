@@ -6,6 +6,7 @@ import {
   CHROME_MAX_FRAME,
 } from "../../src/shared/chrome-protocol";
 import { observation } from "./observation";
+import { chromeFailureReason, ChromeObservationError } from "../../src/shared/chrome-errors";
 import {
   chromeInternetDenyRegexes,
 } from "../../src/shared/chrome-policy";
@@ -342,13 +343,17 @@ async function establish(explicit, epoch) {
             current(sessions.get(message.session), message.run);
           if (port === native)
             post({ jsonrpc: "2.0", id: message.id, generation, result });
-        } catch {
+        } catch (error) {
           if (port === native)
             post({
               jsonrpc: "2.0",
               id: message.id,
               generation,
-              error: { code: -32000, message: "Unavailable or revoked" },
+              error: {
+                code: -32000,
+                message: "Unavailable or revoked",
+                ...(error instanceof ChromeObservationError ? { reason: error.reason } : {}),
+              },
             });
         }
       })
@@ -448,9 +453,8 @@ async function create(s, run, url) {
     throw e;
   }
 }
-// Subframe about:blank/about:srcdoc documents never leave the parent's origin.
-// They are not separately observed: the parent guard rejects every such frame
-// that renders, so their pixels and text are never disclosed.
+// Inherited documents are never separately observed. Rendered inherited frames
+// force main-document-only text observations and still block screenshots.
 function inheritedFrame(frameId, url) {
   return frameId !== 0 && /^about:(blank|srcdoc)(?:[?#]|$)/.test(String(url));
 }
@@ -465,7 +469,7 @@ function checkURL(s, url) {
   )
     unavailable();
 }
-async function documentGuard(s, run, tab) {
+async function documentGuard(s, run, tab, screenshot = false) {
   current(s, run);
   owned(s, tab.cap);
   const info = await chrome.tabs.get(tab.id);
@@ -481,6 +485,10 @@ async function documentGuard(s, run, tab) {
     !frames.some((f) => f.frameId === 0 && f.url === info.url)
   )
     unavailable();
+  // Inherited frames are not injected, so their pixels can never be certified
+  // safe for a whole-tab screenshot (including a pending navigation).
+  if (screenshot && frames.some((f) => inheritedFrame(f.frameId, f.url)))
+    throw new ChromeObservationError("unsupported_frame");
   const observed = frames.filter((f) => !inheritedFrame(f.frameId, f.url));
   if (observed.length > 16) unavailable();
   for (const frame of observed) checkURL(s, frame.url);
@@ -518,35 +526,53 @@ async function execute(s, run, tab, doc, op, args, epoch) {
     !result[0].result
   )
     unavailable();
+  if (Object.hasOwn(result[0].result, "observationBlocked")) {
+    const reason = chromeFailureReason(result[0].result.observationBlocked);
+    if (reason) throw new ChromeObservationError(reason);
+    unavailable();
+  }
   return result[0].result;
 }
+// No DOM-element <-> Chrome frame-ID guessing: if the frame tree cannot be
+// observed in full, omit every child document. The fallback flag is internal,
+// never an RPC parameter. Screenshots retain the strict whole-tab guard.
+async function exposure(s, run, tab, docs, epoch, screenshot) {
+  const top = docs.find((doc) => doc.frameId === 0);
+  if (!top) unavailable();
+  const mode = screenshot ? "screenshot" : "guard";
+  const main = await execute(s, run, tab, top, mode,
+    screenshot ? {} : { topDocumentOnly: true }, epoch);
+  if (main.framesOmitted === true) return { docs: [top], topOnly: true };
+  for (const doc of docs) {
+    if (doc === top) continue;
+    try {
+      await execute(s, run, tab, doc, mode, {}, epoch);
+    } catch (error) {
+      if (!screenshot && error instanceof ChromeObservationError && error.reason === "unsupported_frame")
+        return { docs: [top], topOnly: true };
+      throw error;
+    }
+  }
+  return { docs, topOnly: false };
+}
+function documentSignature(docs) {
+  return docs.map((d) => d.documentId).sort().join();
+}
 async function script(s, run, tab, op, args) {
-  const docs = await documentGuard(s, run, tab),
-    epoch = s.epoch;
-  const signature = docs
-    .map((d) => d.documentId)
-    .sort()
-    .join();
+  const allDocs = await documentGuard(s, run, tab, op === "screenshot"), epoch = s.epoch;
+  const scope = await exposure(s, run, tab, allDocs, epoch, op === "screenshot");
+  const { docs, topOnly } = scope;
+  const signature = documentSignature(allDocs);
+  const referenceScope = signature + (topOnly ? ":main-only" : ":all");
   const exact = ["click", "fill", "select", "key"].includes(op);
-  if (exact && tab.document !== signature) unavailable();
-  // Guard every authorized document, including OOPIFs, before any disclosure or
-  // mutation. A secret field anywhere makes the entire tab unavailable.
-  for (const doc of docs)
-    await execute(
-      s,
-      run,
-      tab,
-      doc,
-      op === "screenshot" ? "screenshot" : "guard",
-      {},
-      epoch,
-    );
+  if (exact && tab.document !== referenceScope) unavailable();
   let result;
   if (op === "snapshot") {
     tab.refs.clear();
     const frames = [];
     for (const doc of docs) {
-      const observed = await execute(s, run, tab, doc, op, {}, epoch);
+      const observed = await execute(s, run, tab, doc, op,
+        topOnly ? { topDocumentOnly: true } : {}, epoch);
       for (const el of observed.elements) tab.refs.set(el.ref, doc.documentId);
       frames.push({ frame: doc.frameId, ...observed });
     }
@@ -558,29 +584,28 @@ async function script(s, run, tab, op, args) {
         .slice(0, 24000),
       elements: frames.flatMap((f) => f.elements).slice(0, 300),
       frames: frames.map((f) => ({ frame: f.frame, viewport: f.viewport })),
+      ...(topOnly ? { framesOmitted: true, frameNotice: "Only the main document is included; all child frames are omitted because the frame tree is not fully observable." } : {}),
       truncated:
         frames.some((f) => f.truncated) ||
         frames.reduce((n, f) => n + f.text.length, 0) > 24000,
     };
-    tab.document = signature;
+    tab.document = referenceScope;
   } else if (op === "screenshot") result = { ok: true };
   else {
     const doc = exact
       ? docs.find((d) => d.documentId === tab.refs.get(args.ref))
       : docs.find((d) => d.frameId === 0);
     if (!doc) unavailable();
-    result = await execute(s, run, tab, doc, op, args, epoch);
+    result = await execute(s, run, tab, doc, op,
+      topOnly ? { ...args, topDocumentOnly: true } : args, epoch);
     if (exact) tab.refs.clear();
   }
-  const after = await documentGuard(s, run, tab);
-  if (
-    s.epoch !== epoch ||
-    after
-      .map((d) => d.documentId)
-      .sort()
-      .join() !== signature
-  )
-    unavailable();
+  const after = await documentGuard(s, run, tab, op === "screenshot");
+  if (s.epoch !== epoch || documentSignature(after) !== signature) unavailable();
+  // Discard observations if frame visibility changes while collecting them.
+  // Actions are never replayed when a post-check fails.
+  const afterScope = await exposure(s, run, tab, after, epoch, op === "screenshot");
+  if (afterScope.topOnly !== topOnly) unavailable();
   return result;
 }
 async function dispatch(r) {
@@ -783,7 +808,7 @@ async function dispatch(r) {
       }
     }
     current(s, r.run);
-    const doc = await documentGuard(s, r.run, tab),
+    const doc = await documentGuard(s, r.run, tab, true),
       epoch = s.epoch;
     const image = await tracked(
       s,
@@ -793,7 +818,7 @@ async function dispatch(r) {
       }),
     );
     current(s, r.run);
-    const after = await documentGuard(s, r.run, tab);
+    const after = await documentGuard(s, r.run, tab, true);
     await script(s, r.run, tab, "screenshot", {});
     if (
       doc

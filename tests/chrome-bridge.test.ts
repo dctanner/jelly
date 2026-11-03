@@ -205,6 +205,27 @@ test("Chrome bridge authenticates profile/generation, isolates requests and reje
     await f.close();
   }
 });
+test("bridge reports only allowlisted observation categories, never raw extension errors", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    for (const reason of ["unsupported_frame", "secret_field", "PRIVATE", "__proto__", undefined]) {
+      const count = p.messages.length;
+      const pending = f.bridge.call(profile, generation, "s", "r", "snapshot", {});
+      const outcome = pending.catch((error: Error) => error.message);
+      await waitFor(() => p.messages.length > count);
+      p.socket.write(chromeFrame({ jsonrpc: "2.0", id: p.messages.at(-1).id, generation,
+        error: { code: -32000, reason, message: "PRIVATE raw error", data: "PRIVATE content" } }));
+      const message = await outcome;
+      expect(message).not.toContain("PRIVATE");
+      if (reason === "unsupported_frame" || reason === "secret_field") expect(message).toContain(`[${reason}]`);
+      else expect(message).toContain("unavailable or revoked");
+      expect(p.messages.length).toBe(count + 1); // no retry
+    }
+  } finally { await f.close(); }
+});
+
 test("Chrome selection persists and disconnected profiles never fall back to a managed browser", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-store-"));
   const store = new Store(join(dir, "test.sqlite"));

@@ -24,6 +24,7 @@ import {
   type ChromeProfile,
 } from "../shared/chrome-protocol";
 import { ChromeWriter } from "./chrome-writer";
+import { chromeOperationError } from "../shared/chrome-errors";
 import { validChromeDesktop, type ChromeDesktop } from "./chrome-desktop";
 interface Peer {
   socket: Socket;
@@ -361,7 +362,11 @@ export class ChromeBridge {
             if (v.error)
               p.reject(
                 new Error(
-                  "Chrome operation unavailable or revoked. Secret-field pages, unapproved frames and stale references are unsupported. Re-observe before retrying; mutations are never replayed.",
+                  chromeOperationError(
+                    typeof v.error === "object" && v.error !== null
+                      ? (v.error as Record<string, unknown>).reason
+                      : undefined,
+                  ),
                 ),
               );
             else p.resolve(v.result);

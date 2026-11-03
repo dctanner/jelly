@@ -63,6 +63,11 @@ const fixture = Bun.serve({
         `<h1>Hidden blank helper</h1><script>setTimeout(() => { const f = document.createElement('iframe'); f.style.display = 'none'; document.body.appendChild(f); }, 50);</script>`,
         { headers: { "Content-Type": "text/html" } },
       );
+    if (path === "/helper-frames")
+      return new Response(
+        `<h1>Inbox fixture</h1><button onclick="document.querySelector('h1').textContent='Inbox clicked'">Inbox action</button><iframe id="helper" style="display:none" src="${childFixture.url.origin}/"></iframe><iframe src="/child"></iframe>`,
+        { headers: { "Content-Type": "text/html" } },
+      );
     if (path === "/redirect")
       return Response.redirect(`${denied.url.origin}/forbidden`);
     if (path === "/visibility")
@@ -258,14 +263,15 @@ try {
     method: Parameters<ChromeBridge["call"]>[4],
     params: Record<string, unknown> = {},
     sid = session,
-  ) =>
-    bridge
+  ) => {
+    const caller = new Error(`Fixture ${method} (${JSON.stringify(params)})`);
+    return bridge
       .call(peer.id, peer.generation, sid, run, method, params)
       .catch((error) => {
-        throw new Error(
-          `Fixture ${method} (${JSON.stringify(params)}): ${error.message}`,
-        );
+        caller.message += `: ${error.message}`;
+        throw caller;
       }) as Promise<any>;
+  };
   await call("begin", {
     name: "Headed fixture",
     protected: [denied.url.origin],
@@ -319,16 +325,74 @@ try {
     for (let i = 0; i < 40 && !helperSnapshot; i++)
       helperSnapshot = await call("snapshot", { tab: helper.pageId }, blankSession).catch(() => delay());
     expect(helperSnapshot.text).toContain("Hidden blank helper");
+    expect(helperSnapshot.framesOmitted).toBe(true);
+    await expect(call("screenshot", { tab: helper.pageId }, blankSession)).rejects.toThrow("unsupported_frame");
     const visibleBlank = await call("open", { url: `${fixture.url.origin}/blank-frame` }, blankSession);
     await delay(400);
-    // A rendered blank frame is still refused for observation, but the session stays usable.
-    await expect(call("snapshot", { tab: visibleBlank.pageId }, blankSession)).rejects.toThrow();
+    // A rendered blank frame is omitted; its parent remains readable.
+    const blankSnapshot = await call("snapshot", { tab: visibleBlank.pageId }, blankSession);
+    expect(blankSnapshot.text).toContain("Blank frame host");
+    expect(blankSnapshot.framesOmitted).toBe(true);
+    expect(blankSnapshot.frames).toHaveLength(1);
+    await expect(call("screenshot", { tab: visibleBlank.pageId }, blankSession)).rejects.toThrow();
     const blankStatus = await popup.evaluate(() => (globalThis as any).chrome.runtime.sendMessage({ action: "status" }));
     expect(blankStatus.sessions.find((x: any) => x.id === blankSession)).toMatchObject({ paused: false });
     expect((await call("snapshot", { tab: helper.pageId }, blankSession)).text).toContain("Hidden blank helper");
     await call("end", { discard: true }, blankSession);
     console.log("PASS: about:blank helper frames neither pause the session nor become observable.");
   }
+  {
+    const helperSession = crypto.randomUUID();
+    await call("begin", { name: "Inbox helper frames", protected: [protectedFixture.url.origin] }, helperSession);
+    const helper = await call("open", { url: `${fixture.url.origin}/helper-frames` }, helperSession);
+    await delay(500);
+    const page = context.pages().find(p => p.url() === `${fixture.url.origin}/helper-frames`)!;
+    for (const style of ["display:none", "opacity:0", "position:absolute;left:-5000px", "position:absolute;top:850px"]) {
+      await page.locator("#helper").evaluate((el, style) => el.setAttribute("style", style), style);
+      const snapshot = await call("snapshot", { tab: helper.pageId }, helperSession);
+      expect(snapshot.framesOmitted).toBe(true);
+      expect(snapshot.frames).toHaveLength(1);
+      expect(snapshot.text).toContain("Inbox");
+      expect(snapshot.text).not.toContain("OOPIF child");
+      expect(snapshot.text).not.toContain("Local fixture"); // even the visible sibling is omitted
+      await call("click", { tab: helper.pageId, ref: snapshot.elements.find((e: any) => e.label.trim() === "Inbox action").ref }, helperSession);
+      await expect(call("screenshot", { tab: helper.pageId }, helperSession)).rejects.toThrow("unsupported_frame");
+    }
+    // Main-document-only results must not inspect or disclose a hidden child's
+    // fields; a secret in the main document still blocks the whole result.
+    const helperChild = page.frames().find(f => f.url() === childFixture.url.href)!;
+    await helperChild.evaluate(() => {
+      const input = document.createElement("input"); input.type = "password";
+      input.value = "HIDDEN_CHILD_SECRET"; document.body.append(input);
+    });
+    const withHiddenSecret = await call("snapshot", { tab: helper.pageId }, helperSession);
+    expect(withHiddenSecret.framesOmitted).toBe(true);
+    expect(JSON.stringify(withHiddenSecret)).not.toContain("HIDDEN_CHILD_SECRET");
+    await page.evaluate(() => { const input = document.createElement("input"); input.type = "password"; document.body.append(input); });
+    await expect(call("snapshot", { tab: helper.pageId }, helperSession)).rejects.toThrow("secret_field");
+    await page.locator("input[type=password]").evaluate(el => el.remove());
+    await helperChild.locator("input[type=password]").evaluate(el => el.remove());
+    await page.locator("#helper").evaluate(el => el.setAttribute("style", ""));
+    await helperChild.evaluate(() => { const frame = document.createElement("iframe"); frame.src = location.href; frame.style.display = "none"; document.body.append(frame); });
+    await delay(300);
+    const nested = await call("snapshot", { tab: helper.pageId }, helperSession);
+    expect(nested.framesOmitted).toBe(true);
+    expect(nested.frames).toHaveLength(1);
+    await expect(call("screenshot", { tab: helper.pageId }, helperSession)).rejects.toThrow("unsupported_frame");
+    await helperChild.locator("iframe").evaluate(el => el.remove());
+    await delay(300);
+    const visible = await call("snapshot", { tab: helper.pageId }, helperSession);
+    expect(visible.frames).toHaveLength(3);
+    const childRef = visible.elements.find((e: any) => e.label.trim() === "Child go").ref;
+    await page.locator("#helper").evaluate(el => el.setAttribute("style", "display:none"));
+    await expect(call("click", { tab: helper.pageId, ref: childRef }, helperSession)).rejects.toThrow();
+    expect((await call("snapshot", { tab: helper.pageId }, helperSession)).text).toContain("Inbox clicked");
+    await call("end", { discard: true }, helperSession);
+    console.log("PASS: hidden, clipped and cross-site helper frames omitted without blocking main document; stale child actions and screenshots denied.");
+  }
+  // Focused headed regression lane, still using the real native host and
+  // disposable profile. The default invocation continues through the full suite.
+  if (process.env.JELLY_CHROME_FRAMES_ONLY !== "1") {
   console.log("PASS: default policy accepts dotted navigation, redirect and script; dotted control navigation/redirect/assets denied.");
   // No origin allowlist or opt-in mode, including cross-site frames/assets.
   // Exact control-endpoint denies apply before navigation and subresource requests.
@@ -1569,6 +1633,7 @@ try {
   console.log(
     "PASS: headed disposable Chrome + real native host/socket: two agents, two profiles/instances, rejected personal-tab grant with preserved original group, task naming, background groups, exact fill/click/select/key, bounded waits interrupted by native security pause, same-process/OOPIF observations/actions, popup adoption, retained follow-up handoff, hidden/secret/closed-root suppression (main and OOPIF), delayed real capture/fill drain acknowledgement and debugger detach, stale/foreign caps, zero-hit denied redirect, cleanup, native version mismatch, worker termination/native bridge restart/generation revocation, disconnect.",
   );
+  }
 } finally {
   await Promise.race([context?.close(), delay(5000)]);
   await secondContext?.close();

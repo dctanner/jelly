@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
-import { CHROME_PROTOCOL, CHROME_METHODS } from "../src/shared/chrome-protocol";
+import { CHROME_PROTOCOL, CHROME_METHODS, chromeParams } from "../src/shared/chrome-protocol";
 const built = await Bun.build({ entrypoints: ["extensions/chrome/worker.js"], target: "browser", format: "iife" });
 const source = await built.outputs[0]!.text();
 // Drain the worker's asynchronous startup chain instead of assuming a fixed
@@ -33,6 +33,122 @@ async function fixture(local: Record<string, any> = {}, session: Record<string, 
   const alarm = async (name: string) => { alarms.delete(name); chrome.alarms.onAlarm.fire({ name }); await tick(); };
   return { chrome, ports, alarms, local, rpc, paired, alarm };
 }
+test("observation refusal envelopes become safe RPC errors, not successful guards", async () => {
+  const f = await fixture();
+  f.paired();
+  const url = "https://fixture.example/";
+  Object.assign(f.chrome.tabs, {
+    create: async () => ({ id: 1, windowId: 1 }), group: async () => 1,
+    update: async () => ({}), get: async () => ({ id: 1, url }),
+  });
+  f.chrome.tabGroups.update = async () => ({});
+  f.chrome.webNavigation.getAllFrames = async () => [{ frameId: 0, documentId: "doc", url }];
+  let calls = 0, blocked: unknown = "unsupported_frame";
+  f.chrome.scripting = { executeScript: async () => {
+    calls++;
+    if (blocked === "throw") throw new Error("PRIVATE underlying exception");
+    return [{ documentId: "doc", result: { observationBlocked: blocked, text: "PRIVATE page text" } }];
+  } };
+  const port = f.ports[0];
+  const call = async (method: string, params: object) => {
+    const id = crypto.randomUUID();
+    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: "s", run: "r", method, params });
+    for (let i = 0; i < 100; i++) {
+      const response = port.messages.find((m: any) => m.id === id);
+      if (response) return response;
+      await tick();
+    }
+    throw new Error("No fixture response");
+  };
+  expect((await call("begin", { name: "Fixture", protected: [] })).result).toEqual({ ok: true });
+  const tab = (await call("open", { url })).result.pageId;
+  for (const reason of ["unsupported_frame", "secret_field", "PRIVATE", "throw"]) {
+    blocked = reason;
+    const before = calls;
+    const response = await call("snapshot", { tab });
+    expect(response.result).toBeUndefined();
+    expect(response.error).toBeDefined();
+    expect(JSON.stringify(response)).not.toContain("PRIVATE");
+    if (reason === "unsupported_frame" || reason === "secret_field") expect(response.error.reason).toBe(reason);
+    else expect(response.error.reason).toBeUndefined();
+    expect(calls).toBe(before + 1); // refusal stops before any content observation/retry
+  }
+});
+
+test("unobservable frame trees restrict text and exact actions to main document without inspecting hidden children", async () => {
+  expect(chromeParams("snapshot", { tab: "cap", topDocumentOnly: true })).toBe(false);
+  const f = await fixture();
+  f.paired();
+  const url = "https://fixture.example/";
+  Object.assign(f.chrome.tabs, {
+    create: async () => ({ id: 1, windowId: 1 }), group: async () => 1,
+    update: async () => ({}), get: async () => ({ id: 1, url }),
+  });
+  f.chrome.tabGroups.update = async () => ({});
+  // Deliberately put the child first: the guard must start at the main document.
+  f.chrome.webNavigation.getAllFrames = async () => [
+    { frameId: 1, documentId: "child", url }, { frameId: 0, documentId: "main", url },
+  ];
+  let hidden = true, nested = false, secret = false, hideDuringSnapshot = false;
+  const calls: { doc: string; op: string }[] = [];
+  f.chrome.scripting = { executeScript: async ({ target, args }: any) => {
+    const doc = target.documentIds[0], [op, options] = args;
+    calls.push({ doc, op });
+    let result: any;
+    if (secret) result = { observationBlocked: "secret_field" };
+    else if ((hidden && doc === "main") || (nested && doc === "child")) {
+      if (op === "screenshot" || !options.topDocumentOnly) result = { observationBlocked: "unsupported_frame" };
+      else result = { ok: true, framesOmitted: true };
+    } else result = { ok: true, framesOmitted: false };
+    if (op === "snapshot" && !result.observationBlocked) {
+      result = { ready: true, text: doc === "main" ? "Main inbox" : "CHILD_SENTINEL", elements: [{ ref: `${doc}-ref`, tag: "button", type: "", label: doc }], viewport: {}, truncated: false };
+      if (hideDuringSnapshot) hidden = true;
+    }
+    return [{ documentId: doc, result }];
+  } };
+  const port = f.ports[0];
+  const call = async (method: string, params: object) => {
+    const id = crypto.randomUUID();
+    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: "s", run: "r", method, params });
+    for (let i = 0; i < 100; i++) {
+      const response = port.messages.find((m: any) => m.id === id);
+      if (response) return response;
+      await tick();
+    }
+    throw new Error("No fixture response");
+  };
+  await call("begin", { name: "Fixture", protected: [] });
+  const tab = (await call("open", { url })).result.pageId;
+  const mainOnly = await call("snapshot", { tab });
+  expect(mainOnly.result.framesOmitted).toBe(true);
+  expect(mainOnly.result.frames.map((x: any) => x.frame)).toEqual([0]);
+  expect(JSON.stringify(mainOnly)).not.toContain("CHILD_SENTINEL");
+  expect(calls.every(c => c.doc === "main")).toBe(true);
+  expect((await call("click", { tab, ref: "main-ref" })).result).toEqual({ ok: true, framesOmitted: true });
+  expect((await call("screenshot", { tab })).error.reason).toBe("unsupported_frame");
+
+  hidden = false;
+  const full = await call("snapshot", { tab });
+  expect(full.result.frames).toHaveLength(2);
+  expect(full.result.text).toContain("CHILD_SENTINEL");
+  calls.length = 0;
+  hidden = true;
+  expect((await call("click", { tab, ref: "child-ref" })).error).toBeDefined();
+  expect(calls.some(c => c.op === "click")).toBe(false);
+  expect(calls.every(c => c.doc === "main")).toBe(true);
+
+  hidden = false; nested = true;
+  calls.length = 0;
+  const nestedResult = await call("snapshot", { tab });
+  expect(nestedResult.result.framesOmitted).toBe(true);
+  expect(calls.some(c => c.doc === "child" && c.op === "snapshot")).toBe(false);
+
+  nested = false; hideDuringSnapshot = true;
+  expect((await call("snapshot", { tab })).error).toBeDefined(); // discard changing exposure
+  hideDuringSnapshot = false; secret = true;
+  expect((await call("snapshot", { tab })).error.reason).toBe("secret_field");
+});
+
 test("auto-connect without popup is single flight, pending and opaque errors are visible", async () => {
   const f = await fixture();
   expect(f.ports).toHaveLength(1);
