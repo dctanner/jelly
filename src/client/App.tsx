@@ -1,5 +1,5 @@
 import { AppRegistration } from "./AppRegistration";
-import { SchedulesPanel, ScheduledMessage, ScheduleNotice, ScheduleLink } from "./Schedules";
+import { SchedulesPanel, ScheduledMessage, ScheduleNotice } from "./Schedules";
 import type { SchedulesPage } from "../shared/schedules";
 import { Avatar } from "./Avatar";
 import { InitialAgentIdentity } from "./InitialAgentIdentity";
@@ -852,7 +852,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const creationPending = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [stopping, setStopping] = useState<string | null>(null);
-  const [stoppedScheduleNotice, setStoppedScheduleNotice] = useState<string | null>(null);
   const [linkedSchedule, setLinkedSchedule] = useState<string | null>(() => new URLSearchParams(window.location.search).get("schedule"));
   const [history, setHistory] = useState<{
     agentId: string;
@@ -1451,7 +1450,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     setStopping(target);
     try {
       await post(`/agents/${target}/stop`, {});
-      setStoppedScheduleNotice(target);
       await refresh.current();
     } catch (error) {
       if (nav.current.selected === target)
@@ -1865,7 +1863,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
               </button>
             </div>
           )}
-          {stoppedScheduleNotice === agent?.id && <p className="chat-form-hint" role="status">Stopped current work and unstarted due tasks. Future cron ticks remain enabled. <ScheduleLink agentId={agent.id}>Pause schedules</ScheduleLink></p>}
           {actionError && (
             <p role="alert" className="error-text">
               {actionError}
