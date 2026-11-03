@@ -1,11 +1,14 @@
 import { strict as assert } from "node:assert";
 import { connect, createServer, getDefaultAutoSelectFamily, setDefaultAutoSelectFamily, type TcpNetConnectOpts } from "node:net";
 import { connect as connectTls } from "node:tls";
+import { getDefaultResultOrder, setDefaultResultOrder } from "node:dns";
 
 // Start with the vulnerable default even if the invoking environment changed it.
 setDefaultAutoSelectFamily(true);
+setDefaultResultOrder("verbatim");
 await import("../../src/server/app");
 assert.equal(getDefaultAutoSelectFamily(), false);
+assert.equal(getDefaultResultOrder(), "ipv4first");
 
 let errors = 0;
 const options: TcpNetConnectOpts = {
@@ -36,7 +39,8 @@ await Bun.sleep(750);
 failed.destroy();
 assert.equal(errors, 1);
 
-// Successful TCP connections must still work after the failed one.
+// A DNS-based connection must still reach an IPv4-only listener when localhost
+// also has an IPv6 address. Disabling fallback alone can select the dead family.
 const server = createServer(socket => socket.end("ok"));
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 try {
@@ -44,7 +48,7 @@ try {
   assert(address && typeof address !== "string");
   const result = await new Promise<string>((resolve, reject) => {
     let data = "";
-    const client = connect({ host: "127.0.0.1", port: address.port });
+    const client = connect({ host: "localhost", port: address.port });
     client.on("data", chunk => { data += chunk; });
     client.on("error", reject);
     client.on("end", () => resolve(data));

@@ -26,7 +26,7 @@ import { Store } from "./store";
 import { Harness } from "./harness";
 import { HttpError, JellyService } from "./service";
 import { APP_ICON_MAX_BYTES } from "./apps-icons";
-import type { DesktopSessions } from "./desktop-sessions";
+import type { DesktopOptions } from "./desktop";
 export interface AppOptions {
   dataDir: string;
   scheduleClock?: () => number;
@@ -42,7 +42,7 @@ export interface AppOptions {
   allowedOrigins?: string[];
   listenAddresses?: string[];
   staticDir?: string;
-  desktopOptions?: Omit<ConstructorParameters<typeof DesktopSessions>[1], "isRunActive" | "notify" | "canAdmit">;
+  desktopOptions?: DesktopOptions;
 }
 const json = (value: unknown, status = 200) =>
   Response.json(value, {
@@ -324,9 +324,7 @@ export async function startApp(options: AppOptions) {
               if (operation === "ticket") return json(service.chromeShare.ticket(session.id, input.generation));
               if (operation === "reconnect") return json(await service.chromeShare.reconnect(session.id, input.generation, input.controlId));
               if (operation === "release") {
-                const next = await service.chromeShare.release(session.id, input.generation, input.cleanupOnly === true, input.controlId);
-                await service.finishDesktopPrivacy();
-                return json(next);
+                return json(await service.chromeShare.release(session.id, input.generation, input.cleanupOnly === true, input.controlId));
               }
               throw new HttpError(404, "Chrome share route not found.");
             }
@@ -367,31 +365,12 @@ export async function startApp(options: AppOptions) {
               throw new HttpError(404, "Apps API route not found.");
             }
             if (url.pathname === "/api/desktop" && req.method === "GET")
-              return json(service.desktopStatus());
+              return json(await service.desktop.status());
             if (url.pathname.startsWith("/api/desktop/") && req.method === "POST") {
               const operation = url.pathname.slice("/api/desktop/".length);
               const input = await body(req);
-              if (!["pause", "stop"].includes(operation) && service.chromeShare.state().status !== "idle")
-                throw new HttpError(409, "Finish computer viewer cleanup before using native desktop controls.");
               if (operation === "settings") return json(await service.desktop.configure(input));
-              if (operation === "connect") { await service.desktop.connect(); return json(service.desktopStatus()); }
-              if (operation === "pause") { await service.pauseDesktopForPrivacy(); return json(service.desktopStatus()); }
-              if (operation === "stop") { await service.desktop.stop(); return json(service.desktopStatus()); }
-              if (operation === "handback") return json(await service.finishDesktopPrivacy());
-              if (operation === "resume" || operation === "foreground") {
-                const agentId = text(input.agentId, "Agent ID", 100);
-                const runId = text(input.runId, "Run ID", 100);
-                if (!store.agent(agentId)) throw new HttpError(404, "Agent not found.");
-                if (operation === "resume")
-                  return json(await service.resumeDesktop(agentId, runId, typeof input.handoffId === "string" ? input.handoffId : undefined));
-                if (typeof input.durationMs !== "number" || !Number.isInteger(input.durationMs) ||
-                    input.durationMs < 1000 || input.durationMs > 60000)
-                  throw new HttpError(400, "Foreground grants last 1–60 seconds.");
-                if (service.desktopStatus().handoff || service.desktopStatus().browserPrivate)
-                  throw new HttpError(409, "Private control blocks foreground grants.");
-                await service.desktop.grantForeground(agentId, runId, input.durationMs);
-                return json(service.desktopStatus());
-              }
+              if (operation === "permissions") return json(await service.desktop.requestPermissions());
               throw new HttpError(404, "Desktop control route not found.");
             }
             if (url.pathname === "/api/chrome" && req.method === "GET") {
@@ -427,7 +406,6 @@ export async function startApp(options: AppOptions) {
                 if (request.kind === "browser_login") {
                   if (service.chrome.state(request.agentId).task?.handoff === request.id)
                     service.chrome.done(request.agentId, request.id);
-                  await service.finishBrowserPrivacy(request.agentId);
                 }
                 return json({ ok: true });
               }

@@ -181,33 +181,6 @@ test("Done and cancellation notify only bound sign-in requests, even after disco
     expect(await third.promise).toMatchObject({ denied: true });
     expect(chrome.state(agent.id).task?.handoff).toBeNull();
     expect(chrome.humanState()).toBe(false);
-    // Retire only the completed browser boundary, never auto-resume native input.
-    const fourth = request();
-    (chrome as any).tasks.get(agent.id).handoff = fourth.request.id;
-    (chrome as any).tasks.get(agent.id).humanUsing = true;
-    (chrome as any).tasks.get(agent.id).paused = false;
-    (chrome as any).tasks.get(agent.id).pauseState = "active";
-    (chrome as any).tasks.get(agent.id).lost = false;
-    const boundaries = (app.service as any).privateBoundaries as Set<string>;
-    boundaries.add(`browser:${agent.id}`);
-    boundaries.add("desktop-manual");
-    (app.service as any).desktopPrivate = true;
-    let released = 0;
-    app.service.desktop.releasePrivateControl = async () => { released++; };
-    app.service.desktop.resume = async () => { throw new Error("Must not resume native input"); };
-    expect((await post("chrome/done", { agentId: agent.id, handoff: fourth.request.id })).status).toBe(200);
-    expect(await fourth.promise).toMatchObject({ completed: true });
-    expect(boundaries.has(`browser:${agent.id}`)).toBe(false);
-    expect(released).toBe(0);
-    boundaries.delete("desktop-manual");
-    const fifth = request();
-    (chrome as any).tasks.get(agent.id).handoff = fifth.request.id;
-    (chrome as any).tasks.get(agent.id).humanUsing = true;
-    boundaries.add(`browser:${agent.id}`);
-    expect((await post("chrome/done", { agentId: agent.id, handoff: fifth.request.id })).status).toBe(200);
-    expect(await fifth.promise).toMatchObject({ completed: true });
-    expect(released).toBe(1);
-    expect((app.service as any).desktopPrivate).toBe(false);
   } finally {
     Object.assign(share, { stopCapture: originalStop });
     await app.close(); rmSync(dir, { recursive: true, force: true });

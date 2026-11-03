@@ -64,6 +64,9 @@ Wealthboard at `http://box.tailbfab3f.ts.net:3007` is the intended first real ac
 
 ## Jelly activation helper
 
+For macOS installation, Claude Keychain session troubleshooting and migration
+from a system LaunchDaemon, follow the [macOS setup guide](MACOS.md).
+
 `scripts/restart-when-idle.sh` supports Linux/systemd and macOS/launchd. Run it
 **outside Jelly's service**, from a separate systemd user unit on Linux or a
 separate terminal/launchd job on macOS, never inline from an agent run. It polls
@@ -72,13 +75,24 @@ in the checkout's `.jelly/restart-holds` and the configured data directory's
 `restart-holds`, and checks running runs through read-only SQLite.
 
 Linux retains the `jelly.service` restart and legacy `jelly-dev.service`
-migration. macOS reads the port and data directory from
-`/Library/LaunchDaemons/com.jelly.server.plist`, requires that it belongs to this
-checkout, and uses `launchctl kickstart -k system/com.jelly.server`. Run
-`sudo /bin/bash scripts/restart-when-idle.sh` from a separate terminal, or grant
-noninteractive sudo for that launchctl command to the helper's user. The helper
-never prompts for a password. Direct launchctl/systemctl restarts and crash
-recovery bypass the helper's idle checks; it does not alter service configuration.
+migration. macOS prefers `~/Library/LaunchAgents/com.jelly.server.plist` and
+`gui/<uid>/com.jelly.server` in the logged-in user's session, including when
+invoked through sudo (`SUDO_UID`). This preserves access to that user's Claude
+Keychain login; a system LaunchDaemon with the same username may not see it.
+Without a user plist, the helper uses the legacy system LaunchDaemon at
+`/Library/LaunchDaemons/com.jelly.server.plist` and `system/com.jelly.server`.
+The selected plist must belong to this checkout (filesystem identity, not path
+capitalization). The user service requires no sudo; system services require root
+or noninteractive sudo. The helper never prompts for a password and refuses a
+user-service restart while the system service is still loaded.
+
+Run `/bin/bash scripts/restart-when-idle.sh` from a separate terminal. Add
+`--force` to interrupt running work and ignore restart holds without skipping
+service identity, privilege or readiness checks. Direct launchctl/systemctl
+restarts and crash recovery also bypass idle checks. The helper does not migrate
+or alter service configuration. A LaunchAgent starts at user login, not boot;
+when migrating, disable and unload the old system service before starting the
+user service to avoid duplicate servers on the same database.
 
 Readiness checks the service state and both loopback and connected private
 Tailscale HTTP, including public `/api/health`, without reading unauthenticated

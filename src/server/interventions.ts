@@ -207,16 +207,6 @@ export class Interventions {
         "The user finished this browser sign-in request. Re-observe the page and continue without requesting credentials in chat.",
     });
   }
-  completeDesktopHandoff(id: string) {
-    const item = this.pending(id);
-    if (item.kind !== "desktop_handoff")
-      throw new HttpError(400, "This is not a desktop handoff.");
-    this.update(id, "completed", { completed: true });
-    this.settle(id, null, {
-      completed: true,
-      message: "The user explicitly returned desktop control. Observe the exact window again before any action.",
-    });
-  }
   cancel(id: string, status: "cancelled" | "expired" = "cancelled") {
     const waiter = this.waiting.get(id);
     if (!waiter) return;

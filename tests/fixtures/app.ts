@@ -4,7 +4,6 @@ import "./bun-extra-stdio";
 import { startApp as startProductionApp, type AppOptions } from "../../src/server/app";
 import { Harness } from "../../src/server/harness";
 import { MODEL_OPTIONS } from "../../src/shared/models";
-import { join } from "node:path";
 import { fixtureModel, fixtureStream } from "./model";
 
 export interface FixtureOptions {
@@ -25,7 +24,7 @@ export async function startApp(options: AppOptions & FixtureOptions) {
     claudeStatusCheck: unavailableClaudeStatus,
     ...options,
     desktopOptions: {
-      leaseRoot: join(options.dataDir, "desktop-fixture-leases"),
+      cliPath: null,
       ...options.desktopOptions,
     },
   });

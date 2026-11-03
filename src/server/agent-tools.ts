@@ -14,7 +14,6 @@ export function interventionTools(
   agentId: string,
   runId: string,
   cwd: string,
-  beforePrivateBrowser?: () => Promise<void>,
 ): ToolDefinition[] {
   const browser = () => sessions.get(agentId);
   return [
@@ -52,10 +51,6 @@ export function interventionTools(
       execute: async (_id, args, signal) => {
         signal?.throwIfAborted();
         const session = browser();
-        // No private-entry card is published until desktop admission is closed
-        // and all previously accepted desktop work is known to have drained.
-        await beforePrivateBrowser?.();
-        signal?.throwIfAborted();
         const pending = requests.request(
           "browser_login",
           agentId,

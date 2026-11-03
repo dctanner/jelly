@@ -1106,3 +1106,20 @@ main[inert] .conversation-header .agent-avatar::after {
 .rendered-media video { display: block; width: 100%; max-height: 65dvh; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
 .rendered-media audio { display: block; width: 100%; min-width: 0; }
 .rendered-media > p { padding: 0 14px; }
+.desktop-toggle {
+  cursor: pointer;
+}
+.desktop-toggle input {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.desktop-install {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  overflow-x: auto;
+  user-select: all;
+}

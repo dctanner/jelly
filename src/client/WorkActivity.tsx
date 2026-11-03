@@ -35,16 +35,7 @@ const toolLabels: Record<string, string> = {
   subagent: "Delegate work",
   request_sudo: "Administrator access",
   request_browser_login: "Browser sign-in",
-  request_desktop_handoff: "Private Mac handoff",
-  desktop_status: "Desktop status",
-  desktop_apps: "Allowed Mac apps",
-  desktop_windows: "Mac windows",
-  desktop_observe: "Observe Mac window",
-  desktop_click: "Click Mac element",
-  desktop_type: "Type in Mac app",
-  desktop_key: "Mac key",
-  desktop_scroll: "Scroll Mac window",
-  desktop_menu: "Mac menu",
+  peekaboo: "Mac control",
 };
 
 function ToolStep({

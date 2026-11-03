@@ -390,11 +390,6 @@ test("Chrome share API protects reads, direct take, tickets, stale profiles and 
     ).text();
     expect(publicState).not.toMatch(/DISPLAY|XAUTHORITY|\/tmp\//);
     Object.assign(app.service.chromeShare, { status: "failed" });
-    for (const route of [
-      "desktop/connect",
-      "desktop/settings",
-    ])
-      expect((await post(route)).status).toBe(409);
     expect(
       (await post("chrome/resume", { agentId: app.store.agents()[0]!.id }))
         .status,

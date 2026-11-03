@@ -11,7 +11,6 @@ import {
 import type { Intervention } from "../shared/types";
 import { control } from "./api";
 import { ChatFormCard, ChatFormActions } from "./ChatFormCard";
-import { DesktopHandoffCard } from "./DesktopConnection";
 import { ComputerControlPanel } from "./ComputerControlPanel";
 export function InterventionCard({
   item,
@@ -104,7 +103,6 @@ export function InterventionCard({
       </details>
     );
   }
-  if (item.kind === "desktop_handoff") return <DesktopHandoffCard item={item} onChange={onChange} />;
   return (
     <ChatFormCard
       label={item.kind === "sudo" ? "Sudo authentication" : "Browser login"}

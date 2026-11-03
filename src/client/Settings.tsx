@@ -183,7 +183,7 @@ export function Settings({
       }
     >
       {page === "Connected Chrome" && <ChromeConnection data={{ ...data, selectedAgentId: null }} refresh={refresh} />}
-      {page === "Native Mac desktop" && <DesktopConnection data={data} refresh={refresh} onDirty={setDetailDirty} onBusy={setBusy} />}
+      {page === "Native Mac desktop" && <DesktopConnection />}
       {page === "Browser notifications" && <BrowserNotifications instance={data.instance.id} />}
       {page === "Settings" && (
         <>
@@ -253,7 +253,7 @@ export function Settings({
                 label="MCP connections"
                 onClick={() => setPage("MCP connections")}
               />
-              <SettingsRow label="Native Mac desktop" value="Peekaboo · opt-in" onClick={() => setPage("Native Mac desktop")} />
+              <SettingsRow label="Native Mac desktop" onClick={() => setPage("Native Mac desktop")} />
             </div>
           </section>
           <section className="settings-section">

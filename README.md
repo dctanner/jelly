@@ -17,7 +17,7 @@ Real mobile UI with demonstration data and an original soundtrack; sudo executio
 - Run it on your on hardware: a Mac, Linux box or VM.
 - Create as many agents as you want. Group into project directories.
 - Access the web UI locally, or setup Tailscale and use from your laptop or phone (add it to your iPhone home screen and it feels like a native app).
-- Use your existing ChatGPT subscription or API key.
+- Use your existing ChatGPT or Claude subscription, or an OpenAI API key (Claude Code support is experimental).
 - Agents can use your local Chrome browser. If the agent needs to login somewhere, you can take control of the browser anytime (using VNC in the web UI).
 - If an agent needs sudo access, it can securely request it from you.
 - Includes all the features you'd expect from an agent: shell tools, subagents, and MCP connections, file uploads, inline images, downloadable artifacts etc.
@@ -82,7 +82,7 @@ bun install
 bun run dev
 ```
 
-Open **http://127.0.0.1:5173**. **A ChatGPT subscription or OpenAI API key is required to run agents.** Connect your account or add a key in Settings before sending a message. Automatic mode prefers ChatGPT, then an API key; there is no no-key demo mode. Model availability depends on your account.
+Open **http://127.0.0.1:5173**. **A ChatGPT subscription, Claude Code subscription login, or OpenAI API key is required to run agents.** Connect your account or add a key in Settings before sending a message. Automatic mode prefers ChatGPT, then an API key; select the Claude subscription provider explicitly to use Claude. There is no no-key demo mode. Model availability depends on your account.
 
 Select a **Fast** variant of any model in Settings → Model or the composer's model
 menu to request priority processing with `service_tier: "priority"`. Availability
@@ -110,15 +110,53 @@ Open **http://127.0.0.1:3100**. Stop development first; both modes use API port 
 
 `JELLY_TAILSCALE=1 bun start` adds native HTTP listeners on discovered Tailscale addresses alongside loopback. `bun run dev:tailscale` uses native Vite listeners and its HTTP/WS loopback API proxy. Neither uses raw TCP forwarding nor LAN/wildcard listeners.
 
+### macOS service setup and Claude sign-in
+
+Use a **user LaunchAgent in your logged-in desktop session**, not a system
+LaunchDaemon, for your existing Claude Code login. A system service can run as
+your username and still lack access to the Keychain session used by Terminal:
+Claude appears signed in there, while Jelly shows **Setup required**.
+
+Follow the [macOS setup guide](docs/MACOS.md) for a reusable LaunchAgent setup,
+safe migration/rollback, executable PATH configuration and Keychain diagnostics.
+Launchd does not load your shell startup files; if needed, set
+`PI_CLAUDE_CODE_COMMAND=/Users/you/.local/bin/claude` in `.env.local`, restart,
+and refresh Claude in Settings. Use your actual absolute path. Never copy
+Claude tokens into Jelly or weaken Keychain permissions to fix this.
+
+The user service starts at **login**, not at boot before login, and stops on
+logout. Select the Claude provider explicitly after its status becomes ready.
+
+### Service restarts
+
 For an installed service, `scripts/restart-when-idle.sh` waits up to 30 minutes for
 zero running agents and no restart holds, then restarts and checks loopback and
-private Tailscale HTTP. On macOS it reads the port and data directory from
-`/Library/LaunchDaemons/com.jelly.server.plist` and restarts
-`system/com.jelly.server`. Run it from a separate terminal outside Jelly:
+private Tailscale HTTP. On macOS it prefers the user LaunchAgent at
+`~/Library/LaunchAgents/com.jelly.server.plist` and restarts
+`gui/<uid>/com.jelly.server`, using that plist's port and data directory.
+A user LaunchAgent runs at login in the user's Keychain session; a system
+LaunchDaemon can run as the same username without seeing that session's Claude login.
+Run it from a separate terminal outside Jelly:
 
 ```sh
-sudo /bin/bash scripts/restart-when-idle.sh
+/bin/bash scripts/restart-when-idle.sh
 ```
+
+Legacy system LaunchDaemons at `/Library/LaunchDaemons/com.jelly.server.plist`
+remain supported when no user LaunchAgent plist exists; those require `sudo`.
+If migrating, unload and disable the system service before starting the user
+service—never run both against the same database.
+
+To restart immediately, add `--force`:
+
+```sh
+/bin/bash scripts/restart-when-idle.sh --force
+```
+
+**This interrupts running agents and ignores restart holds.** Service identity,
+privilege and HTTP health checks still apply. Without `--force`, the helper still
+waits for idle. macOS checkout matching accepts differently capitalized paths
+when they refer to the same directory.
 
 On Linux, schedule the helper in a separate systemd user unit; it restarts
 `jelly.service`. See the [service restart details](docs/APPS.md#jelly-activation-helper).
@@ -128,15 +166,12 @@ Development serves only frontend source and assets; instance data, server source
 
 ChatGPT sign-in uses a one-time device code. Open the approval link shown in Settings, enter the code, and Jelly connects automatically. This works over Tailscale without a localhost redirect. If needed, enable device-code login in your ChatGPT security settings or ask your workspace admin.
 
-### Native Mac desktop (Peekaboo)
+### Mac control (Peekaboo)
 
-Settings → **Tools → Native Mac desktop** configures an external signed Peekaboo
-CLI/app and an exact Bridge socket, separately from browser tools. Desktop control
-starts off and requires exact application grants. The official unmodified 4.9.0
-releases support scoped AX observation, consented exact-window screenshots and
-native snapshot-bound background input according to available host permissions
-and capabilities. No Peekaboo rebuild is required. See
-[setup, privacy and recovery](docs/PEEKABOO.md).
+Install [Peekaboo](https://github.com/openclaw/Peekaboo) with
+`brew install openclaw/tap/peekaboo`, then turn on **Settings → Tools → Native
+Mac desktop**. Agents get full control of the Mac through a `peekaboo` tool.
+See [docs/PEEKABOO.md](docs/PEEKABOO.md).
 
 ### Connected Chrome private sign-in
 
@@ -144,7 +179,6 @@ Follow [Connected Chrome setup](docs/CONNECTED-CHROME.md). Sign in privately in
 local Chrome, or use its human-only web VNC viewer on supported Linux desktops.
 The viewer controls the connected desktop, never exposes pixels or clipboard
 contents to agents, and requires explicit handback before browser tools resume.
-Native Mac desktop tools remain a separate, application-granted capability.
 
 ### Administrator commands
 

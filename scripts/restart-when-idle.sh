@@ -44,7 +44,19 @@ except Exception:
 ' "$1"
 }
 
-# Read only nonsecret settings from Jelly's installed system LaunchDaemon.
+# Prefer the logged-in user's LaunchAgent, including when invoked through sudo.
+macos_service_location() {
+  local user_id user_home
+  user_id=${SUDO_UID:-$(id -u)}
+  user_home=$(/usr/bin/python3 -c 'import pwd, sys; print(pwd.getpwuid(int(sys.argv[1])).pw_dir)' "$user_id") || return 1
+  if [ -f "$user_home/Library/LaunchAgents/com.jelly.server.plist" ]; then
+    printf '%s\n' "gui/$user_id/com.jelly.server" "$user_home/Library/LaunchAgents/com.jelly.server.plist"
+  else
+    printf '%s\n' system/com.jelly.server /Library/LaunchDaemons/com.jelly.server.plist
+  fi
+}
+
+# Read only nonsecret settings from Jelly's installed launchd service.
 # Refuse a different checkout: its idle database cannot guard this service.
 macos_restart_defaults() {
   /usr/bin/python3 - "$1" "$repo" <<'PY'
@@ -53,7 +65,7 @@ try:
     with open(sys.argv[1], 'rb') as source:
         service = plistlib.load(source)
     working = pathlib.Path(service['WorkingDirectory']).resolve()
-    if service.get('Label') != 'com.jelly.server' or working != pathlib.Path(sys.argv[2]).resolve():
+    if service.get('Label') != 'com.jelly.server' or not working.samefile(sys.argv[2]):
         raise ValueError('service belongs to a different checkout')
     env = service.get('EnvironmentVariables', {})
     data = pathlib.Path(env.get('JELLY_DATA_DIR', '.jelly'))
@@ -66,7 +78,7 @@ try:
     print(port)
     print(data)
 except Exception:
-    print('Cannot read Jelly settings from its system LaunchDaemon for this checkout.', file=sys.stderr)
+    print('Cannot read Jelly settings from its launchd service for this checkout.', file=sys.stderr)
     sys.exit(1)
 PY
 }
@@ -83,10 +95,10 @@ PY
 restart_service() {
   case "$1" in
     Darwin)
-      if [ "$(id -u)" = 0 ]; then
-        launchctl kickstart -k system/com.jelly.server
+      if [[ "$macos_target" = gui/* ]] || [ "$(id -u)" = 0 ]; then
+        launchctl kickstart -k "$macos_target"
       else
-        sudo -n launchctl kickstart -k system/com.jelly.server
+        sudo -n launchctl kickstart -k "$macos_target"
       fi
       ;;
     Linux)
@@ -95,7 +107,11 @@ restart_service() {
         systemctl --user stop jelly-dev.service || return 1
       fi
       systemctl --user daemon-reload || return 1
-      systemctl --user reload-or-restart jelly.service
+      if [ "${2:-}" = "--force" ]; then
+        systemctl --user restart jelly.service
+      else
+        systemctl --user reload-or-restart jelly.service
+      fi
       ;;
   esac
 }
@@ -103,7 +119,7 @@ restart_service() {
 restart_service_active() {
   case "$1" in
     Darwin)
-      launchctl print system/com.jelly.server | awk '
+      launchctl print "$macos_target" | awk '
         !seen && $1 == "state" && $2 == "=" { running = $3 == "running"; seen = 1 }
         END { exit !running }
       '
@@ -114,16 +130,41 @@ restart_service_active() {
 
 restart_main() {
   local platform settings default_port=5173 default_data="$repo/.jelly"
-  local port data_dir loopback active tailnet attempt check
+  local port data_dir loopback active tailnet attempt check force=false
+  local macos_location macos_target macos_plist
+  if [ "$#" -gt 1 ]; then
+    echo 'Usage: restart-when-idle.sh [--force]' >&2
+    return 1
+  fi
+  case "${1:-}" in
+    "") ;;
+    --force) force=true ;;
+    --help|-h)
+      echo 'Usage: restart-when-idle.sh [--force]'
+      echo '--force interrupts running work and ignores restart holds; service and health checks still apply.'
+      return 0
+      ;;
+    *)
+      echo 'Usage: restart-when-idle.sh [--force]' >&2
+      return 1
+      ;;
+  esac
   platform=$(uname -s)
   case "$platform" in
     Darwin)
-      settings=$(macos_restart_defaults /Library/LaunchDaemons/com.jelly.server.plist) || return 1
+      macos_location=$(macos_service_location) || return 1
+      IFS= read -r macos_target <<< "$macos_location"
+      macos_plist=${macos_location#*$'\n'}
+      if [[ "$macos_target" = gui/* ]] && launchctl print system/com.jelly.server > /dev/null 2>&1; then
+        echo 'System Jelly is still loaded; finish the LaunchAgent migration before restarting.' >&2
+        return 1
+      fi
+      settings=$(macos_restart_defaults "$macos_plist") || return 1
       IFS= read -r default_port <<< "$settings"
       default_data=${settings#*$'\n'}
       # This helper must run outside Jelly's job; system services need root to restart.
-      if ! launchctl print system/com.jelly.server > /dev/null; then
-        echo 'Jelly system LaunchDaemon is not loaded; no restart performed.' >&2
+      if ! launchctl print "$macos_target" > /dev/null; then
+        echo "Jelly service $macos_target is not loaded; no restart performed." >&2
         return 1
       fi
       ;;
@@ -139,20 +180,26 @@ restart_main() {
   port=$((10#$port))
   loopback="http://127.0.0.1:$port"
 
+  if [ "$force" = true ]; then
+    echo 'WARNING: Forced restart interrupts running agents and ignores restart holds.' >&2
+  fi
   # Run from a separate terminal/launchd job or systemd user unit, outside Jelly.
   for attempt in {1..360}; do
-    # The hold owner removes its hold only after all delegated work and checks finish.
-    if compgen -G "$repo/.jelly/restart-holds/*" > /dev/null ||
-      compgen -G "$data_dir/restart-holds/*" > /dev/null; then
-      sleep 5
-      continue
+    active=0
+    if [ "$force" = false ]; then
+      # The hold owner removes its hold only after all delegated work and checks finish.
+      if compgen -G "$repo/.jelly/restart-holds/*" > /dev/null ||
+        compgen -G "$data_dir/restart-holds/*" > /dev/null; then
+        sleep 5
+        continue
+      fi
+      active=$(active_restart_runs "$data_dir") || return 1
     fi
-    active=$(active_restart_runs "$data_dir") || return 1
     if [ "$active" = 0 ]; then
-      if ! restart_service "$platform"; then
+      if ! restart_service "$platform" "${1:-}"; then
         echo 'Jelly service restart failed.' >&2
         if [ "$platform" = Darwin ]; then
-          echo 'Run the helper from a separate terminal with sudo or permit its launchctl command via noninteractive sudo.' >&2
+          echo 'Run from a separate terminal in the service user login session; system services require sudo or noninteractive sudo permission.' >&2
         fi
         return 1
       fi
@@ -166,7 +213,7 @@ restart_main() {
           if [ "$platform" = Linux ]; then
             systemctl --user show jelly.service -p ActiveState -p FragmentPath -p UnitFileState
           else
-            echo 'Verified launchd service system/com.jelly.server.'
+            echo "Verified launchd service $macos_target."
           fi
           echo 'Verified Jelly on loopback and private Tailscale from this host; production service has no hot reload.'
           return 0
@@ -184,5 +231,5 @@ restart_main() {
 
 # Sourcing defines functions only; tests use a copied helper and fake service commands.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  restart_main
+  restart_main "$@"
 fi

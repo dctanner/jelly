@@ -232,7 +232,7 @@ test("tool dispatch uses only the current agent port, passes cancellation and re
   } finally { await f.close(); }
 });
 
-test("service rejects reconnect during native private handoff, cancellation, foreign and ended runs", async () => {
+test("service rejects reconnect during cancellation, foreign and ended runs", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-reconnect-service-"));
   const app = await startApp({ dataDir: dir, configDir: join(dir, "config"), port: 0 });
   const service = app.service as any;
@@ -246,9 +246,6 @@ test("service rejects reconnect during native private handoff, cancellation, for
   const port = service.scopedBrowser(agent, run, { chromeProfile: profile }, "Agent").get(agent);
   try {
     service.chrome.bridge.onLoss(profile); generation = crypto.randomUUID();
-    service.desktopHandoff = { id: "private", safe: false };
-    await expect(port.reconnect()).rejects.toThrow("private desktop control");
-    service.desktopHandoff = null;
     active.cancelled = true;
     await expect(port.reconnect()).rejects.toThrow("current active run");
     active.cancelled = false;
@@ -260,7 +257,6 @@ test("service rejects reconnect during native private handoff, cancellation, for
     service.active.set(run, active);
     expect(await port.reconnect()).toMatchObject({ status: "reconnected" });
   } finally {
-    service.desktopHandoff = null;
     service.active.delete(run);
     await app.close();
     rmSync(dir, { recursive: true, force: true });

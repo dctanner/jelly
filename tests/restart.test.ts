@@ -343,7 +343,16 @@ test("macOS restart defaults follow the installed LaunchDaemon and reject a diff
       output: `5173\n${join(realpathSync(root), ".jelly")}`,
       error: "",
     });
+    // Case-insensitive filesystems must accept alternate casing of the same checkout.
+    const alternateCase = root.replace("jelly-restart-launchd-", "JELLY-RESTART-LAUNCHD-");
+    if (existsSync(alternateCase)) {
+      const result = await defaults({ WorkingDirectory: alternateCase });
+      expect(result.code).toBe(0);
+      expect(result.error).toBe("");
+    }
+    mkdirSync(join(root, "other-checkout"));
     for (const overrides of [
+      { WorkingDirectory: join(root, "missing-checkout") },
       { Label: "com.other.server" },
       { WorkingDirectory: join(root, "other-checkout") },
       { EnvironmentVariables: { JELLY_DATA_DIR: "bad\npath" } },
@@ -372,6 +381,9 @@ async function idleRestartFixture(
     healthy?: boolean;
     active?: boolean;
     port?: string;
+    args?: string[];
+    gui?: boolean;
+    bothDomains?: boolean;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "jelly-restart-helper-"));
@@ -416,6 +428,7 @@ printf '%s\\n' '{"BackendState":"Running","TailscaleIPs":["100.64.0.2"],"Self":{
 source "$1"
 uname() { printf '%s\\n' "$JELLY_RESTART_TEST_PLATFORM"; }
 id() { printf '%s\\n' "$JELLY_RESTART_TEST_UID"; }
+macos_service_location() { printf '%s\\n' "$JELLY_RESTART_TEST_TARGET" /fixture/service.plist; }
 macos_restart_defaults() { printf '%s\\n' 3100 "$JELLY_RESTART_TEST_DATA"; }
 # Use a fixed busy count for the 360-poll timeout test; transition tests use real SQLite.
 if [ "$JELLY_RESTART_TEST_STAY_BUSY" = 1 ]; then
@@ -425,6 +438,9 @@ record() { printf '%s\\n' "$*" >> "$JELLY_RESTART_TEST_LOG"; }
 launchctl() {
   record launchctl "$@"
   if [ "$1" = print ]; then
+    if [ "$JELLY_RESTART_TEST_TARGET" != system/com.jelly.server ] && [ "$2" = system/com.jelly.server ]; then
+      [ "$JELLY_RESTART_TEST_BOTH_DOMAINS" = 1 ] || return 1
+    fi
     [ "$JELLY_RESTART_TEST_LOADED" = 1 ] || return 1
     if [ "$JELLY_RESTART_TEST_ACTIVE" = 1 ]; then
       printf 'system/com.jelly.server = {\\n\\tstate = running\\n}\\n'
@@ -454,11 +470,11 @@ sleep() {
     /usr/bin/python3 -c 'import sqlite3, sys; db=sqlite3.connect(sys.argv[1]); db.execute("UPDATE runs SET status=?", ("completed",)); db.commit(); db.close()' "$JELLY_RESTART_TEST_DATA/jelly.sqlite"
   fi
 }
-restart_main
+restart_main "\${@:2}"
 `;
   try {
     const platform = options.platform ?? "Darwin";
-    const child = Bun.spawn(["/bin/bash", "-c", wrapper, "test", helper], {
+    const child = Bun.spawn(["/bin/bash", "-c", wrapper, "test", helper, ...(options.args ?? [])], {
       env: {
         ...process.env,
         PATH: `${join(root, "bin")}:/usr/bin:/bin`,
@@ -467,6 +483,8 @@ restart_main
         JELLY_RESTART_PORT: options.port,
         JELLY_RESTART_TEST_PLATFORM: platform,
         JELLY_RESTART_TEST_UID: options.uid ?? "501",
+        JELLY_RESTART_TEST_TARGET: options.gui ? "gui/501/com.jelly.server" : "system/com.jelly.server",
+        JELLY_RESTART_TEST_BOTH_DOMAINS: options.bothDomains ? "1" : "0",
         JELLY_RESTART_TEST_DATA: data,
         JELLY_RESTART_TEST_LOG: log,
         JELLY_RESTART_TEST_RELEASE: options.release ? "1" : "0",
@@ -500,6 +518,26 @@ restart_main
 }
 
 for (const platform of ["Darwin", "Linux"]) {
+  test(`force restart bypasses busy agents, holds and missing database on ${platform}`, async () => {
+    for (const hold of ["repo", "data"] as const) {
+      for (const missingDatabase of [false, true]) {
+        const result = await idleRestartFixture({
+          platform, busy: true, hold, missingDatabase, args: ["--force"],
+        });
+        expect(result.code).toBe(0);
+        expect(result.error).toContain("Forced restart interrupts running agents");
+        expect(result.commands).not.toContain("sleep 5");
+        expect(result.commands.filter(command => command === (
+          platform === "Darwin"
+            ? "launchctl kickstart -k system/com.jelly.server"
+            : "systemctl --user restart jelly.service"
+        ))).toHaveLength(1);
+        expect(result.commands.filter(command => command.startsWith("curl "))).toHaveLength(4);
+        expect(result.databaseExists).toBe(!missingDatabase);
+      }
+    }
+  });
+
   test(`idle helper waits for running agents before restarting ${platform} and verifies both HTTP origins`, async () => {
     const result = await idleRestartFixture({
       platform,
@@ -592,6 +630,42 @@ for (const hold of ["repo", "data"] as const) {
     ).toBe(false);
   });
 }
+
+test("macOS LaunchAgent restart targets the GUI domain without sudo", async () => {
+  const result = await idleRestartFixture({ gui: true, args: ["--force"] });
+  expect(result.code).toBe(0);
+  expect(result.commands).toContain("launchctl kickstart -k gui/501/com.jelly.server");
+  expect(result.commands.some(command => command.startsWith("sudo "))).toBe(false);
+  expect(result.output).toContain("Verified launchd service gui/501/com.jelly.server");
+  for (const options of [{ loaded: false }, { bothDomains: true }]) {
+    const refused = await idleRestartFixture({ gui: true, ...options, args: ["--force"] });
+    expect(refused.code).toBe(1);
+    expect(refused.commands.some(command => command.includes("kickstart"))).toBe(false);
+  }
+});
+
+test("force restart retains preflight, privilege and readiness checks", async () => {
+  for (const options of [
+    { loaded: false }, { port: "65536" }, { platform: "FreeBSD" }, { denied: true },
+    { healthy: false }, { active: false },
+  ]) {
+    const result = await idleRestartFixture({ ...options, args: ["--force"] });
+    expect(result.code).toBe(1);
+    expect(result.output).not.toContain("Verified");
+    if (!("healthy" in options) && !("active" in options)) {
+      expect(result.commands.some(command => /^(launchctl kickstart|curl) /.test(command))).toBe(false);
+    }
+  }
+});
+
+test("restart helper rejects unknown arguments and offers help without service actions", async () => {
+  for (const args of [["--typo"], ["--force", "extra"], ["--help"]]) {
+    const result = await idleRestartFixture({ args });
+    expect(result.code).toBe(args[0] === "--help" ? 0 : 1);
+    expect(result.output + result.error).toContain("Usage:");
+    expect(result.commands).toEqual([]);
+  }
+});
 
 test("macOS idle helper fails safely for absent state, invalid settings and denied restart privileges", async () => {
   for (const options of [
