@@ -1050,6 +1050,8 @@ test("Chrome bridge binds all pause states to an authenticated generation and ru
           session: "session",
           run: "run",
           state,
+          reason: state === "pausing" ? "navigation_denied" : state === "failed" ? "PRIVATE raw error" : undefined,
+          navigationDiagnostic: { event: "history", frame: "child", destination: "protected_origin", url: "PRIVATE raw URL" },
         }),
       );
     await waitFor(() => states.length === 3);
@@ -1060,8 +1062,23 @@ test("Chrome bridge binds all pause states to an authenticated generation and ru
         "session",
         "run",
         state,
+        state === "pausing" ? "navigation_denied" : undefined,
+        state === "pausing" ? { event: "history", frame: "child", destination: "protected_origin" } : undefined,
       ]),
     );
+    p.socket.write(chromeFrame({
+      type: "pauseState", generation, session: "session", run: "run", state: "paused", reason: "navigation_denied",
+      navigationDiagnostic: { event: "PRIVATE", frame: "child", destination: "protected_origin" },
+    }));
+    await waitFor(() => states.length === 4);
+    expect(states[3]![6]).toBeUndefined();
+    p.socket.write(chromeFrame({
+      type: "pauseState", generation, session: "session", run: "run", state: "paused", reason: "navigation_denied",
+      navigationDiagnostic: { event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2", url: "PRIVATE raw URL" },
+    }));
+    await waitFor(() => states.length === 5);
+    expect(states[4]![6]).toEqual({ event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2" });
+    expect(JSON.stringify(states)).not.toContain("PRIVATE");
     p.socket.write(
       chromeFrame({
         type: "pauseState",
@@ -1069,11 +1086,13 @@ test("Chrome bridge binds all pause states to an authenticated generation and ru
         session: "session",
         run: "run",
         state: "paused",
+        reason: "navigation_denied",
+        navigationDiagnostic: { event: "committed", frame: "child", destination: "extension_self", revision: "internal_v2" },
       }),
     );
     await waitFor(() => p.socket.destroyed);
     expect(p.socket.destroyed).toBe(true);
-    expect(states).toHaveLength(3);
+    expect(states).toHaveLength(5);
   } finally {
     await f.close();
   }

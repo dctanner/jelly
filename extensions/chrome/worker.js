@@ -1,12 +1,13 @@
 import {
   chromeRequest,
   chromeOrigin,
+  chromeWebEndpoint,
   CHROME_PROTOCOL,
   CHROME_METHODS,
   CHROME_MAX_FRAME,
 } from "../../src/shared/chrome-protocol";
 import { observation } from "./observation";
-import { chromeFailureReason, ChromeObservationError } from "../../src/shared/chrome-errors";
+import { chromeFailureReason, ChromeObservationError, chromeNavigationDiagnostic, CHROME_NAVIGATION_DIAGNOSTIC_REVISION } from "../../src/shared/chrome-errors";
 import {
   chromeInternetDenyRegexes,
 } from "../../src/shared/chrome-policy";
@@ -169,7 +170,7 @@ function owned(s, cap) {
   if (!tab || leases.get(tab.id) !== s.id) unavailable();
   return tab;
 }
-function pause(s, retain = true) {
+function pause(s, retain = true, reason = "requested", diagnostic) {
   // Any pause that hands control to the human preserves their working tabs.
   // Run settlement opts out explicitly; it is cleanup, not a private handoff.
   if (retain)
@@ -183,7 +184,10 @@ function pause(s, retain = true) {
   const run = s.run;
   const report = (state) => {
     if (port && instance && sessions.get(s.id) === s && s.run === run)
-      post({ type: "pauseState", generation, session: s.id, run, state });
+      post({ type: "pauseState", generation, session: s.id, run, state, reason: state === "failed" ? "cleanup_failed" : reason,
+        ...(reason === "navigation_denied" && state !== "failed" && chromeNavigationDiagnostic(diagnostic)
+          ? { navigationDiagnostic: chromeNavigationDiagnostic(diagnostic) } : {}),
+      });
   };
   report("pausing");
   s.pausing = (async () => {
@@ -204,9 +208,9 @@ function pause(s, retain = true) {
     });
   return s.pausing;
 }
-function localPause(s, retain = true) {
+function localPause(s, retain = true, reason = "requested", diagnostic) {
   // Local revocation is immediate; errors are exposed as failed, never paused.
-  void pause(s, retain).catch(() => {});
+  void pause(s, retain, reason, diagnostic).catch(() => {});
 }
 let disconnecting = null;
 function disconnect() {
@@ -324,14 +328,14 @@ async function establish(explicit, epoch) {
     }
     if (message.method === "freeze") {
       desktopFrozen = true; // Preempt queued begins/resumes and revoke in-flight results.
-      for (const s of sessions.values()) localPause(s);
+      for (const s of sessions.values()) localPause(s, true, "native_handoff");
     }
     const urgent = sessions.get(message.session);
     if (
       ["pause", "end"].includes(message.method) &&
       urgent?.run === message.run
     )
-      localPause(urgent, message.method === "pause");
+      localPause(urgent, message.method === "pause", message.method === "pause" ? "requested" : "settlement");
     queued++;
     queue = queue
       .catch(() => {})
@@ -415,6 +419,10 @@ async function create(s, run, url) {
     id: created.id,
     cap: crypto.randomUUID(),
     initializing: true,
+    opaqueChildren: false,
+    opaqueSince: 0,
+    privacyEvidenceGeneration: 0,
+    mainDocumentId: null,
     attached: false,
     document: null,
     mark: "temporary",
@@ -456,7 +464,20 @@ async function create(s, run, url) {
 // Inherited documents are never separately observed. Rendered inherited frames
 // force main-document-only text observations and still block screenshots.
 function inheritedFrame(frameId, url) {
-  return frameId !== 0 && /^about:(blank|srcdoc)(?:[?#]|$)/.test(String(url));
+  return Number.isInteger(frameId) && frameId > 0 && /^about:(blank|srcdoc)(?:[?#]|$)/.test(String(url));
+}
+// A different extension's canonical child URL identifies an opaque document,
+// not browser authority. Never inspect it or any child document when present.
+function opaqueExtensionFrame(frameId, value) {
+  if (!Number.isInteger(frameId) || frameId <= 0 || typeof value !== "string" || value.length > 2048)
+    return false;
+  const match = /^chrome-extension:\/\/([a-p]{32})\//.exec(value);
+  if (!match || match[1] === chrome.runtime.id || /%(?![a-fA-F0-9]{2})/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "chrome-extension:" && url.hostname === match[1] &&
+      !url.username && !url.password && !url.port && url.href === value;
+  } catch { return false; }
 }
 function checkURL(s, url) {
   chromeOrigin(
@@ -468,6 +489,103 @@ function checkURL(s, url) {
     url.length > 4096
   )
     unavailable();
+}
+// Called only after policy rejected an event. Classification is diagnostic,
+// never an admission decision; no URL components leave this function.
+function navigationDestination(s, value) {
+  if (typeof value !== "string") return "invalid_url";
+  if (value.length > 2048) return "url_too_long";
+  // Diagnostic only: do not normalize near-matches or admit this document.
+  // In particular, a child frame with this exact URL is still denied.
+  if (value === "chrome-error://chromewebdata/") return "chromium_error_document";
+  let url;
+  try { url = new URL(value); } catch { return "invalid_url"; }
+  if (url.username || url.password) return "credentials";
+  if (url.protocol === "about:") {
+    if (url.pathname === "blank") return "inherited_blank";
+    if (url.pathname === "srcdoc") return "inherited_srcdoc";
+    return "about_other";
+  }
+  if (["data:", "blob:", "file:"].includes(url.protocol)) return url.protocol.slice(0, -1);
+  // Subclasses expose neither URL components nor extension IDs. A same-host
+  // error variant is NOT a canonical document and grants no exception.
+  if (url.protocol === "chrome-error:")
+    return url.hostname.toLowerCase() === "chromewebdata" ? "chromium_error_variant" : "chrome_error_other";
+  if (url.protocol === "chrome:") return "chrome_internal";
+  if (url.protocol === "chrome-extension:")
+    return url.hostname === chrome.runtime.id ? "extension_self" : "extension_other";
+  if (url.protocol === "devtools:") return "devtools";
+  if (!["http:", "https:"].includes(url.protocol)) return "other_nonweb";
+  try {
+    const origin = chromeWebEndpoint(value);
+    if (s.protected.some(protectedOrigin => chromeWebEndpoint(protectedOrigin) === origin))
+      return "protected_origin";
+  } catch { return "invalid_policy"; }
+  return "unknown";
+}
+function navigationDenied(s, details, event) {
+  localPause(s, true, "navigation_denied", {
+    event,
+    frame: details.frameId === 0 ? "main" : Number.isInteger(details.frameId) && details.frameId > 0 ? "child" : "unknown",
+    destination: navigationDestination(s, details.url),
+    revision: CHROME_NAVIGATION_DIAGNOSTIC_REVISION,
+  });
+}
+function markOpaqueChildren(tab, timeStamp = Date.now()) {
+  // Fence pending reset verification even when scope is already main-only.
+  // This evidence counter is not a reference epoch: repeated guards must not
+  // invalidate otherwise safe actions in an unchanged partial scope.
+  tab.privacyEvidenceGeneration++;
+  tab.opaqueChildren = true;
+  tab.opaqueSince = Math.max(tab.opaqueSince ?? 0, Number.isFinite(timeStamp) ? timeStamp : Date.now());
+}
+function completeFrameTree(frames) {
+  const byId = new Map();
+  for (const frame of frames) {
+    if (!Number.isInteger(frame.frameId) || frame.frameId < 0 || byId.has(frame.frameId)) return false;
+    byId.set(frame.frameId, frame);
+  }
+  if (byId.get(0)?.parentFrameId !== -1) return false;
+  for (const frame of frames) {
+    if (frame.frameId === 0) continue;
+    const seen = new Set([frame.frameId]);
+    let parent = frame.parentFrameId;
+    while (parent !== 0) {
+      if (!Number.isInteger(parent) || parent < 0 || seen.has(parent) || !byId.has(parent)) return false;
+      seen.add(parent);
+      parent = byId.get(parent).parentFrameId;
+    }
+  }
+  return true;
+}
+// Chrome can omit extension ancestors from getAllFrames while returning their
+// HTTP descendants. An absent frame cannot prove privacy UI was removed. Only a
+// verified NEW main-document commit may clear the tab's conservative latch.
+function verifyMainCommit(s, tab, details) {
+  const epoch = s.epoch, previous = tab.mainDocumentId;
+  const privacyEvidenceGeneration = tab.privacyEvidenceGeneration;
+  if (typeof details.documentId !== "string" || details.documentId === previous) return;
+  void chrome.webNavigation.getAllFrames({ tabId: tab.id }).then(frames => {
+    if (sessions.get(s.id) !== s || leases.get(tab.id) !== s.id ||
+        s.tabs.get(tab.cap) !== tab || s.epoch !== epoch || tab.mainDocumentId !== previous ||
+        tab.privacyEvidenceGeneration !== privacyEvidenceGeneration) return;
+    const mains = frames?.filter(f => f.frameId === 0) ?? [];
+    if (mains.length !== 1 || mains[0].documentId !== details.documentId || mains[0].url !== details.url) return;
+    // Recheck policy; failed/forbidden commits never clear uncertainty.
+    checkURL(s, mains[0].url);
+    if (mains[0].errorOccurred !== false) return;
+    if (!completeFrameTree(frames) || frames.some(f => opaqueExtensionFrame(f.frameId, f.url))) {
+      markOpaqueChildren(tab);
+      return;
+    }
+    tab.mainDocumentId = details.documentId;
+    // Browser timestamps prevent a late/stale main commit from clearing a
+    // privacy event that occurred later within that same document lifetime.
+    if (tab.opaqueChildren && previous != null && Number.isFinite(details.timeStamp) && details.timeStamp > tab.opaqueSince) {
+      tab.opaqueChildren = false;
+      s.epoch = crypto.randomUUID();
+    }
+  }).catch(() => {}); // Unverified scope remains conservatively restricted.
 }
 async function documentGuard(s, run, tab, screenshot = false) {
   current(s, run);
@@ -482,21 +600,40 @@ async function documentGuard(s, run, tab, screenshot = false) {
     !frames ||
     !frames.length ||
     frames.length > 64 ||
-    !frames.some((f) => f.frameId === 0 && f.url === info.url)
-  )
+    frames.filter(f => f.frameId === 0).length !== 1 ||
+    !frames.some(f => f.frameId === 0 && f.url === info.url && typeof f.documentId === "string")
+  ) {
+    markOpaqueChildren(tab);
     unavailable();
-  // Inherited frames are not injected, so their pixels can never be certified
-  // safe for a whole-tab screenshot (including a pending navigation).
-  if (screenshot && frames.some((f) => inheritedFrame(f.frameId, f.url)))
+  }
+  // Establish the current lifetime without ever clearing its exclusion latch.
+  tab.mainDocumentId ??= frames.find(f => f.frameId === 0).documentId;
+  if (!completeFrameTree(frames) || frames.some(f => opaqueExtensionFrame(f.frameId, f.url)))
+    markOpaqueChildren(tab);
+  const opaqueChildren = tab.opaqueChildren;
+  // No pixels from inherited, privileged or unaccounted children can be certified safe.
+  if (screenshot && (opaqueChildren || frames.some(f => inheritedFrame(f.frameId, f.url))))
     throw new ChromeObservationError("unsupported_frame");
-  const observed = frames.filter((f) => !inheritedFrame(f.frameId, f.url));
+  const webFrames = frames.filter(f => !inheritedFrame(f.frameId, f.url) && !opaqueExtensionFrame(f.frameId, f.url));
+  // Do not relax destination policy for a forbidden descendant or sibling.
+  // This inspects browser metadata only, never a frame's DOM or private pixels.
+  for (const frame of webFrames) checkURL(s, frame.url);
+  const observed = opaqueChildren ? webFrames.filter(f => f.frameId === 0) : webFrames;
   if (observed.length > 16) unavailable();
-  for (const frame of observed) checkURL(s, frame.url);
-  return observed.map((f) => ({
-    documentId: f.documentId,
-    frameId: f.frameId,
-    origin: new URL(f.url).origin,
-  }));
+  return {
+    docs: observed.map(f => ({
+      documentId: f.documentId,
+      frameId: f.frameId,
+      origin: new URL(f.url).origin,
+    })),
+    opaqueChildren,
+    // Bind to the ENTIRE frame tree, including omitted documents and parent
+    // relationships. Exposure can change without an included document changing.
+    signature: JSON.stringify(frames.map(f => [
+      f.frameId, f.parentFrameId, f.documentId,
+      opaqueExtensionFrame(f.frameId, f.url) ? "opaque" : inheritedFrame(f.frameId, f.url) ? "inherited" : "web",
+    ]).sort((a, b) => a[0] - b[0])),
+  };
 }
 async function tracked(s, promise) {
   s.pending.add(promise);
@@ -536,34 +673,40 @@ async function execute(s, run, tab, doc, op, args, epoch) {
 // No DOM-element <-> Chrome frame-ID guessing: if the frame tree cannot be
 // observed in full, omit every child document. The fallback flag is internal,
 // never an RPC parameter. Screenshots retain the strict whole-tab guard.
-async function exposure(s, run, tab, docs, epoch, screenshot) {
+async function exposure(s, run, tab, tree, epoch, screenshot) {
+  const docs = tree.docs;
   const top = docs.find((doc) => doc.frameId === 0);
   if (!top) unavailable();
   const mode = screenshot ? "screenshot" : "guard";
   const main = await execute(s, run, tab, top, mode,
     screenshot ? {} : { topDocumentOnly: true }, epoch);
-  if (main.framesOmitted === true) return { docs: [top], topOnly: true };
+  const scopes = new Map([[top.documentId, main.shadowScope ?? ""]]);
+  let shadowRootsOmitted = main.shadowRootsOmitted === true;
+  // A frame inside an omitted host cannot be mapped safely to a Chrome frame
+  // ID. As with hidden frames, omit ALL child documents, not guessed subsets.
+  if (tree.opaqueChildren || main.framesOmitted === true || shadowRootsOmitted)
+    return { docs: [top], topOnly: true, shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
   for (const doc of docs) {
     if (doc === top) continue;
     try {
-      await execute(s, run, tab, doc, mode, {}, epoch);
+      const child = await execute(s, run, tab, doc, mode, {}, epoch);
+      scopes.set(doc.documentId, child.shadowScope ?? "");
+      if (child.shadowRootsOmitted === true) shadowRootsOmitted = true;
     } catch (error) {
       if (!screenshot && error instanceof ChromeObservationError && error.reason === "unsupported_frame")
-        return { docs: [top], topOnly: true };
+        return { docs: [top], topOnly: true, shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
       throw error;
     }
   }
-  return { docs, topOnly: false };
-}
-function documentSignature(docs) {
-  return docs.map((d) => d.documentId).sort().join();
+  return { docs: shadowRootsOmitted ? [top] : docs, topOnly: shadowRootsOmitted,
+    shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
 }
 async function script(s, run, tab, op, args) {
-  const allDocs = await documentGuard(s, run, tab, op === "screenshot"), epoch = s.epoch;
-  const scope = await exposure(s, run, tab, allDocs, epoch, op === "screenshot");
+  const tree = await documentGuard(s, run, tab, op === "screenshot"), epoch = s.epoch;
+  const scope = await exposure(s, run, tab, tree, epoch, op === "screenshot");
   const { docs, topOnly } = scope;
-  const signature = documentSignature(allDocs);
-  const referenceScope = signature + (topOnly ? ":main-only" : ":all");
+  const signature = tree.signature;
+  const referenceScope = signature + (topOnly ? ":main-only" : ":all") + scope.shadowScope;
   const exact = ["click", "fill", "select", "key"].includes(op);
   if (exact && tab.document !== referenceScope) unavailable();
   let result;
@@ -585,6 +728,7 @@ async function script(s, run, tab, op, args) {
       elements: frames.flatMap((f) => f.elements).slice(0, 300),
       frames: frames.map((f) => ({ frame: f.frame, viewport: f.viewport })),
       ...(topOnly ? { framesOmitted: true, frameNotice: "Only the main document is included; all child frames are omitted because the frame tree is not fully observable." } : {}),
+      ...(scope.shadowRootsOmitted ? { shadowRootsOmitted: true, shadowNotice: "Author shadow hosts and their subtrees are omitted; only light-DOM content outside them is included. Child frames are omitted too. Absence of text cannot be established for the whole page." } : {}),
       truncated:
         frames.some((f) => f.truncated) ||
         frames.reduce((n, f) => n + f.text.length, 0) > 24000,
@@ -601,18 +745,19 @@ async function script(s, run, tab, op, args) {
     if (exact) tab.refs.clear();
   }
   const after = await documentGuard(s, run, tab, op === "screenshot");
-  if (s.epoch !== epoch || documentSignature(after) !== signature) unavailable();
+  if (s.epoch !== epoch || after.signature !== signature) unavailable();
   // Discard observations if frame visibility changes while collecting them.
   // Actions are never replayed when a post-check fails.
   const afterScope = await exposure(s, run, tab, after, epoch, op === "screenshot");
-  if (afterScope.topOnly !== topOnly) unavailable();
+  if (afterScope.topOnly !== topOnly || afterScope.shadowScope !== scope.shadowScope ||
+      afterScope.shadowRootsOmitted !== scope.shadowRootsOmitted) unavailable();
   return result;
 }
 async function dispatch(r) {
   const p = r.params;
   if (r.method === "freeze") {
     desktopFrozen = true;
-    await Promise.all([...sessions.values()].map(s => pause(s)));
+    await Promise.all([...sessions.values()].map(s => pause(s, true, "native_handoff")));
     await cleanupDebuggers();
     return { frozen: true };
   }
@@ -701,7 +846,7 @@ async function dispatch(r) {
     return { ok: true };
   }
   if (r.method === "end") {
-    await pause(s, false);
+    await pause(s, false, "settlement");
     s.idle = true;
     for (const tab of [...s.tabs.values()]) {
       if (
@@ -801,7 +946,7 @@ async function dispatch(r) {
       try {
         await tab.attaching;
       } catch {
-        await pause(s);
+        await pause(s, true, "debugger_attach_failed");
         unavailable();
       } finally {
         tab.attaching = null;
@@ -821,14 +966,7 @@ async function dispatch(r) {
     const after = await documentGuard(s, r.run, tab, true);
     await script(s, r.run, tab, "screenshot", {});
     if (
-      doc
-        .map((d) => d.documentId)
-        .sort()
-        .join() !==
-        after
-          .map((d) => d.documentId)
-          .sort()
-          .join() ||
+      doc.signature !== after.signature ||
       epoch !== s.epoch ||
       typeof image.data !== "string" ||
       image.data.length > 650000
@@ -850,7 +988,9 @@ async function dispatch(r) {
         (p.condition === "text" && result.text.includes(p.text)) ||
         (p.condition === "text_absent" &&
           !result.text.includes(p.text) &&
-          !result.truncated)
+          !result.truncated &&
+          !result.framesOmitted &&
+          !result.shadowRootsOmitted)
       )
         return { ok: true };
       if (Date.now() >= deadline) return { ok: false, timedOut: true };
@@ -905,7 +1045,7 @@ chrome.debugger.onDetach.addListener((source) => {
     const tab = [...s.tabs.values()].find((t) => t.id === source.tabId);
     if (tab?.attached) {
       tab.attached = false; // This event confirms this extension was detached.
-      if (!tab.detaching) localPause(s, true);
+      if (!tab.detaching) localPause(s, true, "debugger_detached");
     }
   }
 });
@@ -919,30 +1059,42 @@ chrome.webNavigation.onCommitted.addListener((details) => {
       details.url === "about:blank"
     )
       return;
-    // Pages such as Facebook create blank helper iframes constantly. These are
-    // not navigations away from scope and must not revoke the whole session.
+    // Even unobserved helper changes revoke refs, not session authority.
+    s.epoch = crypto.randomUUID();
+    if (opaqueExtensionFrame(details.frameId, details.url)) {
+      if (tab) markOpaqueChildren(tab, details.timeStamp);
+      return;
+    }
     if (inheritedFrame(details.frameId, details.url)) return;
     if (tab) tab.initializing = false;
-    s.epoch = crypto.randomUUID();
     try {
       checkURL(s, details.url);
+      if (tab && details.frameId === 0) verifyMainCommit(s, tab, details);
     } catch {
-      localPause(s);
+      navigationDenied(s, details, "committed");
     }
   }
 });
-for (const event of [
-  chrome.webNavigation.onHistoryStateUpdated,
-  chrome.webNavigation.onReferenceFragmentUpdated,
+for (const [event, kind] of [
+  [chrome.webNavigation.onHistoryStateUpdated, "history"],
+  [chrome.webNavigation.onReferenceFragmentUpdated, "fragment"],
 ])
   event.addListener((details) => {
     const s = sessions.get(leases.get(details.tabId));
     if (s) {
       s.epoch = crypto.randomUUID();
+      // Same inherited-child boundary as commits. History/fragment changes in
+      // an unobserved helper are not forbidden top-level destinations.
+      if (opaqueExtensionFrame(details.frameId, details.url)) {
+        const tab = [...s.tabs.values()].find(t => t.id === details.tabId);
+        if (tab) markOpaqueChildren(tab, details.timeStamp);
+        return;
+      }
+      if (inheritedFrame(details.frameId, details.url)) return;
       try {
         checkURL(s, details.url);
       } catch {
-        localPause(s);
+        navigationDenied(s, details, kind);
       }
     }
   });
@@ -991,7 +1143,7 @@ chrome.tabs.onReplaced.addListener((_added, removed) => {
       });
     }
   if (s.idle && !s.tabs.size) sessions.delete(s.id);
-  else localPause(s); // Never transfer authority using a replacement's numeric ID.
+  else localPause(s, true, "tab_replaced"); // Never transfer authority using a replacement's numeric ID.
 });
 async function adopt(s, run, id, origin) {
   current(s, run);
@@ -1008,6 +1160,12 @@ async function adopt(s, run, id, origin) {
     refs: new Map(),
     attached: false,
     document: null,
+    // Adoption may miss events that preceded leasing. No child exposure until
+    // a later verified main-document commit establishes a new lifetime.
+    opaqueChildren: true,
+    opaqueSince: Date.now(),
+    privacyEvidenceGeneration: 0,
+    mainDocumentId: null,
   };
   s.tabs.set(tab.cap, tab); // Count reserved adoptions before asynchronous policy work.
   try {
@@ -1060,11 +1218,11 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
     current(s, s.run);
     checkURL(s, details.url);
   } catch {
-    localPause(s);
+    localPause(s, true, "popup_denied");
     return;
   }
   void tracked(s, adopt(s, s.run, details.tabId, "agent")).catch(() =>
-    localPause(s),
+    localPause(s, true, "popup_denied"),
   );
 });
 // Only packaged popup pages may issue local controls. No content-script RPC.

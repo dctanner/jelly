@@ -5,6 +5,7 @@ import {
   type ChromeMethod,
   type ChromeSelection,
 } from "../shared/chrome-protocol";
+import { chromePauseError, chromeNavigationDiagnostic, type ChromePauseReason, type ChromeNavigationDiagnostic } from "../shared/chrome-errors";
 import { HttpError } from "./errors";
 interface Task {
   agent: string;
@@ -17,6 +18,8 @@ interface Task {
   settling: boolean;
   paused: boolean; // Authority revoked, not necessarily safe for credential entry.
   pauseState: "active" | "pausing" | "paused" | "resuming" | "failed";
+  pauseReason?: ChromePauseReason;
+  navigationDiagnostic?: ChromeNavigationDiagnostic;
   pausePending: Promise<void> | null;
   resumePending: boolean;
   transition: number;
@@ -101,7 +104,7 @@ export class ChromeSessions {
           this.changed(t.agent);
         }
     };
-    this.bridge.onPauseState = (profile, generation, session, run, state) => {
+    this.bridge.onPauseState = (profile, generation, session, run, state, reason, navigationDiagnostic) => {
       for (const t of this.tasks.values())
         if (
           t.profile === profile &&
@@ -111,6 +114,17 @@ export class ChromeSessions {
           !t.lost
         ) {
           t.paused = true;
+          // Legacy peers omit the reason on generic pause acknowledgements.
+          // Retain a known current native cause, never an independent failure.
+          const nativeAcknowledgement =
+            (reason === undefined || reason === "requested") &&
+            state !== "failed" && t.pauseReason === "native_handoff" &&
+            (t.pausePending || t.pauseState === "pausing" || this.nativePauses.has(t));
+          if (!nativeAcknowledgement &&
+              !(t.settling && (reason === "settlement" || reason === "requested"))) {
+            t.pauseReason = reason;
+            t.navigationDiagnostic = reason === "navigation_denied" ? chromeNavigationDiagnostic(navigationDiagnostic) : undefined;
+          }
           ++t.transition;
           // A local acknowledgement must not revive a safe indicator while
           // Resume is in flight or finish a still-pending server pause RPC.
@@ -228,7 +242,7 @@ export class ChromeSessions {
       }
       if (t.paused)
         throw new Error(
-          "Chrome automation was paused by a native desktop handoff or a security fault. Finish the native desktop handoff or ask the operator to repair the affected session; browser_reconnect cannot bypass this boundary. Human computer-control status alone does not block browser tools.",
+          chromePauseError(t.pauseReason, t.navigationDiagnostic),
         );
     };
     return {
@@ -369,11 +383,12 @@ export class ChromeSessions {
       },
     };
   }
-  private pause(t: Task, signal?: AbortSignal): Promise<void> {
+  private pause(t: Task, signal?: AbortSignal, reason: ChromePauseReason = "requested"): Promise<void> {
     if (t.pausePending) return t.pausePending;
     ++t.transition;
     t.paused = true;
     t.pauseState = "pausing";
+    t.pauseReason = reason;
     this.changed(t.agent);
     const pending = this.call(t, "pause", {}, signal)
       .then(() => {
@@ -383,6 +398,7 @@ export class ChromeSessions {
       })
       .catch((error) => {
         t.pauseState = "failed";
+        t.pauseReason = "cleanup_failed";
         throw error;
       })
       .finally(() => {
@@ -447,6 +463,8 @@ export class ChromeSessions {
             pauseState: t.lost
               ? "disconnected"
               : t.pauseState,
+            pauseReason: t.paused ? t.pauseReason : undefined,
+            navigationDiagnostic: t.paused && t.pauseReason === "navigation_denied" ? t.navigationDiagnostic : undefined,
             connected: !t.lost,
             active: t.active,
             tabs: [...t.tabs],
@@ -458,7 +476,7 @@ export class ChromeSessions {
   async pauseForNativeHandoff() {
     await Promise.all([...this.tasks.values()].map(async t => {
       if (t.lost || t.paused) return;
-      await this.pause(t);
+      await this.pause(t, undefined, "native_handoff");
       this.nativePauses.set(t, t.transition);
     }));
   }

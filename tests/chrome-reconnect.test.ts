@@ -66,6 +66,113 @@ test("browser_reconnect is the explicit path: fresh identity, same pinned profil
   } finally { await f.close(); }
 });
 
+test("recoverable observations do not poison session authority; a reported security pause does", async () => {
+  const f = await fixture();
+  try {
+    await f.browser.action("open", { url: "https://example.com" });
+    const identity = f.calls[0]!;
+    for (const reason of ["shadow_root", "unsupported_frame", "secret_field"]) {
+      f.handle(async () => { throw new Error(`Chrome observation blocked [${reason}]`); });
+      await expect(f.browser.action("snapshot")).rejects.toThrow(reason);
+      expect(f.chrome.state("agent").task?.pauseState).toBe("active");
+      expect(await f.browser.reconnect!()).toMatchObject({ status: "already_connected" });
+    }
+    f.handle(async () => ({ text: "Ordinary page", elements: [] }));
+    expect(await f.browser.action("snapshot")).toMatchObject({ text: "Ordinary page" });
+    expect(f.calls.at(-1)!.session).toBe(identity.session);
+    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "r-other", "paused", "navigation_denied");
+    expect(f.chrome.state("agent").task?.pauseState).toBe("active");
+    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "paused", "navigation_denied");
+    await expect(f.browser.action("snapshot")).rejects.toThrow("[navigation_denied]");
+    await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+    f.lose();
+    await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+  } finally { await f.close(); }
+});
+
+test("navigation diagnostics survive scoped pause delivery but never relax authority or retain raw fields", async () => {
+  for (const destination of ["protected_origin", "chromium_error_document"] as const) for (const valid of [true, false]) {
+    const f = await fixture();
+    try {
+      await f.browser.action("open", { url: "https://example.com" });
+      const diagnostic = { event: valid ? "history" : "PRIVATE", frame: "child", destination, url: "PRIVATE URL" };
+      f.chrome.bridge.onPauseState(f.profile, f.generation, f.calls[0]!.session, "run", "paused", "navigation_denied", diagnostic as any);
+      const state = f.chrome.state("agent");
+      expect(state.task?.navigationDiagnostic).toEqual(valid ? { event: "history", frame: "child", destination } : undefined);
+      expect(JSON.stringify(state)).not.toContain("PRIVATE");
+      await expect(f.browser.action("snapshot")).rejects.toThrow(valid ? `event=history, frame=child, destination=${destination}` : "[navigation_denied]");
+      await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+    } finally { await f.close(); }
+  }
+});
+
+test("worker revision provenance requires the exact profile, generation, session and run", async () => {
+  const f = await fixture();
+  try {
+    await f.browser.action("open", { url: "https://example.com" });
+    const identity = [f.profile, f.generation, f.calls[0]!.session, "run"] as const;
+    const diagnostic = { event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2" } as const;
+    for (let i = 0; i < identity.length; i++) {
+      const stale = [...identity];
+      stale[i] = "foreign-or-stale";
+      f.chrome.bridge.onPauseState(stale[0]!, stale[1]!, stale[2]!, stale[3]!, "paused", "navigation_denied", diagnostic);
+      expect(f.chrome.state("agent").task?.pauseState).toBe("active");
+      expect(f.chrome.state("agent").task?.navigationDiagnostic).toBeUndefined();
+    }
+    f.chrome.bridge.onPauseState(...identity, "paused", "navigation_denied", diagnostic);
+    expect(f.chrome.state("agent").task?.navigationDiagnostic).toEqual(diagnostic);
+    await expect(f.browser.action("snapshot")).rejects.toThrow("backend=internal_v2, worker=internal_v2");
+    await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+    f.chrome.bridge.onPauseState(...identity, "paused", "navigation_denied", { ...diagnostic, revision: "PRIVATE" } as any);
+    await expect(f.browser.action("snapshot")).rejects.toThrow("backend=internal_v2, worker=unreported");
+    expect(JSON.stringify(f.chrome.state("agent"))).not.toContain("PRIVATE");
+  } finally { await f.close(); }
+});
+
+test("server-known native pauses and older-peer unknown pauses remain distinguishable and blocked", async () => {
+  for (const native of [true, false]) {
+    const f = await fixture();
+    try {
+      await f.browser.action("open", { url: "https://example.com" });
+      if (native) await f.chrome.pauseForNativeHandoff();
+      else f.chrome.bridge.onPauseState(f.profile, f.generation, f.calls[0]!.session, "run", "paused");
+      await expect(f.browser.action("snapshot")).rejects.toThrow(native ? "[native_handoff]" : "[unknown]");
+      await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+    } finally { await f.close(); }
+  }
+});
+
+test("legacy reasonless native pause ACKs retain provenance but independent failures replace it", async () => {
+  for (const independent of [undefined, "debugger_detached", "cleanup_failed"] as const) {
+    const f = await fixture();
+    const entered = gate<void>(), ack = gate<unknown>();
+    try {
+      await f.browser.action("open", { url: "https://example.com" });
+      const session = f.calls[0]!.session;
+      f.handle(async method => {
+        if (method === "pause") { entered.resolve(); return ack.promise; }
+        return { ok: true };
+      });
+      const pending = f.chrome.pauseForNativeHandoff();
+      await entered.promise;
+      for (const state of ["pausing", "paused"] as const) {
+        f.chrome.bridge.onPauseState(f.profile, f.generation, session, "run", state);
+        expect(f.chrome.state("agent").task?.pauseReason).toBe("native_handoff");
+      }
+      ack.resolve({ ok: true });
+      await pending;
+      await expect(f.browser.action("snapshot")).rejects.toThrow("[native_handoff]");
+      await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+      // Even a reasonless failed event must not retain an asserted native cause.
+      f.chrome.bridge.onPauseState(f.profile, f.generation, session, "run", independent === "debugger_detached" ? "paused" : "failed", independent);
+      expect(f.chrome.state("agent").task?.pauseReason).toBe(independent);
+      await expect(f.browser.action("snapshot")).rejects.toThrow(`[${independent ?? "unknown"}]`);
+      await f.chrome.finishNativeHandoff();
+      await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
+    } finally { ack.resolve({ ok: true }); await f.close(); }
+  }
+});
+
 test("new runs do not auto-renew stale sessions or adopt a newly configured profile", async () => {
   const f = await fixture();
   try {

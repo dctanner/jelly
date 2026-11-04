@@ -113,8 +113,16 @@ transport; local native messaging cannot bridge machines.
   `browser_click`/`browser_fill`, bounded `browser_scroll`, `browser_select`,
   referenced `browser_key` and `browser_wait_for` are supported. Keys are semantic
   button activation or element-scoped key events, not OS/global shortcuts or
-  trusted general keyboard emulation. Select takes an option value; snapshots
-  do not expose selected form values. Waits support bounded visible text,
+  trusted general keyboard emulation. Native controls use DOM click activation;
+  custom `role="button"` controls receive an exact-element synthetic pointer/mouse
+  press/release sequence before the click (including Enter/Space activation).
+  This supports mouse-up-driven toolbars without arbitrary coordinates, selectors,
+  or trusted-input emulation. The outer control owns the reference; `aria-label`
+  labels icon-only controls. Disabled/inert controls are rejected, references are
+  consumed before dispatch, and target safety is rechecked between events. An
+  `ok` response confirms dispatch, **not** application success: verify the visible
+  outcome and never automatically replay a destructive action. Select takes an
+  option value; snapshots do not expose selected form values. Waits support bounded visible text,
   untruncated text absence, or DOM readiness, never arbitrary evaluation.
 - Snapshots combine bounded visible text and exact references from authorized
   same-process and cross-site/OOPIF documents. References bind to connection,
@@ -126,13 +134,24 @@ transport; local native messaging cannot bridge machines.
   `framesOmitted` and an explanatory notice; references to omitted child frames
   cannot be acted on. Changes to observation scope invalidate old references,
   and pre/post checks discard results whose scope changed during collection.
-  Object/embed and author shadow roots (open or closed) still fail closed.
-  The isolated extension uses Chrome's
-  `chrome.dom.openOrClosedShadowRoot` on a bounded light-DOM scan; it rejects
-  the entire document rather than inspecting private root contents. Missing API
-  support also fails closed. A secret field in any included document blocks
-  observation. Excluded child documents are never returned or given actionable
-  references. Actions cannot use another document's/agent's stale reference.
+  Object/embed still fails closed. For author shadow roots (open or closed),
+  text observations omit each host and its entire subtree, including slotted
+  light-DOM content, without traversing the root. They report `shadowRootsOmitted`
+  and a partial-content notice. Controls containing a shadow host are also not
+  actionable. All child frames are omitted when shadow content prevents complete
+  frame visibility checks. The isolated extension uses Chrome's
+  `chrome.dom.openOrClosedShadowRoot` on a bounded light-DOM scan; missing API
+  support fails closed. Changing shadow-host scope invalidates old references.
+  An exact target must remain rooted in the admitted document's light DOM:
+  moving it into an existing open or closed root blocks its action even when
+  the shadow-host set is unchanged. All exact inputs consume references before
+  the first mutation/event and recheck omission, origin, sensitive/disabled state
+  and operation eligibility between events. A refused multi-event input may
+  already have changed a field or triggered a handler; re-observe rather than
+  replaying it. Secret fields in included light DOM still block observation. Excluded content is never
+  returned or given actionable references. Text-absence waits cannot succeed on
+  partial frame/shadow observations; a timeout is not proof of absence. Actions
+  cannot use another document's/agent's stale reference.
 - Screenshots return PNG tool image content, never base64 text in model output.
   Screenshots never use the main-document-only fallback: unobservable or inherited
   frames, detected secret/nonempty/contenteditable fields or any author shadow
@@ -193,6 +212,69 @@ left unchanged. The agent must reopen the desired page with `browser_open`, take
 a new `browser_snapshot`, and verify any unconfirmed action's outcome rather than
 repeat it. Existing personal/deliverable tabs and other agents' sessions are not
 reset. There is no background task-renewal path or shell/API recovery shortcut.
+
+Observation refusals (`shadow_root`, `unsupported_frame`, `secret_field`, etc.)
+do not themselves pause a session or require reconnect. Re-observe supported
+content without replaying an unconfirmed action. Separate authority pauses report
+fixed cause codes (for example `navigation_denied`, `popup_denied`,
+`debugger_detached`, `cleanup_failed`, or `native_handoff`), never URLs or raw
+browser errors. Navigation denials also carry bounded `navigationDiagnostic`
+enums: event (`committed`, `history`, `fragment`), frame (`main`, `child`,
+`unknown`), and destination class (for example `protected_origin`, `credentials`,
+`url_too_long`, `data`, or `inherited_blank`). `chromium_error_document` identifies
+only the exact literal `chrome-error://chromewebdata/`. `chromium_error_variant`
+means another parsed `chrome-error:` URL with the same case-insensitive hostname;
+`chrome_error_other` means a different hostname. Neither proves a harmless error
+page. Other subclasses are `chrome_internal`, `extension_self`, `extension_other`
+and `devtools`; extension identity is relative to this worker, never an exposed
+extension ID. `browser_internal` remains accepted from older workers only.
+These codes grant no access. Main-frame extension pages, Jelly's own extension,
+malformed extension URLs and all other internal schemes still pause automation.
+The sole bounded child exception is described below. Failed HTTP frames do not establish that this URL
+was committed: tested network/X-Frame-Options failures instead report the original
+HTTP URL with `errorOccurred`. No URL, hostname, token or raw error is recorded;
+unknown values are discarded. Older peers may omit these details or
+report `unknown`; neither implies a native handoff. Navigation errors also report
+fixed schema/code-path revisions, e.g. `backend=internal_v2, worker=internal_v2`.
+The backend marker comes from its loaded code; the worker marker comes only from
+the authenticated matching profile/generation/session/run event. Missing or
+unknown worker revisions show `unreported` (not proof the worker is old: the
+record itself may predate activation). Missing backend marker means the error
+cannot establish that this backend revision produced it. Unknown categories are
+dropped, **never rewritten** to `browser_internal`. These markers are diagnostics,
+not signatures, pairing versions or authority grants. Cause codes cannot relax
+authority checks.
+
+Inherited `about:blank`/`about:srcdoc` **child** documents remain unobservable.
+Their commit/history/fragment events invalidate references but do not pause the
+whole task. This exception never applies to a main document, protected Jelly
+control origin, credential-bearing URL, or another non-web destination. Late
+auth-page helper frames therefore use the same narrow rule as initial helpers.
+A canonical `chrome-extension://` child URL with a valid 32-character `[a-p]`
+ID belonging to **another** extension is treated as opaque, never inspected.
+This is not an extension identity grant: credentials, ports, normalization tricks,
+malformed escapes/IDs, oversized URLs, main documents and Jelly's own extension
+remain denied. All child documents—including HTTP descendants and visible
+siblings—are omitted; screenshots and whole-page text-absence claims stay blocked.
+
+Chrome can omit the privileged ancestor from `getAllFrames` while returning its
+HTTP descendants. A missing/cyclic/malformed parent topology therefore also
+forces main-only observation and latches that uncertainty, just like an opaque
+event, for the leased tab's current main-document lifetime. Every opaque or
+uncertain metadata observation advances a separate privacy-evidence generation,
+even while latched, so an older pending verification cannot clear newer evidence.
+This does not advance action/reference epochs on repeated guards; safe main-only
+actions remain usable. Missing metadata or removal of
+privacy UI cannot prove it is gone; history/fragment changes and `browser_open`
+acknowledgement do not clear the latch. Only a verified new, successful top-level
+web-document commit newer than the privacy observation can clear it. Races,
+stale events and uncertain verification retain the restriction. Full frame-tree
+identities and parent relationships participate in reference/postcheck scoping.
+Adopted popups start similarly restricted because pre-adoption events may have
+been missed. This does not relax popup adoption or any automation pause.
+
+An actual navigation denial still requires legitimate operator repair; a page
+being an ordinary login page does not make every background destination safe.
 
 An absent/revoked profile, pending sign-in request, native-private handoff or
 security/cleanup failure remains blocked. Operator **Reconnect** in the extension
@@ -714,6 +796,22 @@ native desktop boundaries, plus `bun run check`. Before deployment run
   retained main-page actions, omitted child content, secret-field guards and
   rejection of screenshots and stale child references. This does not qualify the
   entire lifecycle suite or verify a live Gmail session.
+- `JELLY_CHROME_RELIABILITY_ONLY=1 bun tests/chrome-extension.browser.ts`:
+  disposable headed custom-control/frame regressions plus open/closed author-root
+  omission, slotted-content exclusion, exact-reference rejection and partial
+  text-absence waits, plus local auth input with late web/inherited child frames,
+  real history/fragment events and stale-ref rejection. This focused lane does
+  not qualify the full lifecycle.
+- `bun tests/chrome-opaque-extension.browser.ts`: focused two-extension/native-host
+  fixture proving private iframe exclusion even when Chrome omits its ancestor
+  metadata but reports an HTTP descendant. Checks main actions, stale references,
+  screenshots, absence waits, conservative removal handling and verified reset.
+- `bun tests/chrome-error-document.browser.ts`: finite, local-only headed
+  failed-iframe diagnostic probe (Linux requires `DISPLAY`, e.g. `xvfb-run`).
+  Its isolated probe extension has no native-messaging/debugger permissions and
+  cannot pair with Jelly. Same-site/cross-site connection failures, embedding
+  refusal and late failure are recorded as fixed URL classes only; this is not
+  a browser-authority recovery test or qualification of a live site's behavior.
 - `bun run test:chrome-vnc`: actual X11/noVNC input, owner isolation, advisory
   browser operation, mobile fit and teardown.
 - `bun run test:chrome-owned-vnc`: owned desktop/authentication/persistence.

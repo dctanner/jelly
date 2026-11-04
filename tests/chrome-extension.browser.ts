@@ -58,6 +58,39 @@ const fixture = Bun.serve({
         `<h1>Blank frame host</h1><script>for (const hidden of [true, false]) { const f = document.createElement('iframe'); if (hidden) f.style.display = 'none'; document.body.appendChild(f); }</script>`,
         { headers: { "Content-Type": "text/html" } },
       );
+    if (path === "/auth-helper-history")
+      return new Response(`
+        <h1>Local auth helper fixture</h1><input type="email" aria-label="Fixture email"><button>Continue fixture</button>
+        <script>
+          window.authHelperProgress = [];
+          document.querySelector('input').addEventListener('input', () => setTimeout(() => {
+            window.authHelperProgress.push('input');
+            for (const kind of ['blank', 'srcdoc', 'web']) {
+              const frame = document.createElement('iframe');
+              frame.hidden = true;
+              frame.src = '/child';
+              let inherited = kind === 'web';
+              frame.onload = () => {
+                if (!inherited) {
+                  inherited = true;
+                  if (kind === 'srcdoc') frame.srcdoc = '<p>UNOBSERVED_HELPER</p>';
+                  else frame.src = 'about:blank';
+                  return;
+                }
+                frame.onload = null;
+                window.authHelperProgress.push(kind + '-loaded');
+                setTimeout(() => {
+                  try {
+                    frame.contentWindow.history.replaceState({}, '', kind === 'web' ? '/child?history=fixture#history' : 'about:' + kind + '#history');
+                    frame.contentWindow.location.hash = 'fragment';
+                    window.authHelperProgress.push(kind + '-updated');
+                  } catch (error) { window.authHelperProgress.push(kind + '-' + error.name); }
+                }, 100);
+              };
+              document.body.append(frame);
+            }
+          }, 500), { once: true });
+        </script>`, { headers: { "Content-Type": "text/html" } });
     if (path === "/hidden-blank-frame")
       return new Response(
         `<h1>Hidden blank helper</h1><script>setTimeout(() => { const f = document.createElement('iframe'); f.style.display = 'none'; document.body.appendChild(f); }, 50);</script>`,
@@ -92,6 +125,30 @@ const fixture = Bun.serve({
         `<button onclick="window.open('/popup-child')">Popup go</button>`,
         { headers: { "Content-Type": "text/html" } },
       );
+    if (path === "/custom-button")
+      return new Response(`
+        <h1>Custom button fixture</h1>
+        <div class="T-I J-J5-Ji" act="7" role="button" tabindex="0"
+             aria-label="Archive" style="display:inline-block;padding:16px">
+          <div class="Bn">Archive</div>
+        </div>
+        <script>
+          const button = document.querySelector('[role="button"]');
+          let armed = false;
+          window.actions = 0;
+          window.events = [];
+          for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+            button.addEventListener(type, event => {
+              window.events.push(type);
+              if (type === 'mousedown' && event.button === 0) armed = true;
+              if (type === 'mouseup' && armed) {
+                armed = false;
+                window.actions++;
+                document.querySelector('h1').textContent = 'Archived fixture ' + window.actions;
+              }
+            });
+          }
+        </script>`, { headers: { "Content-Type": "text/html" } });
     if (path === "/options")
       return new Response(
         '<select><option value="one">One</option><option value="two">Two</option></select><button onclick="document.body.dataset.key=\'yes\'">Key go</button>',
@@ -296,6 +353,37 @@ try {
     }
   }
   expect(snapshot.text).toContain("Local fixture");
+  {
+    const sid = crypto.randomUUID();
+    await call("begin", { name: "Exact custom button regression", protected: [protectedFixture.url.origin] }, sid);
+    const custom = await call("open", { url: `${fixture.url.origin}/custom-button` }, sid);
+    await delay(500);
+    const page = context.pages().find(p => p.url() === `${fixture.url.origin}/custom-button`)!;
+    // Reproduce the original implementation: click alone cannot activate this
+    // mouseup-driven control. The .Bn text child is not the actionable ref.
+    await page.locator('[role="button"]').evaluate((el: HTMLElement) => el.click());
+    expect(await page.evaluate(() => (window as any).actions)).toBe(0);
+    for (const [i, key] of [undefined, "Enter", "Space"].entries()) {
+      await page.evaluate(() => { (window as any).events = []; });
+      const observed = await call("snapshot", { tab: custom.pageId }, sid);
+      const buttons = observed.elements.filter((el: any) => el.label.trim() === "Archive");
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0].tag).toBe("div");
+      await call(key ? "key" : "click", { tab: custom.pageId, ref: buttons[0].ref, ...(key ? { key } : {}) }, sid);
+      expect(await page.evaluate(() => (window as any).actions)).toBe(i + 1);
+      expect(await page.evaluate(() => (window as any).events)).toEqual(["pointerdown", "mousedown", "pointerup", "mouseup", "click"]);
+      await expect(call("click", { tab: custom.pageId, ref: buttons[0].ref }, sid)).rejects.toThrow();
+    }
+    // The same fixture also responds to a real browser click, like the reported
+    // Gmail difference. All testing is on disposable local data, never Gmail.
+    await page.locator('[role="button"]').click();
+    expect(await page.evaluate(() => (window as any).actions)).toBe(4);
+    await page.locator('.Bn').evaluate(el => { el.textContent = ""; });
+    const icons = await call("snapshot", { tab: custom.pageId }, sid);
+    expect(icons.elements.find((el: any) => el.label === "Archive")).toBeTruthy();
+    await call("end", { discard: true }, sid);
+    console.log("PASS: outer custom-button targeting, icon labels, press/release activation and stale refs.");
+  }
   const dottedSession = crypto.randomUUID();
   const dottedOrigin = `http://localhost:${fixture.port}`;
   const dottedControl = `http://localhost:${protectedFixture.port}`;
@@ -390,9 +478,209 @@ try {
     await call("end", { discard: true }, helperSession);
     console.log("PASS: hidden, clipped and cross-site helper frames omitted without blocking main document; stale child actions and screenshots denied.");
   }
+  // Regression: closed roots are invisible to element.shadowRoot, but their
+  // pixels are in Page.captureScreenshot. Exercise the real isolated extension
+  // guard, including a non-secret-looking filled field and contenteditable.
+  const shadowPage = context.pages().find((p) => p.url() === fixture.url.href)!;
+  await shadowPage.evaluate(() => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.id = "svg-guard-fixture";
+    svg.innerHTML =
+      '<circle cx="10" cy="10" r="5"/><foreignObject width="300" height="80"><div xmlns="http://www.w3.org/1999/xhtml" id="svg-html-host">Visible SVG HTML</div></foreignObject>';
+    document.body.append(svg);
+  });
+  expect((await call("snapshot", { tab })).text).toContain("Visible SVG HTML");
+  expect(
+    Buffer.from((await call("screenshot", { tab })).image, "base64")
+      .subarray(1, 4)
+      .toString(),
+  ).toBe("PNG");
+  await shadowPage.evaluate(() => {
+    document
+      .getElementById("svg-html-host")!
+      .attachShadow({ mode: "closed" }).innerHTML =
+      '<input autocomplete="current-password" value="SVG_CLOSED_ROOT_SECRET">';
+  });
+  const svgShadow = await call("snapshot", { tab });
+  expect(svgShadow.shadowRootsOmitted).toBe(true);
+  expect(svgShadow.text).not.toContain("SVG_CLOSED_ROOT_SECRET");
+  expect(svgShadow.text).not.toContain("Visible SVG HTML");
+  await expect(call("screenshot", { tab })).rejects.toThrow();
+  await shadowPage.evaluate(() =>
+    document.getElementById("svg-guard-fixture")!.remove(),
+  );
+  for (const content of [
+    '<input type="text" autocomplete="current-password" value="CLOSED_ROOT_SECRET">',
+    '<input type="text" value="CLOSED_ROOT_NONEMPTY">',
+    "<div contenteditable>CLOSED_ROOT_EDITABLE</div>",
+  ]) {
+    await shadowPage.evaluate((html) => {
+      const host = document.createElement("div");
+      host.id = "closed-root-fixture";
+      document.body.append(host);
+      host.attachShadow({ mode: "closed" }).innerHTML = html;
+      if (host.shadowRoot !== null) throw new Error("Expected closed root");
+    }, content);
+    await expect(call("screenshot", { tab })).rejects.toThrow();
+    const partial = await call("snapshot", { tab });
+    expect(partial.shadowRootsOmitted).toBe(true);
+    expect(partial.text).toContain("Local fixture");
+    expect(partial.text).not.toContain("CLOSED_ROOT_");
+    expect(await call("wait_for", { tab, condition: "text_absent", text: "CLOSED_ROOT_", timeoutMs: 0 })).toEqual({ ok: false, timedOut: true });
+    await shadowPage.evaluate(() =>
+      document.getElementById("closed-root-fixture")!.remove(),
+    );
+  }
+  expect(
+    Buffer.from((await call("screenshot", { tab })).image, "base64")
+      .subarray(1, 4)
+      .toString(),
+  ).toBe("PNG");
+  // Real open roots, slots and exact refs: light DOM remains usable, but a
+  // target moved under an omitted host cannot be acted on with its old ref.
+  await shadowPage.evaluate((childURL) => {
+    const host = document.createElement("div");
+    host.id = "open-root-fixture";
+    host.innerHTML = '<button>SLOTTED_SENTINEL</button>';
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = '<slot></slot><button>ROOT_SENTINEL</button>';
+    const frame = document.createElement("iframe");
+    frame.src = childURL;
+    root.append(frame);
+    document.body.append(host);
+  }, childFixture.url.href);
+  await delay(300);
+  const partial = await call("snapshot", { tab });
+  expect(partial.shadowRootsOmitted).toBe(true);
+  expect(partial.frames).toHaveLength(1);
+  expect(partial.text).not.toContain("OOPIF child");
+  expect(partial.text).not.toContain("SLOTTED_SENTINEL");
+  expect(partial.text).not.toContain("ROOT_SENTINEL");
+  expect(partial.elements.some((el: any) => /SENTINEL/.test(el.label))).toBe(false);
+  const outside = partial.elements.find((el: any) => el.tag === "button");
+  await shadowPage.evaluate(() => {
+    document.getElementById("open-root-fixture")!.append(document.querySelector("button")!);
+  });
+  await expect(call("click", { tab, ref: outside.ref })).rejects.toThrow();
+  await shadowPage.evaluate(() => {
+    const host = document.getElementById("open-root-fixture")!;
+    document.body.append(host.lastElementChild!);
+    host.remove();
+  });
+  // Adversarial exact-ref cases use real open AND closed roots. Page code holds
+  // the root solely to simulate reparenting; the extension never traverses it.
+  for (const mode of ["open", "closed"] as const) {
+    for (const operation of ["click", "fill", "select", "key"] as const) {
+      for (const destination of operation === "click" ? ["root"] : ["host", "root"]) {
+        await shadowPage.evaluate(({ mode, operation, destination }) => {
+          const wrapper = document.createElement("div");
+          wrapper.id = "boundary-fixture";
+          const host = document.createElement("div");
+          const root = host.attachShadow({ mode });
+          const target = document.createElement(operation === "fill" ? "input" : operation === "select" ? "select" : "button");
+          target.setAttribute("aria-label", "Boundary action");
+          if (operation === "select") target.innerHTML = '<option value="a">A</option><option value="b">B</option>';
+          if (target instanceof HTMLButtonElement) target.textContent = "Boundary action";
+          wrapper.append(host, target);
+          document.body.append(wrapper);
+          const events: string[] = [];
+          const move = () => (destination === "root" ? root : host).append(target);
+          const first = operation === "key" ? "keydown" : "input";
+          const later = operation === "key" ? "keyup" : "change";
+          target.addEventListener("click", () => events.push("click"));
+          target.addEventListener(first, () => { events.push(first); move(); });
+          target.addEventListener(later, () => events.push(later));
+          (window as any).boundaryFixture = { events, move, restore: () => wrapper.append(target) };
+        }, { mode, operation, destination });
+        const observed = await call("snapshot", { tab });
+        const ref = observed.elements.find((el: any) => el.label === "Boundary action").ref;
+        if (operation === "click") await shadowPage.evaluate(() => (window as any).boundaryFixture.move());
+        const args = { tab, ref, ...(operation === "fill" ? { text: "Fixture value" } : operation === "select" ? { value: "b" } : operation === "key" ? { key: "ArrowDown" } : {}) };
+        await expect(call(operation, args)).rejects.toThrow();
+        expect(await shadowPage.evaluate(() => (window as any).boundaryFixture.events)).toEqual(operation === "click" ? [] : [operation === "key" ? "keydown" : "input"]);
+        if (operation !== "click") {
+          await shadowPage.evaluate(() => (window as any).boundaryFixture.restore());
+          await expect(call(operation, args)).rejects.toThrow(); // Partial operation is consumed.
+        }
+        await shadowPage.evaluate(() => {
+          document.getElementById("boundary-fixture")!.remove();
+          delete (window as any).boundaryFixture;
+        });
+      }
+    }
+  }
+  console.log("PASS: shadow omission, closed-root screenshot denial, slotted refs, actual-root reparenting, per-event checks and partial text-absence waits.");
+  // A local auth input schedules late web and inherited helpers. Chrome reports
+  // hash-only history.replaceState as fragment events, including about: helpers;
+  // a web helper's query change separately exercises the history listener.
+  {
+    const sid = crypto.randomUUID();
+    const url = `${fixture.url.origin}/auth-helper-history`;
+    await call("begin", { name: "Late auth helper events", protected: [protectedFixture.url.origin] }, sid);
+    const auth = await call("open", { url }, sid);
+    await delay(500);
+    await worker.evaluate(async (url) => {
+      const api = (globalThis as any).chrome;
+      const tab = (await api.tabs.query({})).find((tab: any) => tab.url === url);
+      const records: string[] = [];
+      const history = (event: any) => { if (event.tabId === tab.id && event.frameId > 0) records.push(event.url.startsWith("about:") ? "inherited-history" : "history"); };
+      const fragment = (event: any) => { if (event.tabId === tab.id && event.frameId > 0) records.push(event.url.startsWith("about:blank") ? "blank-fragment" : event.url.startsWith("about:srcdoc") ? "srcdoc-fragment" : "fragment"); };
+      api.webNavigation.onHistoryStateUpdated.addListener(history);
+      api.webNavigation.onReferenceFragmentUpdated.addListener(fragment);
+      (globalThis as any).authHelperEvents = { records, cleanup() {
+        api.webNavigation.onHistoryStateUpdated.removeListener(history);
+        api.webNavigation.onReferenceFragmentUpdated.removeListener(fragment);
+      } };
+    }, url);
+    const previousPauseListener = bridge.onPauseState;
+    const authPauses: unknown[] = [];
+    bridge.onPauseState = (...args) => {
+      previousPauseListener(...args);
+      if (args[2] === sid) authPauses.push({ state: args[4], reason: args[5] });
+    };
+    try {
+      const before = await call("snapshot", { tab: auth.pageId }, sid);
+      const input = before.elements.find((el: any) => el.label === "Fixture email");
+      const stale = before.elements.find((el: any) => el.label.trim() === "Continue fixture");
+      expect(await call("fill", { tab: auth.pageId, ref: input.ref, text: "fixture@example.test" }, sid)).toEqual({ ok: true });
+      // Fill consumes its own refs. Take another observation before late events
+      // to test event-driven invalidation as well as the already-covered consume.
+      const pending = await call("snapshot", { tab: auth.pageId }, sid);
+      const pendingRef = pending.elements.find((el: any) => el.label.trim() === "Continue fixture").ref;
+      let events: string[] = [];
+      for (let i = 0; i < 100; i++) {
+        events = await worker.evaluate(() => (globalThis as any).authHelperEvents.records);
+        if (events.includes("history") && events.includes("fragment")) break;
+        await delay(50);
+      }
+      expect(events).toContain("history");
+      expect(events).toContain("fragment");
+      expect(events).toContain("blank-fragment");
+      expect(events).toContain("srcdoc-fragment");
+      const authPage = context.pages().find(p => p.url() === url)!;
+      await authPage.waitForFunction(() => (window as any).authHelperProgress.filter((x: string) => x.endsWith("-updated")).length === 3);
+      expect(await authPage.evaluate(() => (window as any).authHelperProgress)).toEqual(expect.arrayContaining(["blank-updated", "srcdoc-updated", "web-updated"]));
+      expect(authPauses).toEqual([]);
+      await expect(call("click", { tab: auth.pageId, ref: stale.ref }, sid)).rejects.toThrow();
+      await expect(call("click", { tab: auth.pageId, ref: pendingRef }, sid)).rejects.toThrow();
+      const after = await call("snapshot", { tab: auth.pageId }, sid);
+      expect(after.text).toContain("Local auth helper fixture");
+      expect(after.text).not.toContain("UNOBSERVED_HELPER");
+      expect(after.framesOmitted).toBe(true);
+      await expect(call("screenshot", { tab: auth.pageId }, sid)).rejects.toThrow();
+      await call("end", { discard: true }, sid);
+    } finally {
+      bridge.onPauseState = previousPauseListener;
+      await worker.evaluate(() => {
+        (globalThis as any).authHelperEvents.cleanup();
+        delete (globalThis as any).authHelperEvents;
+      });
+    }
+    console.log("PASS: auth fill plus late web/about:blank/srcdoc helpers and real history/inherited-fragment events preserves session, revokes refs, omits helpers and blocks screenshots.");
+  }
   // Focused headed regression lane, still using the real native host and
   // disposable profile. The default invocation continues through the full suite.
-  if (process.env.JELLY_CHROME_FRAMES_ONLY !== "1") {
+  if (process.env.JELLY_CHROME_FRAMES_ONLY !== "1" && process.env.JELLY_CHROME_RELIABILITY_ONLY !== "1") {
   console.log("PASS: default policy accepts dotted navigation, redirect and script; dotted control navigation/redirect/assets denied.");
   // No origin allowlist or opt-in mode, including cross-site frames/assets.
   // Exact control-endpoint denies apply before navigation and subresource requests.
@@ -555,8 +843,8 @@ try {
     pausing: false,
     failed: true,
   });
-  expect(pauseEvents.some((e) => e.at(-1) === "failed")).toBe(true);
-  expect(pauseEvents.some((e) => e.at(-1) === "paused")).toBe(false);
+  expect(pauseEvents.some((e) => e[4] === "failed" && e[5] === "cleanup_failed")).toBe(true);
+  expect(pauseEvents.some((e) => e[4] === "paused")).toBe(false);
   await expect(call("resume")).rejects.toThrow();
   expect(
     await worker.evaluate(async () => {
@@ -622,57 +910,6 @@ try {
     );
     expect(state.sessions.some((s: any) => s.id === sid)).toBe(false);
   }
-  // Regression: closed roots are invisible to element.shadowRoot, but their
-  // pixels are in Page.captureScreenshot. Exercise the real isolated extension
-  // guard, including a non-secret-looking filled field and contenteditable.
-  const shadowPage = context.pages().find((p) => p.url() === fixture.url.href)!;
-  await shadowPage.evaluate(() => {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.id = "svg-guard-fixture";
-    svg.innerHTML =
-      '<circle cx="10" cy="10" r="5"/><foreignObject width="300" height="80"><div xmlns="http://www.w3.org/1999/xhtml" id="svg-html-host">Visible SVG HTML</div></foreignObject>';
-    document.body.append(svg);
-  });
-  expect((await call("snapshot", { tab })).text).toContain("Visible SVG HTML");
-  expect(
-    Buffer.from((await call("screenshot", { tab })).image, "base64")
-      .subarray(1, 4)
-      .toString(),
-  ).toBe("PNG");
-  await shadowPage.evaluate(() => {
-    document
-      .getElementById("svg-html-host")!
-      .attachShadow({ mode: "closed" }).innerHTML =
-      '<input autocomplete="current-password" value="SVG_CLOSED_ROOT_SECRET">';
-  });
-  await expect(call("snapshot", { tab })).rejects.toThrow();
-  await expect(call("screenshot", { tab })).rejects.toThrow();
-  await shadowPage.evaluate(() =>
-    document.getElementById("svg-guard-fixture")!.remove(),
-  );
-  for (const content of [
-    '<input type="text" autocomplete="current-password" value="CLOSED_ROOT_SECRET">',
-    '<input type="text" value="CLOSED_ROOT_NONEMPTY">',
-    "<div contenteditable>CLOSED_ROOT_EDITABLE</div>",
-  ]) {
-    await shadowPage.evaluate((html) => {
-      const host = document.createElement("div");
-      host.id = "closed-root-fixture";
-      document.body.append(host);
-      host.attachShadow({ mode: "closed" }).innerHTML = html;
-      if (host.shadowRoot !== null) throw new Error("Expected closed root");
-    }, content);
-    await expect(call("screenshot", { tab })).rejects.toThrow();
-    await expect(call("snapshot", { tab })).rejects.toThrow();
-    await shadowPage.evaluate(() =>
-      document.getElementById("closed-root-fixture")!.remove(),
-    );
-  }
-  expect(
-    Buffer.from((await call("screenshot", { tab })).image, "base64")
-      .subarray(1, 4)
-      .toString(),
-  ).toBe("PNG");
   snapshot = await call("snapshot", { tab });
   await call("fill", {
     tab,

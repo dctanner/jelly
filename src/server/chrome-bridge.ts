@@ -24,7 +24,7 @@ import {
   type ChromeProfile,
 } from "../shared/chrome-protocol";
 import { ChromeWriter } from "./chrome-writer";
-import { chromeOperationError } from "../shared/chrome-errors";
+import { chromeOperationError, chromePauseReason, chromeNavigationDiagnostic, type ChromePauseReason, type ChromeNavigationDiagnostic } from "../shared/chrome-errors";
 import { validChromeDesktop, type ChromeDesktop } from "./chrome-desktop";
 interface Peer {
   socket: Socket;
@@ -99,6 +99,8 @@ export class ChromeBridge {
     session: string,
     run: string,
     state: "pausing" | "paused" | "failed",
+    reason?: ChromePauseReason,
+    navigationDiagnostic?: ChromeNavigationDiagnostic,
   ) => void = () => {};
   onTabAdded: (
     profile: string,
@@ -332,6 +334,8 @@ export class ChromeBridge {
               v.session as string,
               v.run as string,
               v.state as "pausing" | "paused" | "failed",
+              chromePauseReason(v.reason),
+              v.reason === "navigation_denied" ? chromeNavigationDiagnostic(v.navigationDiagnostic) : undefined,
             );
           } else if (v.type === "tabRemoved" || v.type === "tabAdded") {
             if (
