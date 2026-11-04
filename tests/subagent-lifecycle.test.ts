@@ -262,7 +262,7 @@ test("terminal canonical status repairs a lost completion with a model wake, not
     expect(requests).toHaveLength(0);
     now = 1001;
     await work.refresh();
-    expect(requests).toHaveLength(1);
+    await until(() => requests.length === 1);
     expect(requests[0]).toContain("completion reconciliation");
     await work.settle(session);
     expect(work.projection.snapshot().children[0]?.state).toBe("completed");

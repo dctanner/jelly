@@ -117,3 +117,10 @@ export const schedulesApi = {
   change: (agentId: string, id: string, action: "update" | "pause" | "resume" | "cancel", input: Record<string, unknown>) => api<import("../shared/schedules").ScheduleReceipt>(`${schedulesPath(agentId, id)}${action === "update" ? "" : `/${action}`}`, { method: action === "update" ? "PATCH" : "POST", body: JSON.stringify(input) }),
   history: (agentId: string, id: string, before?: string) => api<import("../shared/schedules").OccurrencesPage>(`${schedulesPath(agentId, id)}/occurrences${before ? `?before=${encodeURIComponent(before)}` : ""}`),
 };
+
+const goalPath = (agentId: string) => `/agents/${encodeURIComponent(agentId)}/goal`;
+export const goalsApi = {
+  get: (agentId: string, signal?: AbortSignal) => api<import("../shared/goals").GoalView>(goalPath(agentId), { signal }),
+  change: (agentId: string, action: import("../shared/goals").GoalAction, input: Record<string, unknown>) =>
+    post<import("../shared/goals").GoalView>(`${goalPath(agentId)}/${action}`, input),
+};

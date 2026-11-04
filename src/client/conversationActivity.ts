@@ -12,6 +12,7 @@ function isWorkDetail(event: Activity) {
       "tool_completed",
       "thinking",
       "turn_completed",
+      "goal_usage",
       "extension_notice",
       "run_started",
       "run_completed",

@@ -19,6 +19,7 @@ interface Root {
   dir?: string;
   terminalAt?: number;
   completed?: boolean;
+  reconciling?: boolean;
   status?: Record<string, any>;
 }
 interface Options {
@@ -44,6 +45,9 @@ export class SessionWork {
   private publishTimer?: ReturnType<typeof setTimeout>;
   private refreshing?: Promise<void>;
   private wakes = new Set<Promise<void>>();
+  // Delivery and response settlement are different: an idle Pi wake awaits the
+  // entire parent run, including goal continuations, after its message is consumed.
+  private pendingWakes = new Map<string, (() => void) | undefined>();
   private heartbeatPending = false;
   private lastHeartbeat: number;
   private now: () => number;
@@ -179,13 +183,17 @@ export class SessionWork {
             ? event.partialResult
             : event.result,
         );
-      if (
-        event.type === "message_start" &&
-        event.message.role === "custom" &&
-        event.message.customType === "jelly-subagent-status"
-      ) {
-        this.heartbeatPending = false;
-        this.lastHeartbeat = this.now();
+      if (event.type === "message_start" && event.message.role === "custom") {
+        const wakeId = record(event.message.details).jellyWakeId;
+        if (typeof wakeId === "string" && this.pendingWakes.has(wakeId)) {
+          const consumed = this.pendingWakes.get(wakeId);
+          this.pendingWakes.delete(wakeId);
+          consumed?.();
+        }
+        if (event.message.customType === "jelly-subagent-status") {
+          this.heartbeatPending = false;
+          this.lastHeartbeat = this.now();
+        }
       }
     });
     this.schedule(0);
@@ -311,6 +319,7 @@ export class SessionWork {
     return this.refreshing;
   }
   private async refreshNow() {
+    const reconciliations: { id: string; root: Root; state: string }[] = [];
     try {
       const snapshotGeneration = this.projection.attemptGeneration;
       const fleet = await this.rpc("status");
@@ -389,15 +398,13 @@ export class SessionWork {
             // never by silently declaring success from a stale job counter.
             if (
               this.jobs.has(id) &&
+              !root.reconciling &&
               !this.live() &&
               this.now() - root.terminalAt >=
                 (this.options.reconciliationMs ?? 15000)
             ) {
-              await this.wake(
-                `Subagent completion reconciliation for ${id}: canonical state ${state}. Inspect this run's status/results before concluding; the normal completion event was not observed.`,
-              );
-              this.jobs.delete(id);
-              root.completed = true;
+              root.reconciling = true;
+              reconciliations.push({ id, root, state });
             }
           } else root.terminalAt = undefined;
           if (root.completed) root.dir = undefined; // terminal projection retained; no repeated file scans
@@ -474,6 +481,24 @@ export class SessionWork {
         "Subagent status could not be refreshed. Work is still being tracked; retrying.";
       this.publish();
     }
+    // Finish observing all roots before delivering a reconciliation. A consumed
+    // terminal notice must not wait for its own parent run to settle before the
+    // goal may continue; retain the wake promise separately for disposal.
+    for (const { id, root, state } of reconciliations) {
+      void this.wake(
+        `Subagent completion reconciliation for ${id}: canonical state ${state}. Inspect this run's status/results before concluding; the normal completion event was not observed.`,
+        "jelly-subagent-status",
+        () => {
+          if (this.roots.get(id) !== root) return; // a newer attempt owns this ID
+          this.jobs.delete(id);
+          root.completed = true;
+          root.reconciling = false;
+          root.dir = undefined;
+        },
+      ).catch(() => {
+        root.reconciling = false;
+      });
+    }
     // An observation failure is itself useful status, not a reason to silence
     // the parent indefinitely. Keep the cadence while known work is retained.
     if (
@@ -488,6 +513,13 @@ export class SessionWork {
         this.heartbeatPending = false;
       });
     }
+  }
+  /** Unknown child state also suppresses an additional autonomous goal wake. */
+  hasOutstandingWork() {
+    return !!(
+      this.jobs.size || this.ownedChildren.size || this.live() ||
+      this.pendingWakes.size || this.failures
+    );
   }
   private digest() {
     const snapshot = this.projection.snapshot(),
@@ -526,10 +558,16 @@ export class SessionWork {
         "jelly-steering-wake",
       ).catch(() => {});
   }
-  private wake(content: string, customType = "jelly-subagent-status") {
+  private wake(
+    content: string,
+    customType = "jelly-subagent-status",
+    consumed?: () => void,
+  ) {
     if (!this.session || this.stopped) return Promise.resolve();
+    const wakeId = crypto.randomUUID();
+    this.pendingWakes.set(wakeId, consumed);
     const promise = this.session.sendCustomMessage(
-      { customType, content, display: false },
+      { customType, content, display: false, details: { jellyWakeId: wakeId } },
       { triggerTurn: true, deliverAs: "steer" },
     );
     this.wakes.add(promise);
@@ -537,6 +575,7 @@ export class SessionWork {
       () => this.wakes.delete(promise),
       () => {
         this.wakes.delete(promise);
+        this.pendingWakes.delete(wakeId);
         this.report("extension_notice", {
           level: "error",
           text: "The subagent status update could not reach the parent model.",
@@ -570,6 +609,7 @@ export class SessionWork {
   }
   async stop() {
     this.stopped = true;
+    this.pendingWakes.clear();
     clearTimeout(this.timer);
     clearTimeout(this.publishTimer);
     this.timer = undefined;

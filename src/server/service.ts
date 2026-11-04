@@ -13,6 +13,9 @@ import type {
   PendingMessage,
 } from "../shared/types";
 import { Store } from "./store";
+import { Goals, goalPrompt } from "./goals";
+import { goalExtension } from "./goal-extension";
+import type { Goal, GoalAction, GoalBinding } from "../shared/goals";
 import { Schedules, scheduledWake } from "./schedules";
 import { Scheduler } from "./scheduler";
 import { scheduleTools } from "./schedule-tools";
@@ -60,6 +63,7 @@ export class JellyService {
   readonly interventions: Interventions;
   readonly subagents: SubagentStore;
   readonly apps: AppsService;
+  readonly goals: Goals;
   readonly schedules: Schedules;
   readonly scheduler: Scheduler;
   readonly desktop: Desktop;
@@ -76,6 +80,8 @@ export class JellyService {
     } = {},
   ) {
     store.recover();
+    this.goals = new Goals(store, event => this.notify(event));
+    this.goals.recover();
     this.schedules = new Schedules(store, options.scheduleClock, event => { this.notify(event); this.scheduler?.wake(); });
     this.scheduler = new Scheduler(this.schedules, occurrence => this.startScheduled(occurrence), options.schedulerOptions);
     this.subagents = new SubagentStore(store.db);
@@ -333,6 +339,7 @@ export class JellyService {
         "Stop this agent or wait for it to finish before archiving.",
       );
     if (!!existing.archivedAt === archived) return existing;
+    if (archived) this.goals.stop(id, "Agent archived. Restore and explicitly resume to continue.");
     let event: Activity;
     const agent = this.store.db.transaction(() => {
       const agent = this.store.archiveAgent(id, archived);
@@ -412,6 +419,7 @@ export class JellyService {
     if (agent.archivedAt) throw new HttpError(409, "Restore this agent before starting a fresh session.");
     if (this.activeFor(agentId)) throw new HttpError(409, "Wait for this agent to finish before starting a fresh session.");
     this.harness.requireConnection(this.agentConfig(agent));
+    this.goals.stop(agentId, "Paused for Fresh Session. Usage is preserved; resume explicitly.");
     return this.startRun(agent, `fresh-session:${requestId}`, "Fresh Session", "queue", true);
   }
   start(
@@ -422,7 +430,7 @@ export class JellyService {
     browserTimezone?: string,
   ) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
-    if (requestId.startsWith("schedule:")) throw new HttpError(400, "Schedule admission request IDs are reserved for the server.");
+    if (requestId.startsWith("schedule:") || requestId.startsWith("goal:")) throw new HttpError(400, "Automated admission request IDs are reserved for the server.");
     if (mode !== "queue" && mode !== "steer")
       throw new HttpError(400, "Message mode must be queue or steer.");
     const existing = this.store.pendingMessage(requestId);
@@ -462,6 +470,7 @@ export class JellyService {
     if (active?.freshSession && mode === "steer")
       throw new HttpError(409, "Fresh Session is in progress. Queue the message instead.");
     if (active) {
+      this.goals.stop(agentId, "Paused for human input. Resume explicitly to continue the goal.");
       let event: Activity;
       const message = this.store.db.transaction(() => {
         const message = this.store.enqueueMessage(
@@ -531,6 +540,19 @@ export class JellyService {
     state.session.agent.steer(message);
     this.harness.wakeSteering(state.session);
   }
+  changeGoal(agentId: string, action: GoalAction, input: Record<string, unknown>) {
+    if (this.closing) throw new HttpError(409, "Jelly is shutting down.");
+    const result = this.goals.mutate(agentId, action, input);
+    if (action === "resume" && !result.reused) {
+      try {
+        if (this.activeFor(agentId)) throw new HttpError(409, "Wait for current work to finish before resuming.");
+        this.startRun(this.store.agent(agentId)!, `goal:${result.goal.id}:${result.goal.epoch}`, goalPrompt(result.goal), "queue", false, undefined, undefined, result.goal);
+      } catch (error) {
+        this.goals.stop(agentId, `Not started: ${error instanceof Error ? error.message : "Could not start goal."}`, "blocked");
+      }
+    }
+    return this.goals.view(agentId);
+  }
   private startScheduled(occurrence: ScheduleOccurrence) {
     if (this.closing || this.activeFor(occurrence.agentId) || this.store.pendingMessages(occurrence.agentId).length) return false;
     const current = this.schedules.occurrence(occurrence.id);
@@ -549,6 +571,7 @@ export class JellyService {
     freshSession = false,
     source?: ScheduleSource,
     browserTimezone?: string,
+    goal?: Goal,
   ) {
     // Admission owns its transaction. Launching harness/model work under an outer
     // transaction would break crash guarantees even if the nested savepoint committed.
@@ -560,9 +583,11 @@ export class JellyService {
     this.harness.requireConnection(config);
     const events: Activity[] = [];
     let nameAgent = false;
+    let goalBinding: GoalBinding | undefined;
+    const provenance = goal ? { source: "goal", goalId: goal.id, goalEpoch: goal.epoch, goalObjective: goal.objective } : source;
     const run = this.store.db.transaction(() => {
-      if (!freshSession && !source) nameAgent = this.store.claimAgentName(agentId);
-      if (!freshSession && !source && !this.store.pendingMessage(requestId))
+      if (!freshSession && !source && !goal) nameAgent = this.store.claimAgentName(agentId);
+      if (!freshSession && !source && !goal && !this.store.pendingMessage(requestId))
         this.store.enqueueMessage(requestId, agentId, prompt, mode, browserTimezone);
       const run = this.store.createRun(
         agentId,
@@ -571,13 +596,14 @@ export class JellyService {
         config.activeMode!,
         config.model,
       );
+      if (goal) goalBinding = this.goals.admit(goal, run.id);
       if (source) {
         this.schedules.admit(source.occurrenceId, run.id, source);
         this.store.db.query("UPDATE runs SET source=? WHERE id=?").run(JSON.stringify(source), run.id);
       }
       this.store.setStatus(agentId, "running");
       if (!freshSession) {
-        if (!source) this.store.deliverMessage(requestId, run.id);
+        if (!source && !goal) this.store.deliverMessage(requestId, run.id);
         this.store.saveMessage(agentId, run.id, {
           role: "user",
           content: prompt,
@@ -585,7 +611,7 @@ export class JellyService {
         }, source);
         events.push(
           this.store.event(agentId, run.id, "message", {
-            ...source,
+            ...provenance,
             role: "user",
             text: prompt,
             messageId: requestId,
@@ -595,8 +621,8 @@ export class JellyService {
       }
       events.push(
         this.store.event(agentId, run.id, "run_started", {
-          ...source,
-          operation: freshSession ? "fresh_session" : "message",
+          ...provenance,
+          operation: goal ? "goal" : freshSession ? "fresh_session" : "message",
           mode: config.activeMode,
           model: config.model,
           selectedModel: config.selectedModel,
@@ -606,7 +632,7 @@ export class JellyService {
       );
       return this.store.run(run.id)!;
     })();
-    return this.executeRun({ agent, run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, events });
+    return this.executeRun({ agent, run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, goalBinding, events });
   }
   /** Post-commit execution only; scheduler and interactive admission share this lifecycle. */
   private executeRun(input: {
@@ -620,10 +646,11 @@ export class JellyService {
     nameAgent: boolean;
     freshSession: boolean;
     source?: ScheduleSource;
+    goalBinding?: GoalBinding;
     events: Activity[];
   }) {
     let { agent } = input;
-    const { run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, events } = input;
+    const { run, requestId, prompt, config, instance, browserSelection, nameAgent, freshSession, source, goalBinding, events } = input;
     const agentId = agent.id;
     // Only after the complete admission commits may naming, tools or provider work start.
     const state: ActiveRun = {
@@ -703,6 +730,14 @@ export class JellyService {
           context,
           (snapshot, sources) => this.subagents.save(agentId, run.id, snapshot, sources),
           this.apps,
+          goalBinding ? [goalExtension(this.goals, goalBinding, () => {
+            if (this.closing || state.cancelled || failure || !state.session) return false;
+            if (this.store.pendingMessages(agentId).length) {
+              this.goals.stop(agentId, "Paused for queued human input. Resume explicitly afterward.");
+              return false;
+            }
+            return !this.harness.hasChildWork(state.session);
+          })] : [],
         );
         state.session = session;
         if (state.cancelled || failure) return;
@@ -788,6 +823,13 @@ export class JellyService {
               this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
               checkpointed = true;
               if (message.role === "assistant") {
+                if (goalBinding) {
+                  // Other message hooks may append custom entries after the assistant.
+                  const entryId = session.sessionManager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "assistant")?.id;
+                  if (!entryId) throw new Error("Finalized goal message has no persisted assistant entry.");
+                  const usageEvent = this.goals.account(goalBinding, entryId, message.usage);
+                  if (usageEvent) saved.push(usageEvent);
+                }
                 // Only the provider's displayable thinking text belongs in the UI.
                 // Never project redacted blocks or opaque reasoning signatures.
                 const thinking = message.content
@@ -916,6 +958,12 @@ export class JellyService {
         if (freshEvent) this.notify(freshEvent);
         this.notify(event!);
         this.active.delete(run.id);
+        if (goalBinding) {
+          // A settled run does not prove completion. Never stop a newer execution.
+          const current = this.goals.get(agentId);
+          if (current?.id === goalBinding.id && current.epoch === goalBinding.epoch && current.state === "active")
+            this.goals.stop(agentId, failure ?? "Execution settled without goal completion. Review and resume explicitly.", "blocked");
+        }
         this.scheduler.wake();
         if (status === "completed" && !this.closing) {
           const next = this.store.pendingMessages(agentId)[0];
@@ -950,6 +998,7 @@ export class JellyService {
   async stop(agentId: string) {
     if (!this.store.agent(agentId))
       throw new HttpError(404, "Agent not found.");
+    this.goals.stop(agentId, "Stopped by operator. Resume explicitly to continue.");
     this.store.db.transaction(() => this.schedules.stopAgent(agentId))();
     for (const [id, state] of this.active)
       if (this.store.run(id)?.agentId === agentId) {
@@ -972,6 +1021,7 @@ export class JellyService {
   async close() {
     this.scheduler.stop();
     this.closing = true;
+    for (const agent of this.store.agents()) this.goals.stop(agent.id, "Jelly shut down. Inspect current work and resume explicitly.");
     const states = [...this.active.values()];
     for (const state of states) { state.cancelled = true; state.naming?.abort(); }
     const outcomes = await Promise.allSettled([

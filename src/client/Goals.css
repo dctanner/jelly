@@ -1,0 +1,20 @@
+.goals-panel {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+.goal-fields {
+  border: 0;
+  padding: 0;
+  margin: 1rem 0;
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.goal-objective {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.goals-panel progress {
+  width: 100%;
+}

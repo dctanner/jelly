@@ -748,6 +748,12 @@ export async function startApp(options: AppOptions) {
               if (req.method === "GET") return json({ timezone: service.schedules.suggestedTimezone("instance") });
               if (req.method === "PUT") return json(service.schedules.saveTimezone("instance", (await body(req)).timezone));
             }
+            const goalMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/goal(?:\/(create|edit|pause|resume|complete|clear))?$/);
+            if (goalMatch) {
+              const [, agentId, action] = goalMatch;
+              if (!action && req.method === "GET") return json(service.goals.view(agentId!));
+              if (action && req.method === "POST") return json(service.changeGoal(agentId!, action as import("../shared/goals").GoalAction, await body(req)));
+            }
             const scheduleMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/schedules(?:\/([^/]+)(?:\/(pause|resume|cancel|occurrences))?)?$/);
             if (scheduleMatch) {
               const [, agentId, scheduleId, action] = scheduleMatch;

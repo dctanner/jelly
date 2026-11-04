@@ -1,5 +1,6 @@
 import { HttpError } from "./errors";
 import { migrateSchedules } from "./schedule-schema";
+import { migrateGoals } from "./goal-schema";
 import type { ScheduleSource } from "../shared/schedules";
 import { defaultChromeSelection, type ChromeSelection } from "../shared/chrome-protocol";
 import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
@@ -50,7 +51,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 17)
+    if (version > 18)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -200,6 +201,7 @@ export class Store {
       `);
     })();
     if (version < 17) this.db.transaction(() => migrateSchedules(this.db))();
+    if (version < 18) this.db.transaction(() => migrateGoals(this.db))();
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, record TEXT NOT NULL);

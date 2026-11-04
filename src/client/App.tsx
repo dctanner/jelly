@@ -1,5 +1,6 @@
 import { AppRegistration } from "./AppRegistration";
 import { SchedulesPanel, ScheduledMessage, ScheduleNotice } from "./Schedules";
+import { GoalsButton, GoalNotice, GoalExecution } from "./Goals";
 import type { SchedulesPage } from "../shared/schedules";
 import { Avatar } from "./Avatar";
 import { InitialAgentIdentity } from "./InitialAgentIdentity";
@@ -554,6 +555,8 @@ function EventItem({
   const [copyVisible, setCopyVisible] = useState(false);
   if (event.type === "message" && event.data.role === "user" && event.data.source === "schedule")
     return <ScheduledMessage event={event} />;
+  if (event.type === "message" && event.data.role === "user" && event.data.source === "goal") return <GoalExecution event={event} archived={!!agent.archivedAt} />;
+  if (event.type === "goal_changed") return <GoalNotice event={event} archived={!!agent.archivedAt} />;
   if (["schedule_changed", "schedule_blocked", "schedule_expired"].includes(event.type))
     return <ScheduleNotice event={event} />;
   if (event.type === "image_generated")
@@ -1058,6 +1061,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           ? { agentId: previous.agentId, page: mergeHistory(previous.page, snapshotHistory(next)) }
           : previous);
         setData(next);
+        window.dispatchEvent(new window.CustomEvent("jelly:goals-updated"));
         setLoadError("");
         if (!source) {
           const connection = new EventSource(
@@ -1655,6 +1659,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             <span className="empty-header-title">Your agents</span>
           ) : null}
           <div className="conversation-actions">
+            {agent && <GoalsButton key={agent.id} agentId={agent.id} archived={!!agent.archivedAt} />}
             {agent && (
               <button
                 className="icon agent-options"
