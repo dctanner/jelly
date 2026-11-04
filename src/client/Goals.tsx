@@ -100,11 +100,6 @@ export function GoalsPanel({
     | null
   >(null);
   const [objective, setObjective] = useState("");
-  const [completion, setCompletion] = useState<{
-    goalId: string;
-    expectedRevision: number;
-    summary: string;
-  } | null>(null);
   const mutation = useRef({ payload: "", id: "" });
   const generation = useRef(0);
   const alive = useRef(true);
@@ -163,21 +158,15 @@ export function GoalsPanel({
     setError("");
     writing.current = true;
     const data = {
-      ...(action === "complete" && completion
+      ...(action === "edit" && editing?.action === "edit"
         ? {
-            goalId: completion.goalId,
-            expectedRevision: completion.expectedRevision,
+            goalId: editing.goalId,
+            expectedRevision: editing.expectedRevision,
           }
-        : action === "edit" && editing?.action === "edit"
-          ? {
-              goalId: editing.goalId,
-              expectedRevision: editing.expectedRevision,
-            }
-          : action !== "create"
-            ? { goalId: goal!.id, expectedRevision: goal!.revision }
-            : {}),
+        : action !== "create"
+          ? { goalId: goal!.id, expectedRevision: goal!.revision }
+          : {}),
       ...(["create", "edit"].includes(action) ? { objective } : {}),
-      ...(action === "complete" ? { summary: completion?.summary ?? "" } : {}),
     };
     const payload = JSON.stringify([action, data]);
     if (mutation.current.payload !== payload)
@@ -190,7 +179,6 @@ export function GoalsPanel({
       });
       if (!alive.current) return;
       setEditing(null);
-      setCompletion(null);
     } catch (e) {
       if (!alive.current) return;
       setError((e as Error).message);
@@ -208,30 +196,109 @@ export function GoalsPanel({
       onClose={onClose}
       detent="large"
       dismissible={!busy}
-      dirty={!!editing || !!completion?.summary}
+      dirty={!!editing}
     >
       <div className="goals-panel">
         <p className="chat-form-hint">
-          One durable goal per agent. Save first, then Resume to authorize
-          autonomous work while Jelly runs. Restart requires explicit resume.
+          Save your goal, then resume to let the agent work on it.
         </p>
         {error && <p role="alert">{error}</p>}
         {!view && <p role="status">Loading goal…</p>}
         {archived && <p>Restore this agent to change its goal.</p>}
-        {view && !goal && !editing && (
-          <>
-            <p>No goal yet.</p>
-            <button
-              className="primary"
-              disabled={archived || !!view.runningRunId}
-              onClick={() => {
-                setObjective("");
-                setEditing({ action: "create" });
-              }}
-            >
-              New goal
-            </button>
-          </>
+        {view && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (
+                editing &&
+                !busy &&
+                !archived &&
+                !view.runningRunId &&
+                goal?.state !== "active" &&
+                goal?.state !== "completed"
+              )
+                void change(editing.action);
+            }}
+          >
+            <fieldset className="goal-fields" disabled={busy || archived}>
+              {editing &&
+                (editing.action === "edit"
+                  ? goal?.id !== editing.goalId ||
+                    goal.revision !== editing.expectedRevision
+                  : !!goal) && (
+                  <p role="status">
+                    The goal changed while you were editing. This draft still
+                    targets its original goal and revision. Cancel edit to load
+                    the current goal.
+                  </p>
+                )}
+              <label className="chat-form-field">
+                Objective
+                <textarea
+                  required
+                  maxLength={16000}
+                  rows={6}
+                  placeholder="What should this agent accomplish?"
+                  readOnly={
+                    !!view.runningRunId ||
+                    goal?.state === "active" ||
+                    goal?.state === "completed"
+                  }
+                  value={editing ? objective : (goal?.objective ?? "")}
+                  onChange={(e) => {
+                    if (
+                      view.runningRunId ||
+                      goal?.state === "active" ||
+                      goal?.state === "completed"
+                    )
+                      return;
+                    if (!editing)
+                      setEditing(
+                        goal
+                          ? {
+                              action: "edit",
+                              goalId: goal.id,
+                              expectedRevision: goal.revision,
+                            }
+                          : { action: "create" },
+                      );
+                    setObjective(e.target.value);
+                  }}
+                />
+              </label>
+              {(view.runningRunId || goal?.state === "active") && (
+                <p className="chat-form-hint">
+                  Stop running work before editing the goal.
+                </p>
+              )}
+              {editing && (
+                <ChatFormActions>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      setEditing(null);
+                      setError("");
+                    }}
+                  >
+                    Cancel edit
+                  </button>
+                  <button
+                    className="primary"
+                    type="submit"
+                    disabled={
+                      !objective.trim() ||
+                      !!view.runningRunId ||
+                      goal?.state === "active" ||
+                      goal?.state === "completed"
+                    }
+                  >
+                    Save goal
+                  </button>
+                </ChatFormActions>
+              )}
+            </fieldset>
+          </form>
         )}
         {view?.runningRunId && (
           <p role="status">
@@ -265,7 +332,6 @@ export function GoalsPanel({
         {goal && (
           <section aria-label="Current goal">
             <h3>{goal.state.replaceAll("_", " ")}</h3>
-            <p className="goal-objective">{goal.objective}</p>
             {goal.reason && <p>{goal.reason}</p>}
             {goal.progress && <p className="goal-objective">{goal.progress}</p>}
             {goal.state === "completed" && (
@@ -279,22 +345,6 @@ export function GoalsPanel({
                 <ChatFormActions>
                   {goal.state !== "completed" && (
                     <>
-                      <button
-                        className="secondary"
-                        disabled={
-                          goal.state === "active" || !!view?.runningRunId
-                        }
-                        onClick={() => {
-                          setObjective(goal.objective);
-                          setEditing({
-                            action: "edit",
-                            goalId: goal.id,
-                            expectedRevision: goal.revision,
-                          });
-                        }}
-                      >
-                        Edit goal
-                      </button>
                       <button
                         className="primary"
                         disabled={
@@ -324,92 +374,9 @@ export function GoalsPanel({
                     Clear goal
                   </button>
                 </ChatFormActions>
-                {goal.state !== "completed" && (
-                  <>
-                    <label className="chat-form-field">
-                      Completion evidence
-                      <textarea
-                        maxLength={16000}
-                        value={completion?.summary ?? ""}
-                        onChange={(e) =>
-                          setCompletion(
-                            e.target.value
-                              ? {
-                                  goalId: completion?.goalId ?? goal.id,
-                                  expectedRevision:
-                                    completion?.expectedRevision ??
-                                    goal.revision,
-                                  summary: e.target.value,
-                                }
-                              : null,
-                          )
-                        }
-                      />
-                    </label>
-                    {completion &&
-                      (completion.goalId !== goal.id ||
-                        completion.expectedRevision !== goal.revision) && (
-                        <p role="status">
-                          The goal changed. Completion evidence still targets
-                          its original goal and revision. Clear the evidence to
-                          start a new draft.
-                        </p>
-                      )}
-                    <button
-                      className="secondary"
-                      disabled={!completion?.summary.trim()}
-                      onClick={() => void change("complete")}
-                    >
-                      Complete goal
-                    </button>
-                  </>
-                )}
               </fieldset>
             )}
           </section>
-        )}
-        {editing && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void change(editing.action);
-            }}
-          >
-            <fieldset className="goal-fields" disabled={busy || archived}>
-              {(editing.action === "edit"
-                ? goal?.id !== editing.goalId ||
-                  goal.revision !== editing.expectedRevision
-                : !!goal) && (
-                <p role="status">
-                  The goal changed while you were editing. This draft still
-                  targets its original goal and revision. Cancel edit and reopen
-                  to load the current goal.
-                </p>
-              )}
-              <label className="chat-form-field">
-                Objective
-                <textarea
-                  required
-                  maxLength={16000}
-                  rows={6}
-                  value={objective}
-                  onChange={(e) => setObjective(e.target.value)}
-                />
-              </label>
-              <ChatFormActions>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => setEditing(null)}
-                >
-                  Cancel edit
-                </button>
-                <button className="primary" type="submit">
-                  Save goal
-                </button>
-              </ChatFormActions>
-            </fieldset>
-          </form>
         )}
       </div>
     </Modal>

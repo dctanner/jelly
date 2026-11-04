@@ -84,14 +84,13 @@ function fixture() {
   };
 }
 async function create() {
-  fireEvent.click(await screen.findByRole("button", { name: "New goal" }));
-  fireEvent.change(screen.getByLabelText("Objective"), {
+  fireEvent.change(await screen.findByLabelText("Objective"), {
     target: { value: "Verify full fixture scope" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save goal" }));
   await screen.findByRole("button", { name: "Resume goal" });
 }
-test("accessible per-agent goal create/edit/pause/resume/complete without budget controls and explicit activation", async () => {
+test("single inline goal textarea supports create/edit/pause/resume without editor buttons or budget controls", async () => {
   const f = fixture();
   render(<GoalsButton agentId="agent" />);
   fireEvent.click(screen.getByRole("button", { name: "Goals" }));
@@ -103,33 +102,28 @@ test("accessible per-agent goal create/edit/pause/resume/complete without budget
   fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
   fireEvent.click(await screen.findByRole("button", { name: "Pause goal" }));
   await screen.findByRole("button", { name: "Resume goal" });
-  fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+  expect(screen.getAllByRole("textbox")).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Edit goal" })).toBeNull();
   fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: "Edited exact scope" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save goal" }));
-  await screen.findByRole("button", { name: "Edit goal" });
-  fireEvent.change(screen.getByLabelText("Completion evidence"), {
-    target: { value: "Fixture criteria verified" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Complete goal" }));
-  await screen.findByText(
-    "Completion is an operator/model attestation, not independently verified.",
-  );
+  await screen.findByRole("button", { name: "Resume goal" });
+  expect(
+    (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,
+  ).toBe("Edited exact scope");
   expect(f.calls.map((c) => c.action)).toEqual([
     "create",
     "resume",
     "pause",
     "edit",
-    "complete",
   ]);
-  expect(screen.queryByRole("button", { name: "Resume goal" })).toBeNull();
 });
 test("409 retains editor and stable retry key; SSE invalidation refreshes progress without dropping the draft", async () => {
   const f = fixture();
   render(<GoalsPanel agentId="agent" onClose={() => {}} />);
   await create();
-  fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
   fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: "Unsaved draft" },
   });
@@ -182,11 +176,7 @@ test("goal changes remain visible outside generic work grouping; archived contro
   cleanup();
   render(<GoalsPanel agentId="agent" archived onClose={() => {}} />);
   expect(
-    (
-      (await screen.findByRole("button", {
-        name: "New goal",
-      })) as HTMLButtonElement
-    ).disabled,
+    (await screen.findByLabelText("Objective")).closest("fieldset")!.disabled,
   ).toBe(true);
 });
 test("late read after navigating to another agent cannot overwrite the new goal panel", async () => {
@@ -204,7 +194,7 @@ test("late read after navigating to another agent cannot overwrite the new goal 
   );
   await waitFor(() => expect(release).toBeDefined());
   result.rerender(<GoalsPanel key="new" agentId="new" onClose={() => {}} />);
-  await screen.findByText("No goal yet.");
+  await screen.findByLabelText("Objective");
   await act(async () => {
     release(
       Response.json({
@@ -213,7 +203,9 @@ test("late read after navigating to another agent cannot overwrite the new goal 
       }),
     );
   });
-  expect(screen.queryByText("Stale objective")).toBeNull();
+  expect(
+    (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,
+  ).toBe("");
 });
 
 async function refreshGoalView() {
@@ -225,7 +217,6 @@ test("concurrent edits never silently rebase a draft; conflicts and retries pres
   const f = fixture();
   render(<GoalsPanel agentId="agent" onClose={() => {}} />);
   await create();
-  fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
   fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: "My original draft" },
   });
@@ -264,12 +255,14 @@ test("concurrent edits never silently rebase a draft; conflicts and retries pres
     (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,
   ).toBe("My original draft");
   fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
-  fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
   expect(
     (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,
   ).toBe("New objective from another tab");
+  fireEvent.change(screen.getByLabelText("Objective"), {
+    target: { value: "Revised latest scope" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Save goal" }));
-  await screen.findByRole("button", { name: "Edit goal" });
+  await screen.findByRole("button", { name: "Resume goal" });
   expect(f.calls.at(-1)!.input.expectedRevision).toBe(2);
 });
 
@@ -280,7 +273,6 @@ test.each([false, true])(
     render(<GoalsPanel agentId="agent" onClose={() => {}} />);
     await create();
     const original = f.view().goal!;
-    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
     fireEvent.change(screen.getByLabelText("Objective"), {
       target: { value: "Original unsaved draft" },
     });
@@ -312,8 +304,7 @@ test("a create draft remains create when another tab creates a goal", async () =
   const other = f.view().goal!;
   f.view().goal = null;
   await refreshGoalView();
-  fireEvent.click(await screen.findByRole("button", { name: "New goal" }));
-  fireEvent.change(screen.getByLabelText("Objective"), {
+  fireEvent.change(await screen.findByLabelText("Objective"), {
     target: { value: "New draft" },
   });
   f.view().goal = { ...other, id: "other-tab" };
@@ -327,52 +318,42 @@ test("a create draft remains create when another tab creates a goal", async () =
   expect(f.view().goal?.id).toBe("other-tab");
 });
 
-test.each(["replacement", "edit"])(
-  "completion evidence stays pinned after cross-tab %s, including retries",
-  async (change) => {
-    const f = fixture();
-    render(<GoalsPanel agentId="agent" onClose={() => {}} />);
-    await create();
-    const original = { ...f.view().goal! };
-    fireEvent.change(screen.getByLabelText("Completion evidence"), {
-      target: { value: "Verified only the OLD scope" },
-    });
-    f.view().goal = {
-      ...original,
-      id: change === "replacement" ? "replacement" : original.id,
-      revision: change === "replacement" ? 1 : original.revision + 1,
-      objective: "Entirely NEW unverified scope",
-    };
+test("pristine textarea follows live changes and stays read-only during work or after completion", async () => {
+  const f = fixture();
+  render(<GoalsPanel agentId="agent" onClose={() => {}} />);
+  const textarea = (await screen.findByLabelText(
+    "Objective",
+  )) as HTMLTextAreaElement;
+  expect(textarea.value).toBe("");
+  expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save goal" })).toBeNull();
+  await create();
+  f.view().goal = {
+    ...f.view().goal!,
+    objective: "Updated remotely",
+    revision: 2,
+  };
+  await refreshGoalView();
+  await waitFor(() => expect(textarea.value).toBe("Updated remotely"));
+  expect(textarea.readOnly).toBe(false);
+  for (const state of ["active", "completed"] as const) {
+    f.view().goal!.state = state;
     await refreshGoalView();
-    await screen.findByText(/Completion evidence still targets its original/);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      fireEvent.click(screen.getByRole("button", { name: "Complete goal" }));
-      await screen.findByRole("alert");
-      await waitFor(() =>
-        expect(
-          (
-            screen.getByRole("button", {
-              name: "Complete goal",
-            }) as HTMLButtonElement
-          ).disabled,
-        ).toBe(false),
-      );
-    }
-    const attempts = f.calls.filter((c) => c.action === "complete");
-    expect(attempts).toHaveLength(2);
-    expect(attempts[0]!.input).toMatchObject({
-      goalId: original.id,
-      expectedRevision: original.revision,
-      summary: "Verified only the OLD scope",
-    });
-    expect(attempts[1]!.input).toEqual(attempts[0]!.input);
-    expect(f.view().goal!.state).toBe("paused");
-    expect(
-      (screen.getByLabelText("Completion evidence") as HTMLTextAreaElement)
-        .value,
-    ).toBe("Verified only the OLD scope");
-  },
-);
+    await waitFor(() => expect(textarea.readOnly).toBe(true));
+    fireEvent.change(textarea, { target: { value: "Disallowed edit" } });
+    expect(screen.queryByRole("button", { name: "Save goal" })).toBeNull();
+  }
+  f.view().goal!.state = "paused";
+  f.view().runningRunId = "still-running";
+  await refreshGoalView();
+  expect(textarea.readOnly).toBe(true);
+  f.view().runningRunId = null;
+  f.view().goal = null;
+  await refreshGoalView();
+  await waitFor(() => expect(textarea.value).toBe(""));
+  expect(textarea.readOnly).toBe(false);
+  expect(screen.getAllByRole("textbox")).toHaveLength(1);
+});
 
 test.each(["resume", "conflict", "stop"])(
   "%s uses one read ordering across SSE and mutation settlement, never a delayed mutation snapshot",

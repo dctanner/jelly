@@ -1,6 +1,6 @@
 import { AppRegistration } from "./AppRegistration";
 import { SchedulesPanel, ScheduledMessage, ScheduleNotice } from "./Schedules";
-import { GoalsButton, GoalNotice, GoalExecution } from "./Goals";
+import { GoalNotice, GoalExecution } from "./Goals";
 import type { SchedulesPage } from "../shared/schedules";
 import { Avatar } from "./Avatar";
 import { InitialAgentIdentity } from "./InitialAgentIdentity";
@@ -1660,7 +1660,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             <span className="empty-header-title">Your agents</span>
           ) : null}
           <div className="conversation-actions">
-            {agent && <GoalsButton key={agent.id} agentId={agent.id} archived={!!agent.archivedAt} />}
             {agent && (
               <button
                 className="icon agent-options"

@@ -1490,6 +1490,7 @@ test("composer Goal opens the selected agent's controls without sending the chat
   const agent = app.store.agents()[0]!;
   render(<App />);
   await waitForConnectedAgent();
+  expect(screen.queryByRole("button", { name: "Goals" })).toBeNull();
   const draft = screen.getByRole("textbox", { name: "Message Jelly" }) as HTMLTextAreaElement;
   fireEvent.change(draft, { target: { value: "Keep this unsent draft" } });
   const trigger = screen.getByRole("button", { name: "Add to chat" });
@@ -1498,11 +1499,10 @@ test("composer Goal opens the selected agent's controls without sending the chat
   expect(screen.queryByRole("menu")).toBeNull();
   const dialog = screen.getByRole("dialog", { name: "Goals" });
   expect(dialog.closest(".composer")).toBeNull();
-  fireEvent.click(await within(dialog).findByRole("button", { name: "New goal" }));
-  fireEvent.change(within(dialog).getByLabelText("Objective"), { target: { value: "A goal from the chat menu" } });
+  fireEvent.change(await within(dialog).findByLabelText("Objective"), { target: { value: "A goal from the chat menu" } });
   fireEvent.submit(within(dialog).getByRole("button", { name: "Save goal" }).closest("form")!);
   await waitFor(() => expect(app.service.goals.get(agent.id)?.objective).toBe("A goal from the chat menu"));
-  await within(dialog).findByRole("button", { name: "Edit goal" });
+  await within(dialog).findByRole("button", { name: "Resume goal" });
   expect(app.store.runs(agent.id)).toHaveLength(0);
   expect(draft.value).toBe("Keep this unsent draft");
   const close = within(dialog).getByRole("button", { name: "Close dialog" }) as HTMLButtonElement;
@@ -1512,7 +1512,8 @@ test("composer Goal opens the selected agent's controls without sending the chat
   expect(document.activeElement).toBe(trigger);
   fireEvent.click(trigger);
   fireEvent.click(screen.getByRole("menuitem", { name: "Goal" }));
-  expect(await within(screen.getByRole("dialog", { name: "Goals" })).findByText("A goal from the chat menu")).toBeDefined();
+  const objective = await within(screen.getByRole("dialog", { name: "Goals" })).findByLabelText("Objective") as HTMLTextAreaElement;
+  expect(objective.value).toBe("A goal from the chat menu");
 });
 
 test("composer menu state is discarded when the selected agent changes", () => {
