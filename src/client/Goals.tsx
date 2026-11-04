@@ -78,10 +78,6 @@ export function GoalNotice({
       {!!event.data.progress && (
         <p className="goal-objective">{String(event.data.progress)}</p>
       )}
-      <p>
-        Parent-session continuation tokens: {String(event.data.tokensUsed)} /{" "}
-        {String(event.data.tokenBudget)}
-      </p>
       <GoalsButton agentId={event.agentId!} archived={archived} />
     </ChatFormCard>
   );
@@ -104,7 +100,6 @@ export function GoalsPanel({
     | null
   >(null);
   const [objective, setObjective] = useState("");
-  const [budget, setBudget] = useState("100000");
   const [completion, setCompletion] = useState<{
     goalId: string;
     expectedRevision: number;
@@ -181,9 +176,7 @@ export function GoalsPanel({
           : action !== "create"
             ? { goalId: goal!.id, expectedRevision: goal!.revision }
             : {}),
-      ...(["create", "edit"].includes(action)
-        ? { objective, tokenBudget: Number(budget) }
-        : {}),
+      ...(["create", "edit"].includes(action) ? { objective } : {}),
       ...(action === "complete" ? { summary: completion?.summary ?? "" } : {}),
     };
     const payload = JSON.stringify([action, data]);
@@ -221,11 +214,6 @@ export function GoalsPanel({
         <p className="chat-form-hint">
           One durable goal per agent. Save first, then Resume to authorize
           autonomous work while Jelly runs. Restart requires explicit resume.
-        </p>
-        <p className="chat-form-hint">
-          Parent-session continuation token budget: uncached input + cache-write
-          + output. Excludes delegated children, compaction and nested/CLI work.
-          Not a total spend or hard cap; in-flight work can overshoot.
         </p>
         {error && <p role="alert">{error}</p>}
         {!view && <p role="status">Loading goal…</p>}
@@ -278,22 +266,6 @@ export function GoalsPanel({
           <section aria-label="Current goal">
             <h3>{goal.state.replaceAll("_", " ")}</h3>
             <p className="goal-objective">{goal.objective}</p>
-            <p>
-              Parent-session continuation tokens:{" "}
-              {goal.tokensUsed.toLocaleString()} /{" "}
-              {goal.tokenBudget.toLocaleString()}
-            </p>
-            <progress
-              aria-label="Parent-session continuation token usage"
-              value={Math.min(goal.tokensUsed, goal.tokenBudget)}
-              max={goal.tokenBudget}
-            />
-            {goal.usageUnknown && (
-              <p role="status">
-                Some parent usage is unknown; this count is a lower bound.
-                Review before resuming.
-              </p>
-            )}
             {goal.reason && <p>{goal.reason}</p>}
             {goal.progress && <p className="goal-objective">{goal.progress}</p>}
             {goal.state === "completed" && (
@@ -314,7 +286,6 @@ export function GoalsPanel({
                         }
                         onClick={() => {
                           setObjective(goal.objective);
-                          setBudget(String(goal.tokenBudget));
                           setEditing({
                             action: "edit",
                             goalId: goal.id,
@@ -327,9 +298,7 @@ export function GoalsPanel({
                       <button
                         className="primary"
                         disabled={
-                          goal.state !== "active" &&
-                          (!!view?.runningRunId ||
-                            goal.tokensUsed >= goal.tokenBudget)
+                          goal.state !== "active" && !!view?.runningRunId
                         }
                         onClick={() =>
                           void change(
@@ -425,18 +394,6 @@ export function GoalsPanel({
                   rows={6}
                   value={objective}
                   onChange={(e) => setObjective(e.target.value)}
-                />
-              </label>
-              <label className="chat-form-field">
-                Parent-session continuation token budget
-                <input
-                  required
-                  type="number"
-                  min={1}
-                  max={Number.MAX_SAFE_INTEGER}
-                  step={1}
-                  value={budget}
-                  onChange={(e) => setBudget(e.target.value)}
                 />
               </label>
               <ChatFormActions>

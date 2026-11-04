@@ -12,7 +12,9 @@ function isWorkDetail(event: Activity) {
       "tool_completed",
       "thinking",
       "turn_completed",
-      "goal_usage",
+      "goal_usage", // historical v18 telemetry
+      "goal_compaction",
+      "goal_continuation",
       "extension_notice",
       "run_started",
       "run_completed",

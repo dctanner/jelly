@@ -17,6 +17,7 @@ import { startApp } from "./fixtures/app";
 import { registerWorkspaceTools } from "../src/client/webmcp";
 import { composerBudget } from "../src/client/useComposerSize";
 import { placePopover } from "../src/client/useAnchoredPopover";
+import { ComposerActions } from "../src/client/ComposerActions";
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
 let app: Awaited<ReturnType<typeof startApp>> | undefined;
@@ -1329,7 +1330,7 @@ test("agent menu uploads multiple files to a chosen host folder and appends only
   expect(document.querySelector('.composer input[type="file"]')).toBeNull();
   expect(
     screen
-      .getByRole("button", { name: "Upload file" })
+      .getByRole("button", { name: "Add to chat" })
       .hasAttribute("disabled"),
   ).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Agent options" }));
@@ -1391,7 +1392,7 @@ test("agent menu uploads multiple files to a chosen host folder and appends only
   expect(app.store.runs(agent.id)).toHaveLength(0);
 });
 
-test("composer upload button opens the shared modal and partial failures retry only failed files", async () => {
+test("composer Add File menu opens the shared modal and partial failures retry only failed files", async () => {
   const app = await setup();
   const agent = app.store.agents()[0]!;
   mkdirSync(agent.cwd, { recursive: true });
@@ -1403,7 +1404,9 @@ test("composer upload button opens the shared modal and partial failures retry o
   const draft = screen.getByRole("textbox", {
     name: "Message Jelly",
   }) as HTMLTextAreaElement;
-  fireEvent.click(screen.getByRole("button", { name: "Upload file" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Add File" }));
+  expect(screen.queryByRole("menu")).toBeNull();
   const dialog = screen.getByRole("dialog", { name: "Upload file" });
   fireEvent.change(within(dialog).getByLabelText("Files"), {
     target: {
@@ -1438,6 +1441,94 @@ test("composer upload button opens the shared modal and partial failures retry o
   );
   expect(draft.value).toBe("Review success.txt and existing.txt");
   expect(readFileSync(join(retryFolder, "existing.txt"), "utf8")).toBe("new");
+});
+
+test("composer plus menu lists Add File and Goal, with keyboard navigation and dismissal", () => {
+  let uploads = 0;
+  const ui = render(<ComposerActions agentId="agent-a" disabled={false} onAddFile={() => uploads++} />);
+  const trigger = screen.getByRole("button", { name: "Add to chat" });
+  expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.click(trigger);
+  const menu = screen.getByRole("menu", { name: "Add to chat" });
+  const items = within(menu).getAllByRole("menuitem");
+  expect(items.map(item => item.textContent)).toEqual(["Add File", "Goal"]);
+  expect(document.activeElement).toBe(items[0]!);
+  expect(trigger.getAttribute("aria-controls")).toBe(menu.id);
+  fireEvent.keyDown(items[0]!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(items[1]!);
+  fireEvent.keyDown(items[1]!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(items[0]!);
+  fireEvent.keyDown(items[0]!, { key: "End" });
+  expect(document.activeElement).toBe(items[1]!);
+  fireEvent.keyDown(items[1]!, { key: "Home" });
+  fireEvent.keyDown(items[0]!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.keyDown(trigger, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Goal" }));
+  fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("menu")).toBeNull();
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Add File" }));
+  expect(uploads).toBe(1);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  ui.rerender(<ComposerActions agentId="agent-a" disabled={true} onAddFile={() => uploads++} />);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(trigger.hasAttribute("disabled")).toBe(true);
+  ui.rerender(<ComposerActions disabled={false} onAddFile={() => uploads++} />);
+  expect(trigger.hasAttribute("disabled")).toBe(true);
+});
+
+test("composer Goal opens the selected agent's controls without sending the chat draft", async () => {
+  const app = await setup();
+  const agent = app.store.agents()[0]!;
+  render(<App />);
+  await waitForConnectedAgent();
+  const draft = screen.getByRole("textbox", { name: "Message Jelly" }) as HTMLTextAreaElement;
+  fireEvent.change(draft, { target: { value: "Keep this unsent draft" } });
+  const trigger = screen.getByRole("button", { name: "Add to chat" });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Goal" }));
+  expect(screen.queryByRole("menu")).toBeNull();
+  const dialog = screen.getByRole("dialog", { name: "Goals" });
+  expect(dialog.closest(".composer")).toBeNull();
+  fireEvent.click(await within(dialog).findByRole("button", { name: "New goal" }));
+  fireEvent.change(within(dialog).getByLabelText("Objective"), { target: { value: "A goal from the chat menu" } });
+  fireEvent.submit(within(dialog).getByRole("button", { name: "Save goal" }).closest("form")!);
+  await waitFor(() => expect(app.service.goals.get(agent.id)?.objective).toBe("A goal from the chat menu"));
+  await within(dialog).findByRole("button", { name: "Edit goal" });
+  expect(app.store.runs(agent.id)).toHaveLength(0);
+  expect(draft.value).toBe("Keep this unsent draft");
+  const close = within(dialog).getByRole("button", { name: "Close dialog" }) as HTMLButtonElement;
+  await waitFor(() => expect(close.disabled).toBe(false));
+  fireEvent.click(close);
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Goals" }) === null).toBe(true));
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Goal" }));
+  expect(await within(screen.getByRole("dialog", { name: "Goals" })).findByText("A goal from the chat menu")).toBeDefined();
+});
+
+test("composer menu state is discarded when the selected agent changes", () => {
+  const ui = render(<ComposerActions key="agent-a" agentId="agent-a" disabled={false} onAddFile={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  expect(screen.getByRole("menu")).toBeDefined();
+  ui.rerender(<ComposerActions key="agent-b" agentId="agent-b" disabled={false} onAddFile={() => {}} />);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(screen.getByRole("button", { name: "Add to chat" }).getAttribute("aria-expanded")).toBe("false");
+});
+
+test("composer menu aligns to the plus button and remains inside the viewport", () => {
+  const bounds = { left: 12, right: 388, top: 12, bottom: 788 };
+  const size = { width: 200, height: 100 };
+  expect(placePopover({ left: 40, right: 84, top: 700, bottom: 744 }, size, bounds, "above", "start")).toEqual({ left: 40, top: 592, maxHeight: 680 });
+  expect(placePopover({ left: 350, right: 394, top: 700, bottom: 744 }, size, bounds, "above", "start").left).toBe(188);
 });
 
 test("busy composer always queues without a delivery dropdown and preserves Steer now", async () => {

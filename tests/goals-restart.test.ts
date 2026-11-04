@@ -52,7 +52,7 @@ async function launch(dir: string) {
     reader.releaseLock();
   }
 }
-test("SIGKILL recovery pauses accepted goals without replay, preserves usage, and explicit resume admits only one new epoch", async () => {
+test("SIGKILL recovery pauses accepted goals without replay, preserves compactions, and explicit resume admits only one new epoch", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-goal-crash-"));
   let server: Awaited<ReturnType<typeof launch>> | undefined;
   try {
@@ -63,7 +63,6 @@ test("SIGKILL recovery pauses accepted goals without replay, preserves usage, an
     let { goal } = await server.request(path + "/create", {
       requestId: "create",
       objective: "Local crash fixture only",
-      tokenBudget: 100000,
     });
     await server.request(path + "/resume", {
       goalId: goal.id,
@@ -72,21 +71,21 @@ test("SIGKILL recovery pauses accepted goals without replay, preserves usage, an
     });
     for (let i = 0; i < 200; i++) {
       ({ goal } = await server.request(path));
-      if (goal.tokensUsed >= 18) break;
+      if (goal.compactions >= 1) break;
       await Bun.sleep(10);
     }
-    expect(goal.tokensUsed).toBeGreaterThanOrEqual(18);
+    expect(goal.compactions).toBeGreaterThanOrEqual(1);
     server.child.kill("SIGKILL");
     await server.child.exited;
     server = await launch(dir);
     const recovered = (await server.request(path)).goal;
     expect(recovered.id).toBe(goal.id);
-    expect(recovered.tokensUsed).toBeGreaterThanOrEqual(goal.tokensUsed);
+    expect(recovered.compactions).toBeGreaterThanOrEqual(goal.compactions);
     expect(recovered.state).toBe("paused");
     expect(recovered.reason).toContain("restarted");
     await Bun.sleep(300);
-    expect((await server.request(path)).goal.tokensUsed).toBe(
-      recovered.tokensUsed,
+    expect((await server.request(path)).goal.compactions).toBe(
+      recovered.compactions,
     );
     let state = await server.request(`/state?agentId=${agentId}`);
     expect(state.runs).toHaveLength(1);
@@ -99,6 +98,7 @@ test("SIGKILL recovery pauses accepted goals without replay, preserves usage, an
     await server.request(path + "/resume", input);
     await server.request(path + "/resume", input);
     const current = (await server.request(path)).goal;
+    expect(current.compactions).toBe(0);
     await server.request(path + "/complete", {
       goalId: current.id,
       expectedRevision: current.revision,

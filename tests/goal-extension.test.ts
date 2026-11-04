@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Goals, goalPrompt } from "../src/server/goals";
 import { goalExtension } from "../src/server/goal-extension";
+import { guardRunRequests } from "../src/server/run-request-guard";
 import { Store } from "../src/server/store";
 import { SessionWork } from "../src/server/session-work";
 import { fixtureModel } from "./fixtures/model";
@@ -46,7 +47,6 @@ test.each([
     const goals = new Goals(store);
     let goal = goals.mutate(agent.id, "create", {
       objective: "Verify local fixture",
-      tokenBudget: 1000,
       requestId: "create",
     }).goal;
     goal = goals.mutate(agent.id, "resume", {
@@ -109,7 +109,12 @@ test.each([
       noPromptTemplates: true,
       noThemes: true,
       extensionFactories: [
-        goalExtension(goals, binding, () => !work.hasOutstandingWork()),
+        goalExtension(
+          goals,
+          binding,
+          () => !work.hasOutstandingWork(),
+          () => false,
+        ),
       ],
     });
     await loader.reload();
@@ -301,7 +306,6 @@ afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();
 });
 async function promptFixture(options: {
-  budget?: number;
   earlier?: ExtensionFactory;
   canContinue?: () => boolean;
   reply: (
@@ -321,7 +325,6 @@ async function promptFixture(options: {
   const goals = new Goals(store);
   let goal = goals.mutate(agent.id, "create", {
     objective: "FULL OBJECTIVE sentinel",
-    tokenBudget: options.budget ?? 10000,
     requestId: "create",
   }).goal;
   goal = goals.mutate(agent.id, "resume", {
@@ -347,6 +350,7 @@ async function promptFixture(options: {
     compaction: { enabled: false, keepRecentTokens: 0 },
     retry: { enabled: false },
   });
+  let safetyStopped = false;
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -373,7 +377,22 @@ async function promptFixture(options: {
         });
       },
       ...(options.earlier ? [options.earlier] : []),
-      goalExtension(goals, binding, options.canContinue ?? (() => true)),
+      goalExtension(
+        goals,
+        binding,
+        options.canContinue ?? (() => true),
+        (entryId) => {
+          store.db.transaction(() => {
+            store.saveContext(agent.id, run.id, [
+              session.sessionManager.getHeader()!,
+              ...session.sessionManager.getBranch(),
+            ]);
+            goals.compacted(binding, entryId);
+          })();
+          safetyStopped = goals.byId(goal.id)!.compactions >= 100;
+          return safetyStopped;
+        },
+      ),
     ],
   });
   await loader.reload();
@@ -390,10 +409,7 @@ async function promptFixture(options: {
   cleanup.push(() => session.dispose());
   await session.bindExtensions({});
   const requests: Context[] = [];
-  session.agent.subscribe((event) => {
-    if (event.type === "message_end" && event.message.role === "assistant")
-      goals.account(binding, crypto.randomUUID(), event.message.usage);
-  });
+  guardRunRequests(session, () => safetyStopped);
   session.agent.streamFunction = (model, context) => {
     requests.push(structuredClone(context));
     const n = requests.length;
@@ -427,7 +443,19 @@ async function promptFixture(options: {
     })();
     return stream;
   };
-  return { session, settingsManager, goals, goal, binding, requests, agent };
+  return {
+    session,
+    settingsManager,
+    goals,
+    goal,
+    binding,
+    requests,
+    agent,
+    store,
+    run,
+    runtime,
+    dir,
+  };
 }
 const ping = (): Partial<AssistantMessage> => ({
   stopReason: "toolUse",
@@ -441,11 +469,10 @@ const ping = (): Partial<AssistantMessage> => ({
   ],
 });
 
-test.each(["continuation", "budget"] as const)(
+test.each(["continuation"] as const)(
   "real Pi %s composes earlier extension drafts, retaining history but one current request envelope",
   async (boundary) => {
     const f = await promptFixture({
-      budget: boundary === "budget" ? 1 : 10000,
       earlier: (pi) => {
         pi.on("turn_end", (event) => ({
           entries: [
@@ -471,28 +498,21 @@ test.each(["continuation", "budget"] as const)(
         }));
       },
       reply: (_context, n) => {
-        if (boundary === "budget") return n === 1 ? ping() : {};
         if (n === 4) f.goals.stop(f.agent.id, "Fixture finished");
         return {};
       },
     });
     await f.session.prompt("Start fixture");
-    expect(f.requests).toHaveLength(boundary === "budget" ? 2 : 4);
+    expect(f.requests).toHaveLength(4);
     const branch = f.session.sessionManager.getBranch();
     const kinds = branch
       .filter((e) => e.type === "custom_message")
       .map((e) => e.customType);
     expect(kinds).toContain("earlier-turn_end");
     expect(kinds).toContain("earlier-agent_before_settle");
-    expect(
-      kinds.filter(
-        (k) =>
-          k ===
-          (boundary === "budget"
-            ? "jelly_goal_budget_limit"
-            : "jelly_goal_continuation"),
-      ),
-    ).toHaveLength(boundary === "budget" ? 1 : 3);
+    expect(kinds.filter((k) => k === "jelly_goal_continuation")).toHaveLength(
+      3,
+    );
     const last = f.requests.at(-1)!;
     expect(last.messages[0]?.role).toBe("system");
     expect(last.messages[0]).toEqual(f.requests[0]!.messages[0]);
@@ -512,9 +532,7 @@ test.each(["continuation", "budget"] as const)(
     expect(
       JSON.stringify(last.messages).split("FULL OBJECTIVE sentinel"),
     ).toHaveLength(2);
-    expect(f.goals.byId(f.goal.id)!.continuations).toBe(
-      boundary === "budget" ? 0 : 3,
-    );
+    expect(f.goals.byId(f.goal.id)!.continuations).toBe(3);
   },
 );
 
@@ -675,7 +693,6 @@ test("automatic compaction between a native idle wake's ordinary tool and follow
   const sequence: string[] = [];
   let normal = 0;
   const f = await promptFixture({
-    budget: 1000000,
     canContinue: () => false,
     earlier: (pi) => {
       pi.on("session_before_compact", (event) => {
@@ -761,4 +778,230 @@ test("automatic compaction between a native idle wake's ordinary tool and follow
   ).toContain("Progress survives the summary");
   expect(getCurrentTools(last.messages)).toHaveLength(2);
   expect(f.goals.byId(f.goal.id)!.continuations).toBe(0);
+});
+
+test("manual identical-summary compactions use new entry identities; failed/cancelled attempts and duplicate callbacks do not count", async () => {
+  let cancel = true;
+  const f = await promptFixture({
+    canContinue: () => false,
+    earlier: (pi) => {
+      pi.on("session_before_compact", () =>
+        cancel ? { cancel: true } : undefined,
+      );
+    },
+    reply: () => ({ content: [{ type: "text", text: "Identical summary" }] }),
+  });
+  await f.session.prompt("Start");
+  await expect(f.session.compact()).rejects.toThrow();
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(0);
+  cancel = false;
+  for (let n = 1; n <= 3; n++) {
+    if (n > 1) await f.session.prompt(`More evidence ${n}`);
+    await f.session.compact();
+    expect(f.goals.get(f.agent.id)!.compactions).toBe(n);
+    const entry = f.session.sessionManager
+      .getBranch()
+      .findLast((e) => e.type === "compaction")!;
+    if (entry.type !== "compaction") throw new Error("missing compaction");
+    await f.session.extensionRunner.emit({
+      type: "session_compact",
+      compactionEntry: entry,
+      fromExtension: false,
+      reason: "manual",
+      willRetry: false,
+    });
+    expect(f.goals.get(f.agent.id)!.compactions).toBe(n);
+  }
+});
+
+test("pre-prompt 100th compaction cannot issue a provider request even when Pi resets its abort flag", async () => {
+  let normal = 0;
+  const f = await promptFixture({
+    canContinue: () => false,
+    reply: (context) => {
+      if (
+        JSON.stringify(context.messages[0]).includes(
+          "context summarization assistant",
+        )
+      )
+        return {};
+      normal++;
+      return {
+        usage: {
+          input: 200000,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 200001,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+    },
+  });
+  await f.session.prompt("Initial evidence");
+  for (let n = 0; n < 99; n++)
+    f.store.db.transaction(() =>
+      f.goals.compacted(f.binding, `earlier-${n}`),
+    )();
+  expect(f.goals.get(f.agent.id)!.state).toBe("active");
+  f.settingsManager.setCompactionEnabled(true);
+  await f.session.prompt("Native wake after idle");
+  expect(f.goals.get(f.agent.id)).toMatchObject({
+    state: "paused",
+    compactions: 100,
+  });
+  expect(normal).toBe(1);
+  await f.session.sendCustomMessage(
+    {
+      customType: "child-complete",
+      content: "Native child wake",
+      display: false,
+    },
+    { triggerTurn: true },
+  );
+  expect(normal).toBe(1);
+});
+
+test("public goal request guard preserves earlier hooks and checks again after awaited work", async () => {
+  const f = await promptFixture({
+    canContinue: () => false,
+    reply: () => ({}),
+  });
+  let stopped = false,
+    calls = 0;
+  const prior = f.session.agent.prepareRequest!;
+  f.session.agent.prepareRequest = async (request, signal) => {
+    calls++;
+    const result = await prior(request, signal);
+    if (calls === 2) stopped = true;
+    return result ?? undefined;
+  };
+  guardRunRequests(f.session, () => stopped);
+  await f.session.prompt("Allowed");
+  expect(f.requests).toHaveLength(1);
+  await f.session.prompt("Fenced during hook");
+  expect(f.requests).toHaveLength(1);
+  await f.session.prompt("Already fenced");
+  expect(calls).toBe(2);
+});
+
+test("restored generated admissions and full legacy tool records never leak policy, while human evidence survives", async () => {
+  const f = await promptFixture({
+    canContinue: () => false,
+    reply: () => ({}),
+  });
+  const legacyPrompt =
+    "[Jelly goal historical]\nParent-session continuation token budget: 876543/999999";
+  f.store.db
+    .query("UPDATE runs SET prompt=? WHERE id=?")
+    .run(legacyPrompt, f.run.id);
+  const legacy = {
+    ...f.goal,
+    tokenBudget: 999999,
+    tokensUsed: 876543,
+    compactions: 89,
+    reason: "100 successful compactions",
+  };
+  f.session.sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: legacyPrompt }],
+    timestamp: 0,
+  });
+  f.session.sessionManager.appendMessage({
+    role: "toolResult",
+    toolName: "jelly_goal",
+    toolCallId: "legacy",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(legacy) }],
+    details: legacy,
+    timestamp: 0,
+  });
+  await f.session.prompt(
+    "Human evidence mentions token budget; do not strip my source text.",
+  );
+  await f.session.compact();
+  for (const context of f.requests) {
+    const text = JSON.stringify(context);
+    expect(text).not.toMatch(
+      /999999|876543|compactions|100 successful|tokenBudget|tokensUsed/,
+    );
+  }
+  expect(JSON.stringify(f.requests[0])).toContain(
+    "Human evidence mentions token budget",
+  );
+  expect(JSON.stringify(f.requests.slice(1))).toContain(
+    "Human evidence mentions token budget",
+  );
+  expect(JSON.stringify(f.session.sessionManager.getBranch())).toContain(
+    "876543",
+  );
+});
+
+test("a failed summarizer produces no successful compaction ledger entry", async () => {
+  const f = await promptFixture({
+    canContinue: () => false,
+    reply: (context) =>
+      JSON.stringify(context.messages[0]).includes(
+        "context summarization assistant",
+      )
+        ? {
+            content: [],
+            stopReason: "error",
+            errorMessage: "Local summary failure",
+          }
+        : {},
+  });
+  await f.session.prompt("Evidence");
+  await expect(f.session.compact()).rejects.toThrow();
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(0);
+  expect(f.store.db.query("SELECT * FROM goal_compactions").all()).toHaveLength(
+    0,
+  );
+});
+
+test("a separate native child session compacts without inheriting parent goal accounting", async () => {
+  const f = await promptFixture({
+    canContinue: () => false,
+    reply: () => ({}),
+  });
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { enabled: false, keepRecentTokens: 0 },
+  });
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: f.dir,
+    agentDir: f.dir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+  });
+  await resourceLoader.reload();
+  const { session: child } = await createAgentSession({
+    cwd: f.dir,
+    agentDir: f.dir,
+    model: fixtureModel,
+    modelRuntime: f.runtime,
+    resourceLoader,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(f.dir),
+    tools: [],
+  });
+  cleanup.push(() => child.dispose());
+  await child.bindExtensions({});
+  child.agent.streamFunction = f.session.agent.streamFunction;
+  await child.prompt("Child work");
+  await child.compact();
+  expect(
+    child.sessionManager
+      .getBranch()
+      .some((entry) => entry.type === "compaction"),
+  ).toBe(true);
+  expect(child.getAllTools().some((tool) => tool.name === "jelly_goal")).toBe(
+    false,
+  );
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(0);
+  expect(f.store.db.query("SELECT * FROM goal_compactions").all()).toHaveLength(
+    0,
+  );
 });

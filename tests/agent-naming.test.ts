@@ -1,4 +1,4 @@
-import { removeScheduleSchemaForLegacyFixture } from "./fixtures/schema";
+import { removePostV16SchemaForLegacyFixture } from "./fixtures/schema";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -195,7 +195,7 @@ test("naming eligibility persists across reopen; migrations never opt old agents
     instructions: "",
     color: "#fff",
   });
-  removeScheduleSchemaForLegacyFixture(store.db);
+  removePostV16SchemaForLegacyFixture(store.db);
   store.db.exec("DROP TABLE agent_naming; ALTER TABLE agents DROP COLUMN mode; ALTER TABLE agents DROP COLUMN providerLocked; ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; DROP TABLE app_icon_assets; DROP TABLE app_launches; DROP TABLE apps; PRAGMA user_version=8;");
   store.close();
   store = new Store(path);
@@ -219,7 +219,7 @@ test("naming eligibility persists across reopen; migrations never opt old agents
     expect(store.claimAgentName(pending.id)).toBe(false);
     expect(store.claimAgentName(manual.id)).toBe(false);
     expect(store.db.query("PRAGMA user_version").get()).toEqual({
-      user_version: 17,
+      user_version: 19,
     });
   } finally {
     store.close();

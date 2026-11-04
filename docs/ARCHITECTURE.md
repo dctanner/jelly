@@ -32,7 +32,7 @@ On restart, previously running records become interrupted, with a durable interr
 
 ## Goals
 
-Schema v18 adds one current durable goal per Jelly agent, immutable execution snapshots, parent-message usage and mutation receipts. A parent-only inline Pi extension uses `agent_before_settle` for bounded automatic continuation inside the normal run; no second scheduler or globally installed goal driver. Stop, human input, shutdown and crash recovery fence the execution. Budget exhaustion stops goal continuations, not already-admitted work or delegated children. See [Goals](GOALS.md) for the exact API, budget units, lifecycle, reuse assessment and limitations.
+Schema v19 retains one current durable goal per Jelly agent, immutable execution snapshots and mutation receipts, and adds a successful parent-compaction ledger. Goals use objective-only create/edit requests. A parent-only inline Pi extension uses `agent_before_settle` for automatic continuation inside the normal run; no second scheduler or globally installed goal driver. The fixed internal 100-compaction policy replaces both token budgets and the 32-continuation breaker. The successful limit boundary atomically checkpoints and pauses, then stops the normal parent/owned-child lifecycle; a public request guard prevents post-limit provider work. Only an explicit newly admitted resume resets the counter. Normal Jelly runs allow 10,000 model turns and 24 hours. Stop, human input, shutdown and crash recovery fence execution. See [Goals](GOALS.md) for migration, API, lifecycle, reuse assessment and limitations.
 
 ## Client protocol
 
@@ -143,7 +143,7 @@ Outstanding implementation and validation are tracked in [plans/](../plans/READM
 
 - One server owns each canonical data directory via an OS-backed exclusive SQLite lock acquired before application storage/recovery; separate directories can run independently.
 - Snapshot history is paginated and replay retention is bounded. Raw conversation/timeline archives remain on disk and can grow with use.
-- Runs are limited to 1,000 turns or five hours, whichever comes first. Reaching either limit stops the run and its background subagent work; model token limits can also terminate a run.
+- Runs are limited to 10,000 turns or 24 hours, whichever comes first. Reaching either limit latches a run-local request fence and stops the run and its background subagent work. The composed public request guard prevents pre-prompt compaction from escaping the deadline when Pi resets its abort flag; model token limits can also terminate a run.
 - Remote access, remote server authentication, TLS and hosted multi-user isolation are outstanding. Local model credential management is available in the settings UI.
 - Connected Chrome is the only browser integration, using an extension/native host on Linux or macOS. Optional human-only desktop sharing has additional Linux/X11 requirements; see [Connected Chrome](CONNECTED-CHROME.md).
 - Sudo depends on the host sudo policy and askpass support; automatic execution and password entry do not sandbox the program.

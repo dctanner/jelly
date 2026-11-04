@@ -13,8 +13,9 @@ import type {
   PendingMessage,
 } from "../shared/types";
 import { Store } from "./store";
-import { Goals, goalPrompt } from "./goals";
-import { goalExtension } from "./goal-extension";
+import { Goals, goalPrompt, GOAL_COMPACTION_LIMIT } from "./goals";
+import { goalExtension, goalContext, goalSummaryContext } from "./goal-extension";
+import { guardRunRequests } from "./run-request-guard";
 import type { Goal, GoalAction, GoalBinding } from "../shared/goals";
 import { Schedules, scheduledWake } from "./schedules";
 import { Scheduler } from "./scheduler";
@@ -38,8 +39,8 @@ import { validateDirectory, effectiveCwd } from "./directories";
 import { Desktop, type DesktopOptions } from "./desktop";
 import type { BrowserPort } from "./browser-sessions";
 
-const MAX_RUN_TURNS = 1_000;
-const MAX_RUN_DURATION_MS = 5 * 60 * 60 * 1_000;
+const MAX_RUN_TURNS = 10_000;
+const MAX_RUN_DURATION_MS = 24 * 60 * 60 * 1_000;
 interface ActiveRun {
   agentId: string;
   thinkingPreview?: string;
@@ -419,7 +420,7 @@ export class JellyService {
     if (agent.archivedAt) throw new HttpError(409, "Restore this agent before starting a fresh session.");
     if (this.activeFor(agentId)) throw new HttpError(409, "Wait for this agent to finish before starting a fresh session.");
     this.harness.requireConnection(this.agentConfig(agent));
-    this.goals.stop(agentId, "Paused for Fresh Session. Usage is preserved; resume explicitly.");
+    this.goals.stop(agentId, "Paused for Fresh Session. Resume explicitly.");
     return this.startRun(agent, `fresh-session:${requestId}`, "Fresh Session", "queue", true);
   }
   start(
@@ -671,9 +672,13 @@ export class JellyService {
       let compacted = false;
       let checkpointed = false;
       let stopping: Promise<void> | undefined;
+      let goalSafetyStopped = false;
+      let runLimitReached = false;
+      let goalCompactionPersistenceFailed = false;
       const deadline = setTimeout(() => {
+        runLimitReached = true;
         failure ??=
-          "The run reached the 5-hour limit. Send a new message to continue.";
+          "The run reached the 24-hour limit. Send a new message to continue.";
         state.naming?.abort();
         if (state.session)
           stopping = this.harness.stop(state.session).catch(() => {});
@@ -737,9 +742,43 @@ export class JellyService {
               return false;
             }
             return !this.harness.hasChildWork(state.session);
-          })] : [],
+          }, (entryId) => {
+            if (!state.session) throw new Error("Goal compaction has no parent session.");
+            try {
+              const event = this.store.db.transaction(() => {
+                this.store.saveContext(agentId, run.id, this.harness.checkpoint(state.session!));
+                return this.goals.compacted(goalBinding, entryId);
+              })();
+              checkpointed = true;
+              if (event) this.notify(event);
+              const goal = this.goals.byId(goalBinding.id);
+              if (!event || !goal || goal.compactions < GOAL_COMPACTION_LIMIT) return false;
+              // Strong automatic safety stop: cancel parent and owned children,
+              // but never await idle from inside a Pi lifecycle handler.
+              goalSafetyStopped = true;
+              state.cancelled = true;
+              stopping ??= this.harness.stop(state.session).catch(() => {});
+              return true;
+            } catch (error) {
+              goalCompactionPersistenceFailed = true;
+              goalSafetyStopped = true;
+              failure = "Could not persist goal compaction. Inspect before resuming.";
+              this.goals.stop(agentId, failure, "blocked");
+              stopping ??= this.harness.stop(state.session).catch(() => {});
+              throw error;
+            }
+          })] : [(pi) => {
+            pi.on("context_with_system", event => ({ messages: goalContext(event.messages, this.goals, agentId) }));
+            pi.on("session_before_compact", event => {
+              if (event.preparation.previousSummary)
+                event.preparation.previousSummary = goalSummaryContext(event.preparation.previousSummary);
+              for (const key of ["messagesToSummarize", "turnPrefixMessages"] as const)
+                event.preparation[key] = goalContext(event.preparation[key], this.goals, agentId);
+            });
+          }],
         );
         state.session = session;
+        guardRunRequests(session, () => goalSafetyStopped || runLimitReached);
         if (state.cancelled || failure) return;
         session.subscribe((event) => {
           if (event.type === "compaction_start") {
@@ -820,16 +859,11 @@ export class JellyService {
               // Pi's earlier core listener has already persisted this boundary.
               // Commit model context with the transcript, including tool results,
               // so a process crash cannot revert to the last successful run.
-              this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
-              checkpointed = true;
+              if (!goalCompactionPersistenceFailed) {
+                this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
+                checkpointed = true;
+              }
               if (message.role === "assistant") {
-                if (goalBinding) {
-                  // Other message hooks may append custom entries after the assistant.
-                  const entryId = session.sessionManager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "assistant")?.id;
-                  if (!entryId) throw new Error("Finalized goal message has no persisted assistant entry.");
-                  const usageEvent = this.goals.account(goalBinding, entryId, message.usage);
-                  if (usageEvent) saved.push(usageEvent);
-                }
                 // Only the provider's displayable thinking text belongs in the UI.
                 // Never project redacted blocks or opaque reasoning signatures.
                 const thinking = message.content
@@ -856,8 +890,10 @@ export class JellyService {
                   "The model could not complete this turn."
                 : null;
           } else if (event.type === "message_end") {
-            this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
-            checkpointed = true;
+            if (!goalCompactionPersistenceFailed) {
+              this.store.saveContext(agentId, run.id, this.harness.checkpoint(session));
+              checkpointed = true;
+            }
           } else if (event.type === "tool_execution_start") {
             this.emit(agentId, run.id, "tool_started", {
               toolCallId: event.toolCallId,
@@ -874,8 +910,9 @@ export class JellyService {
           } else if (event.type === "turn_end") {
             this.emit(agentId, run.id, "turn_completed", { turn: ++turns });
             if (turns >= MAX_RUN_TURNS) {
+              runLimitReached = true;
               failure ??=
-                "The run reached the 1,000-turn limit. Send a new message to continue.";
+                "The run reached the 10,000-turn limit. Send a new message to continue.";
               session.agent.abort();
               stopping ??= this.harness.stop(session).catch(() => {});
             }
@@ -913,7 +950,7 @@ export class JellyService {
         clearTimeout(state.thinkingTimer);
         clearTimeout(deadline);
         await stopping;
-        if (!freshSession && checkpointed && state.session)
+        if (!freshSession && checkpointed && state.session && !goalCompactionPersistenceFailed)
           try {
             // Preserve final compaction/extension state even when the last
             // request failed or the operator stopped the run.

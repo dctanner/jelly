@@ -41,7 +41,6 @@ test("goal API create/edit/pause/resume/complete/clear without credentials; repl
   });
   const create = {
     objective: "API fixture objective",
-    tokenBudget: 100,
     requestId: "create",
   };
   let goal = (await (await f.request(f.path + "/create", create)).json()).goal;
@@ -68,9 +67,7 @@ test("goal API create/edit/pause/resume/complete/clear without credentials; repl
       goalId: goal.id,
       expectedRevision: goal.revision,
       requestId: action,
-      ...(action === "edit"
-        ? { objective: "Edited fixture", tokenBudget: 200 }
-        : {}),
+      ...(action === "edit" ? { objective: "Edited fixture" } : {}),
       ...(action === "complete"
         ? { summary: "Operator verified fixture evidence" }
         : {}),
@@ -107,7 +104,7 @@ test("goal API create/edit/pause/resume/complete/clear without credentials; repl
 });
 test("goal endpoints share cookie/CSRF/origin boundary and reject forged ownership/usage, wrong scope and oversize input", async () => {
   const f = await fixture();
-  const input = { objective: "Fixture", tokenBudget: 100, requestId: "create" };
+  const input = { objective: "Fixture", requestId: "create" };
   expect((await fetch(f.origin + f.path)).status).toBe(401);
   expect(
     (
@@ -134,7 +131,9 @@ test("goal endpoints share cookie/CSRF/origin boundary and reject forged ownersh
     { runId: "forged" },
     { state: "active" },
     { objective: "x".repeat(16001) },
-    { tokenBudget: 1.1 },
+    { tokenBudget: 100 },
+    { compactions: 0 },
+    { compactionLimit: 200 },
   ])
     expect(
       (await f.request(f.path + "/create", { ...input, ...extra })).status,

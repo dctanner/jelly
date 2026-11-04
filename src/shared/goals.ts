@@ -1,11 +1,6 @@
 export type GoalState =
-  | "active"
-  | "paused"
-  | "blocked"
-  | "budget_exhausted"
-  | "completed"
-  | "cleared";
-/** Budget covers only reported parent-session input + cache-write + output tokens. */
+  "active" | "paused" | "blocked" | "completed" | "cleared";
+/** Durable operator view; execution bookkeeping is never sent to the model. */
 export interface Goal {
   id: string;
   agentId: string;
@@ -13,9 +8,7 @@ export interface Goal {
   revision: number;
   epoch: number;
   state: GoalState;
-  tokenBudget: number;
-  tokensUsed: number;
-  usageUnknown: boolean;
+  compactions: number;
   progress: string;
   reason: string | null;
   continuations: number;

@@ -1,4 +1,4 @@
-import { removeScheduleSchemaForLegacyFixture } from "./fixtures/schema";
+import { removePostV16SchemaForLegacyFixture } from "./fixtures/schema";
 import { startApp as startProductionApp } from "../src/server/app";
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -475,7 +475,7 @@ test.each([12, 15])(
     );
     store.finishRun(legacy.id, "failed", "old fixture");
     store.setMode("api");
-    removeScheduleSchemaForLegacyFixture(store.db);
+    removePostV16SchemaForLegacyFixture(store.db);
     store.db.exec(
       `ALTER TABLE agents DROP COLUMN mode; ALTER TABLE agents DROP COLUMN providerLocked; PRAGMA user_version=${version};`,
     );

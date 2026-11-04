@@ -1,4 +1,4 @@
-import { removeScheduleSchemaForLegacyFixture } from "./fixtures/schema";
+import { removePostV16SchemaForLegacyFixture } from "./fixtures/schema";
 import { test, expect, afterEach } from "bun:test";
 import {
   mkdtempSync,
@@ -284,7 +284,7 @@ test("v4 migration backfills exact legacy directories without making files or ch
   const run = s.createRun(a.id, "migration", "hello", "demo", "local-demo");
   s.event(a.id, run.id, "message", { role: "user", text: "hello" });
   s.finishRun(run.id, "completed", null);
-  removeScheduleSchemaForLegacyFixture(s.db);
+  removePostV16SchemaForLegacyFixture(s.db);
   s.db.exec(
     "ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''; DROP INDEX idx_agents_project; ALTER TABLE agents DROP COLUMN projectId; ALTER TABLE agents DROP COLUMN cwd; ALTER TABLE agents DROP COLUMN managedCwd; ALTER TABLE agents DROP COLUMN avatarId; ALTER TABLE agents DROP COLUMN mode; ALTER TABLE agents DROP COLUMN providerLocked; ALTER TABLE agents DROP COLUMN model; ALTER TABLE agents DROP COLUMN effort; DROP TABLE projects; DROP TABLE app_icon_assets; DROP TABLE app_launches; DROP TABLE apps; PRAGMA user_version=4",
   );

@@ -50,9 +50,7 @@ function fixture() {
         id: "goal",
         agentId: "agent",
         objective: input.objective,
-        tokenBudget: input.tokenBudget,
-        tokensUsed: 0,
-        usageUnknown: false,
+        compactions: 0,
         revision: 1,
         epoch: 0,
         state: "paused",
@@ -73,9 +71,7 @@ function fixture() {
             : action === "complete"
               ? "completed"
               : "paused",
-        ...(action === "edit"
-          ? { objective: input.objective, tokenBudget: input.tokenBudget }
-          : {}),
+        ...(action === "edit" ? { objective: input.objective } : {}),
       };
     return Response.json(view);
   }) as typeof fetch;
@@ -92,21 +88,18 @@ async function create() {
   fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: "Verify full fixture scope" },
   });
-  fireEvent.change(
-    screen.getByLabelText("Parent-session continuation token budget"),
-    { target: { value: "200" } },
-  );
   fireEvent.click(screen.getByRole("button", { name: "Save goal" }));
   await screen.findByRole("button", { name: "Resume goal" });
 }
-test("accessible per-agent goal create/edit/pause/resume/complete with honest budget text and explicit activation", async () => {
+test("accessible per-agent goal create/edit/pause/resume/complete without budget controls and explicit activation", async () => {
   const f = fixture();
   render(<GoalsButton agentId="agent" />);
   fireEvent.click(screen.getByRole("button", { name: "Goals" }));
   expect(screen.getByRole("dialog")).toBeTruthy();
   await create();
-  expect(f.calls[0]!.input.tokenBudget).toBe(200);
-  expect(screen.getByText(/Not a total spend or hard cap/)).toBeTruthy();
+  expect(f.calls[0]!.input).not.toHaveProperty("tokenBudget");
+  expect(screen.queryByRole("spinbutton")).toBeNull();
+  expect(screen.queryByText(/token budget/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
   fireEvent.click(await screen.findByRole("button", { name: "Pause goal" }));
   await screen.findByRole("button", { name: "Resume goal" });
@@ -132,7 +125,7 @@ test("accessible per-agent goal create/edit/pause/resume/complete with honest bu
   ]);
   expect(screen.queryByRole("button", { name: "Resume goal" })).toBeNull();
 });
-test("409 retains editor and stable retry key; SSE invalidation refreshes usage without dropping the draft", async () => {
+test("409 retains editor and stable retry key; SSE invalidation refreshes progress without dropping the draft", async () => {
   const f = fixture();
   render(<GoalsPanel agentId="agent" onClose={() => {}} />);
   await create();
@@ -155,12 +148,11 @@ test("409 retains editor and stable retry key; SSE invalidation refreshes usage 
   );
   const edits = f.calls.filter((c) => c.action === "edit");
   expect(edits[0]!.input.requestId).toBe(edits[1]!.input.requestId);
-  f.view().goal!.tokensUsed = 50;
-  f.view().goal!.usageUnknown = true;
+  f.view().goal!.progress = "New progress";
   await act(async () => {
     window.dispatchEvent(new window.CustomEvent("jelly:goals-updated"));
   });
-  await screen.findByText(/Some parent usage is unknown/);
+  await screen.findByText("New progress");
   expect(
     (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,
   ).toBe("Unsaved draft");
@@ -241,7 +233,6 @@ test("concurrent edits never silently rebase a draft; conflicts and retries pres
     ...f.view().goal!,
     revision: 2,
     objective: "New objective from another tab",
-    tokenBudget: 300,
   };
   await refreshGoalView();
   await screen.findByText(
@@ -263,13 +254,11 @@ test("concurrent edits never silently rebase a draft; conflicts and retries pres
     goalId: "goal",
     expectedRevision: 1,
     objective: "My original draft",
-    tokenBudget: 200,
   });
   expect(edits[1]!.input).toEqual(edits[0]!.input);
   expect(f.view().goal).toMatchObject({
     revision: 2,
     objective: "New objective from another tab",
-    tokenBudget: 300,
   });
   expect(
     (screen.getByLabelText("Objective") as HTMLTextAreaElement).value,

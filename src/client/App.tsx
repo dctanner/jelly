@@ -8,6 +8,7 @@ import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 import { ComputerControlPanel } from "./ComputerControlPanel";
 import { Settings, SettingsRow } from "./Settings";
 import { ComposerSettings } from "./ComposerSettings";
+import { ComposerActions } from "./ComposerActions";
 import { captureAnchor, restoreAnchor, mergeHistory, snapshotHistory, type ScrollAnchor } from "./history";
 import { useChatNavigation } from "./useChatNavigation";
 import { useInputModality } from "./useInputModality";
@@ -1920,19 +1921,12 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             </span>
             </div>
             <div className="composer-footer">
-              <button
-                type="button"
-                className="icon composer-upload"
-                aria-label="Upload file"
-                title="Upload file"
-                aria-haspopup="dialog"
-                disabled={
-                  !agent || !selectionReady || !connected || !!agent.archivedAt
-                }
-                onClick={() => agent && setUploadTarget(agent)}
-              >
-                <Plus size={20} aria-hidden="true" />
-              </button>
+              <ComposerActions
+                key={`composer-actions-${agent?.id ?? "no-agent"}`}
+                agentId={agent?.id}
+                disabled={!active || !agent || !selectionReady || !connected || !!agent.archivedAt}
+                onAddFile={() => agent && setUploadTarget(agent)}
+              />
               <span>
                 {running
                   ? "Send after this run finishes"

@@ -1,18 +1,22 @@
 import { Type, StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { GoalBinding } from "../shared/goals";
+import type { Goal, GoalBinding } from "../shared/goals";
 import { Goals, goalPrompt } from "./goals";
+
+const GOAL_TOOL_DESCRIPTION =
+  "Inspect the current Jelly goal or record progress, a genuine blocker, or verified completion with evidence. Cannot create or resume goals or change their objective.";
 
 /** Parent-only adapter. Jelly owns persistence/admission; Pi owns the agent loop. */
 export function goalExtension(
   goals: Goals,
   binding: GoalBinding,
   canContinue: () => boolean,
+  commitCompaction: (entryId: string) => boolean,
 ): ExtensionFactory {
   return (pi) => {
     let shutdown = false;
-    let budgetNoticeSent = false;
+    let compactionBefore: Set<string> | undefined;
     pi.on("before_agent_start", (event) => {
       if (
         event.systemPromptOptions.forceSystemPrompt !== undefined &&
@@ -31,13 +35,6 @@ export function goalExtension(
       const goal = goals.byId(binding.id);
       if (!shutdown && goals.current(binding))
         return `Current authoritative goal state; supersedes historical goal instructions.\n${goalPrompt(goal!)}`;
-      if (
-        !shutdown &&
-        goal?.epoch === binding.epoch &&
-        goal.state === "budget_exhausted" &&
-        goals.store.run(binding.runId)?.status === "running"
-      )
-        return `Current authoritative goal state; supersedes historical goal instructions.\n[Jelly goal ${goal.id}; budget exhausted]\nObjective: ${goal.objective}\nProgress: ${goal.progress || "No progress recorded."}\n${budgetPrompt(goal.tokensUsed, goal.tokenBudget)}`;
       return `This goal execution is no longer active (${shutdown ? "session ended" : (goal?.state ?? "removed")}). Do not resume autonomous goal work or attest completion from historical context. Follow current human instructions instead.`;
     };
     // Request-local only: preserve Pi's stable leading prompt and every tool delta.
@@ -45,7 +42,7 @@ export function goalExtension(
     // wakes or compaction, neither of which reruns before_agent_start.
     pi.on("context_with_system", (event) => ({
       messages: [
-        ...goalContext(event.messages),
+        ...goalContext(event.messages, goals, binding.agentId),
         {
           role: "system",
           content: "",
@@ -54,9 +51,16 @@ export function goalExtension(
         },
       ],
     }));
-    pi.on("session_before_compact", (event) => {
+    pi.on("session_before_compact", (event, ctx) => {
+      compactionBefore = new Set(
+        ctx.sessionManager.getBranch().map((entry) => entry.id),
+      );
       // Pi's standalone summarizer bypasses context hooks. Preparation is mutable
       // in 0.87.1; preserve cut points, file operations and other extensions' data.
+      if (event.preparation.previousSummary)
+        event.preparation.previousSummary = goalSummaryContext(
+          event.preparation.previousSummary,
+        );
       const goal = goals.byId(binding.id);
       const snapshot: AgentMessage = {
         role: "user",
@@ -69,16 +73,40 @@ export function goalExtension(
       ] as const) {
         if (event.preparation[key].length)
           event.preparation[key] = [
-            ...goalContext(event.preparation[key]),
+            ...goalContext(event.preparation[key], goals, binding.agentId),
             snapshot,
           ];
+      }
+    });
+    pi.on("session_compact_failed", () => {
+      compactionBefore = undefined;
+    });
+    pi.on("session_compact", (_event, ctx) => {
+      // Pi 0.87.1 reports the first entry with an equal summary, which can be old.
+      // Resolve the newly appended active-branch identity instead. A replayed
+      // success callback without a new preparation must not count again.
+      const before = compactionBefore;
+      compactionBefore = undefined;
+      if (shutdown || !before) return;
+      const entry = ctx.sessionManager
+        .getBranch()
+        .findLast(
+          (entry) => entry.type === "compaction" && !before.has(entry.id),
+        );
+      if (!entry) return;
+      try {
+        if (commitCompaction(entry.id)) ctx.abort();
+      } catch (error) {
+        // Extension errors alone are swallowed by Pi: fail closed on a failed
+        // durable checkpoint. The host also initiates owned-work cleanup.
+        ctx.abort();
+        throw error;
       }
     });
     pi.registerTool({
       name: "jelly_goal",
       label: "Jelly goal",
-      description:
-        "Inspect the current Jelly goal or record progress, a genuine blocker, or verified completion with evidence. Cannot create/resume goals or change parent-session continuation token budgets. Budget excludes child, compaction and nested tool usage; not a total spend cap.",
+      description: GOAL_TOOL_DESCRIPTION,
       parameters: Type.Object({
         action: StringEnum(["get", "progress", "block", "complete"] as const),
         summary: Type.Optional(Type.String({ maxLength: 16000 })),
@@ -99,34 +127,10 @@ export function goalExtension(
                 params.summary ?? "",
               );
         return {
-          content: [{ type: "text", text: JSON.stringify(goal) }],
-          details: goal,
+          content: [{ type: "text", text: JSON.stringify(modelGoal(goal)) }],
+          details: modelGoal(goal),
         };
       },
-    });
-    pi.on("turn_end", (event) => {
-      const goal = goals.byId(binding.id);
-      if (
-        shutdown ||
-        budgetNoticeSent ||
-        goal?.epoch !== binding.epoch ||
-        goal.state !== "budget_exhausted"
-      )
-        return;
-      budgetNoticeSent = true;
-      // Do not request another turn. An already-admitted tool follow-up/native wake
-      // sees this wrap-up contract; a final answer can settle without spending more.
-      return {
-        entries: [
-          ...event.entries,
-          {
-            type: "custom_message",
-            customType: "jelly_goal_budget_limit",
-            display: false,
-            content: budgetPrompt(goal.tokensUsed, goal.tokenBudget),
-          },
-        ],
-      };
     });
     pi.on("agent_before_settle", (event) => {
       if (shutdown || !goals.current(binding)) return;
@@ -164,15 +168,56 @@ export function goalExtension(
   };
 }
 
-function budgetPrompt(used: number, budget: number): string {
-  return `The parent-session continuation token budget is exhausted (${used}/${budget}). Do not start new substantive goal work or delegate more work. Summarize progress, evidence, and remaining scope. This is not success. Only mark complete with jelly_goal if every requirement is already verified. Existing children may finish; do not relaunch them.`;
+/** Explicit model projection: never include server policy, counters or operator reasons. */
+function modelGoal(
+  goal: Pick<Goal, "id" | "objective" | "progress" | "state"> | null,
+) {
+  if (!goal) return null;
+  return {
+    id: goal.id,
+    objective: goal.objective,
+    progress: goal.progress,
+    state: ["active", "completed", "cleared", "blocked"].includes(goal.state)
+      ? goal.state
+      : "paused",
+    ...(goal.state !== "active"
+      ? {
+          instruction: "This goal is stopped. Only the operator can resume it.",
+        }
+      : {}),
+  };
 }
 
-/** Keep durable snapshots, but exclude only our own obsolete instructions from requests. */
-function goalContext(messages: AgentMessage[]): AgentMessage[] {
+/** Keep durable history; exclude only Jelly-owned obsolete policy from requests. */
+export function goalContext(
+  messages: AgentMessage[],
+  goals: Goals,
+  agentId: string,
+): AgentMessage[] {
+  // Match persisted server-owned admissions, not arbitrary human text patterns.
+  const prompts = new Set(
+    (
+      goals.store.db
+        .query(
+          "SELECT r.prompt FROM runs r JOIN goal_runs g ON g.runId=r.id WHERE r.agentId=?",
+        )
+        .all(agentId) as { prompt: string }[]
+    ).map((row) => row.prompt),
+  );
   return messages
     .filter(
       (message) =>
+        !(
+          message.role === "user" &&
+          prompts.has(
+            typeof message.content === "string"
+              ? message.content
+              : message.content.length === 1 &&
+                  message.content[0]?.type === "text"
+                ? message.content[0].text
+                : "",
+          )
+        ) &&
         !(
           message.role === "custom" &&
           ["jelly_goal_continuation", "jelly_goal_budget_limit"].includes(
@@ -182,6 +227,36 @@ function goalContext(messages: AgentMessage[]): AgentMessage[] {
     )
     .map((message) => {
       if (
+        message.role === "compactionSummary" ||
+        message.role === "branchSummary"
+      )
+        return { ...message, summary: goalSummaryContext(message.summary) };
+      if (message.role === "toolResult" && message.toolName === "jelly_goal") {
+        // Old tool results serialized the entire internal record. Retain only
+        // goal evidence in the request view; raw history remains untouched.
+        const details = message.details as Goal | undefined;
+        if (details && typeof details.objective === "string") {
+          const safe = modelGoal(details);
+          return {
+            ...message,
+            content: [{ type: "text" as const, text: JSON.stringify(safe) }],
+            details: safe,
+          };
+        }
+      }
+      if (
+        message.role === "system" &&
+        message.toolsAdded?.some((tool) => tool.name === "jelly_goal")
+      )
+        message = {
+          ...message,
+          toolsAdded: message.toolsAdded.map((tool) =>
+            tool.name === "jelly_goal"
+              ? { ...tool, description: GOAL_TOOL_DESCRIPTION }
+              : tool,
+          ),
+        };
+      if (
         message.role !== "system" ||
         !message.sections ||
         !("jelly_goal" in message.sections)
@@ -190,4 +265,13 @@ function goalContext(messages: AgentMessage[]): AgentMessage[] {
       const { jelly_goal: _, ...sections } = message.sections;
       return { ...message, sections };
     });
+}
+
+/** Scrub recognizable generated v18 policy spans in summaries, not entire lines
+ * or human messages. Summary originals remain durable evidence. */
+export function goalSummaryContext(summary: string): string {
+  return summary.replace(
+    /(?:The )?parent-session continuation token budget(?::\s*[\d,]+\s*\/\s*[\d,]+| is exhausted\s*\([\d,]+\s*\/\s*[\d,]+\))/gi,
+    "Historical goal policy omitted; follow current execution authority",
+  );
 }

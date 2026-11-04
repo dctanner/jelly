@@ -1,0 +1,46 @@
+.composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.composer-actions-menu {
+  width: 200px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--floating);
+  color: var(--text);
+  box-shadow: var(--floating-shadow);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.composer-actions-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-actions-menu > button:hover,
+.composer-actions-menu > button:focus-visible {
+  background: var(--hover);
+}
+
+.composer-actions-menu > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.composer-actions-menu svg {
+  flex-shrink: 0;
+}

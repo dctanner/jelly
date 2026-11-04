@@ -6,6 +6,7 @@ export function placePopover(
   size: { width: number; height: number },
   bounds: { left: number; right: number; top: number; bottom: number },
   preferred: "above" | "below",
+  align: "start" | "end" = "end",
 ) {
   const gap = 8;
   const usableHeight = Math.max(0, bounds.bottom - bounds.top);
@@ -25,7 +26,10 @@ export function placePopover(
   return {
     left: Math.max(
       bounds.left,
-      Math.min(anchor.right - size.width, bounds.right - size.width),
+      Math.min(
+        align === "start" ? anchor.left : anchor.right - size.width,
+        bounds.right - size.width,
+      ),
     ),
     top: Math.max(
       bounds.top,
@@ -44,6 +48,7 @@ export function useAnchoredPopover(
   anchor: RefObject<HTMLElement | null>,
   panel: RefObject<HTMLDivElement | null>,
   preferred: "above" | "below",
+  align: "start" | "end" = "end",
 ) {
   useLayoutEffect(() => {
     const element = panel.current;
@@ -64,6 +69,7 @@ export function useAnchoredPopover(
         { width: element.offsetWidth, height: element.scrollHeight + 2 },
         bounds,
         preferred,
+        align,
       );
       element.style.left = `${position.left}px`;
       element.style.top = `${position.top}px`;
@@ -87,5 +93,5 @@ export function useAnchoredPopover(
       observer?.disconnect();
       document.removeEventListener("scroll", update, true);
     };
-  }, [open, anchor, panel, preferred]);
+  }, [open, anchor, panel, preferred, align]);
 }

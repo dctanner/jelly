@@ -13,6 +13,9 @@ const app = await startApp({
 const create = app.service.harness.create.bind(app.service.harness);
 app.service.harness.create = async (...args) => {
   const session = await create(...args);
+  session.settingsManager.applyOverrides({
+    compaction: { enabled: true, keepRecentTokens: 0, reserveTokens: 1 },
+  });
   session.agent.streamFunction = (model, _context, options) => {
     const stream = createAssistantMessageEventStream();
     setTimeout(() => {
@@ -26,11 +29,11 @@ app.service.harness.create = async (...args) => {
         timestamp: Date.now(),
         stopReason: aborted ? "aborted" : "stop",
         usage: {
-          input: 10,
+          input: 2000000,
           cacheWrite: 3,
           cacheRead: 100,
           output: 5,
-          totalTokens: 118,
+          totalTokens: 2000108,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };

@@ -3,21 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/server/store";
-import { Goals, parentGoalTokens } from "../src/server/goals";
+import { Goals } from "../src/server/goals";
 import type { Goal, GoalAction } from "../src/shared/goals";
-import type { Usage } from "@earendil-works/pi-ai";
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();
 });
-const usage: Usage = {
-  input: 10,
-  output: 5,
-  cacheRead: 100,
-  cacheWrite: 3,
-  totalTokens: 118,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jelly-goals-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -37,7 +28,6 @@ function fixture() {
   const create = (extra = {}) =>
     goals.mutate(agent.id, "create", {
       objective: "Verify fixture",
-      tokenBudget: 100,
       requestId: "create",
       ...extra,
     }).goal;
@@ -53,11 +43,11 @@ function fixture() {
 test("fresh and v17 migration, reopen, scoped one-current-goal, durable mutation replay/conflicts", () => {
   const f = fixture();
   expect(f.store.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 18,
+    user_version: 19,
   });
   // Reconstruct an actual v17 schema before migrating, not merely reset the version.
   f.store.db.exec(
-    "DROP TABLE goal_usage; DROP TABLE goal_runs; DROP TABLE goal_mutations; DROP TABLE agent_goals; PRAGMA user_version=17;",
+    "DROP TABLE goal_compactions; DROP TABLE goal_usage; DROP TABLE goal_runs; DROP TABLE goal_mutations; DROP TABLE agent_goals; PRAGMA user_version=17;",
   );
   const migrated = new Store(f.path);
   cleanup.push(() => migrated.close());
@@ -101,124 +91,173 @@ test("fresh and v17 migration, reopen, scoped one-current-goal, durable mutation
       .run("foreign", "missing", "{}"),
   ).toThrow();
 });
-test("budget validation and strict server-owned fields", () => {
-  for (const tokenBudget of [
-    0,
-    -1,
-    1.1,
-    Infinity,
-    NaN,
-    Number.MAX_SAFE_INTEGER + 1,
-    "20",
-  ]) {
-    const f = fixture();
-    expect(() => f.create({ tokenBudget })).toThrow("positive safe integer");
-  }
+test("objective-only mutations reject obsolete budget and internal counter overrides", () => {
   const f = fixture();
-  expect(() => f.create({ tokensUsed: 0 })).toThrow("server-owned");
+  for (const extra of [
+    { tokenBudget: 100 },
+    { compactions: 0 },
+    { compactionLimit: 200 },
+    { tokensUsed: 0 },
+    { continuations: 0 },
+  ])
+    expect(() => f.create(extra)).toThrow("server-owned");
   expect(() => f.create({ objective: " " })).toThrow();
   expect(() => f.create({ objective: "x".repeat(16001) })).toThrow();
-  expect(parentGoalTokens(usage)).toBe(18);
-  expect(parentGoalTokens(undefined)).toBeNull();
-  expect(parentGoalTokens({ ...usage, input: -1 })).toBeNull();
+  const goal = f.create();
+  expect(() =>
+    f.change(goal, "edit", { objective: "edited", tokenBudget: 10 }),
+  ).toThrow("server-owned");
 });
-test("accounting is cumulative, idempotent, atomic with transcript and remains charged after pause/clear", () => {
-  const f = fixture();
-  let goal = f.change(f.create(), "resume");
+function admit(f: ReturnType<typeof fixture>, goal: Goal) {
   const run = f.store.createRun(
     f.agent.id,
-    "run",
+    crypto.randomUUID(),
     "fixture",
     "api",
     "gpt-6-astra",
   );
-  const binding = f.goals.admit(goal, run.id);
-  expect(() => f.goals.admit(goal, run.id)).toThrow();
-  f.store.db.transaction(() => f.goals.account(binding, "message-1", usage))();
-  expect(f.goals.get(f.agent.id)!.tokensUsed).toBe(18);
-  expect(f.goals.account(binding, "message-1", usage)).toBeNull();
+  return { run, binding: f.goals.admit(goal, run.id) };
+}
+test("compactions deduplicate, commit atomically, fence stale epochs, stop exactly at 100 and reset only on explicit resume", () => {
+  const f = fixture();
+  const { run, binding } = admit(f, f.change(f.create(), "resume"));
+  expect(() => f.goals.admit(f.goals.get(f.agent.id)!, run.id)).toThrow();
+  const count = (id: string) =>
+    f.store.db.transaction(() => f.goals.compacted(binding, id))();
+  count("first");
+  expect(count("first")).toBeNull();
   expect(() =>
     f.store.db.transaction(() => {
-      f.goals.account(binding, "rollback", usage);
+      f.goals.compacted(binding, "rollback");
       throw new Error("rollback");
     })(),
   ).toThrow();
-  expect(f.goals.get(f.agent.id)!.tokensUsed).toBe(18);
-  goal = f.change(f.goals.get(f.agent.id)!, "pause");
-  expect(f.goals.current(binding)).toBeNull();
-  f.goals.account(binding, "in-flight", usage);
-  expect(f.goals.get(f.agent.id)!.tokensUsed).toBe(36);
-  expect(() =>
-    f.change(goal, "edit", { objective: "new", tokenBudget: 200 }),
-  ).toThrow("running work");
-  f.store.finishRun(run.id, "completed", null);
-  goal = f.change(f.goals.get(f.agent.id)!, "edit", {
-    objective: "edited exact scope",
-    tokenBudget: 200,
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(1);
+  for (let n = 2; n <= 99; n++) count(String(n));
+  expect(f.goals.get(f.agent.id)).toMatchObject({
+    state: "active",
+    compactions: 99,
   });
-  expect(goal.id).toBe(binding.id);
-  expect(goal.tokensUsed).toBe(36);
-  f.change(goal, "clear");
-  f.goals.account(binding, "late", usage);
-  expect(f.goals.get(f.agent.id)).toBeNull();
-  expect(f.goals.byId(binding.id)!.tokensUsed).toBe(54);
-  expect(f.create({ requestId: "replacement" }).id).not.toBe(binding.id);
-  expect(() => f.goals.update(binding, "completed", "stale")).toThrow(
+  const reopened = new Store(f.path);
+  expect(new Goals(reopened).get(f.agent.id)!.compactions).toBe(99);
+  reopened.close();
+  count("100");
+  expect(f.goals.get(f.agent.id)).toMatchObject({
+    state: "paused",
+    compactions: 100,
+  });
+  expect(f.goals.get(f.agent.id)!.reason).toContain("100 successful");
+  expect(count("101")).toBeNull();
+  expect(f.goals.continuation(binding)).toBeNull();
+  expect(() => f.goals.update(binding, "completed", "late")).toThrow(
     "no longer active",
   );
-});
-test("budget exhaustion, missing usage, completion and recovery never imply success or reset usage", () => {
-  const f = fixture();
-  let goal = f.change(f.create({ tokenBudget: 10 }), "resume");
-  const run = f.store.createRun(
-    f.agent.id,
-    "run",
-    "fixture",
-    "api",
-    "gpt-6-astra",
-  );
-  const binding = f.goals.admit(goal, run.id);
-  f.goals.account(binding, "1", usage);
-  goal = f.goals.get(f.agent.id)!;
-  expect(goal.state).toBe("budget_exhausted");
-  expect(goal.tokensUsed).toBe(18);
-  f.store.finishRun(run.id, "completed", null);
-  expect(() => f.change(goal, "resume")).toThrow("Budget exhausted");
-  goal = f.change(goal, "edit", {
-    objective: goal.objective,
-    tokenBudget: 100,
+  expect(() =>
+    f.change(f.goals.get(f.agent.id)!, "edit", { objective: "new" }),
+  ).toThrow("running work");
+  f.store.finishRun(run.id, "cancelled", null);
+  const edited = f.change(f.goals.get(f.agent.id)!, "edit", {
+    objective: "edited scope",
   });
-  goal = f.change(goal, "resume");
+  expect(edited.compactions).toBe(100);
+  const resumed = f.change(edited, "resume");
+  const next = admit(f, resumed);
+  expect(resumed.compactions).toBe(0);
+  expect(count("stale")).toBeNull();
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(0);
+  f.goals.compacted(next.binding, "new");
   f.goals.recover();
-  goal = f.goals.get(f.agent.id)!;
-  expect(goal.state).toBe("paused");
-  expect(goal.tokensUsed).toBe(18);
-  goal = f.change(goal, "complete", { summary: "Operator verified fixture" });
-  expect(goal.state).toBe("completed");
-  expect(() => f.change(goal, "resume")).toThrow("unfinished");
+  expect(f.goals.get(f.agent.id)).toMatchObject({
+    state: "paused",
+    compactions: 1,
+  });
+  f.change(f.goals.get(f.agent.id)!, "clear");
+  f.store.finishRun(next.run.id, "interrupted", null);
+  const replacement = f.create({ requestId: "replacement" });
+  expect(f.goals.compacted(next.binding, "replacement-stale")).toBeNull();
+  expect(f.goals.get(f.agent.id)).toEqual(replacement);
 });
 
-test("unknown parent usage is a visible lower bound and blocks, while later evidence does not erase uncertainty", () => {
+test.each(["active", "budget_exhausted", "blocked", "paused", "completed"])(
+  "v18 migration preserves %s evidence and receipts without activation or resume replay",
+  (state) => {
+    const f = fixture();
+    const original = f.create();
+    const legacy = {
+      ...original,
+      state,
+      progress: "Verified historical work",
+      tokenBudget: 900,
+      tokensUsed: 901,
+      usageUnknown: true,
+    };
+    delete (legacy as Partial<Goal>).compactions;
+    f.store.db
+      .query("UPDATE agent_goals SET record=? WHERE id=?")
+      .run(JSON.stringify(legacy), original.id);
+    const input = {
+      goalId: original.id,
+      expectedRevision: 1,
+      requestId: "old-resume",
+    };
+    const payload = JSON.stringify([
+      "resume",
+      Object.fromEntries(
+        Object.entries(input).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    ]);
+    f.store.db
+      .query("INSERT INTO goal_mutations VALUES (?,?,?,?)")
+      .run(f.agent.id, input.requestId, payload, JSON.stringify(legacy));
+    f.store.db.exec("DROP TABLE goal_compactions; PRAGMA user_version=18;");
+    const migrated = new Store(f.path);
+    const goals = new Goals(migrated);
+    const goal = goals.get(f.agent.id)!;
+    expect(goal).toMatchObject({
+      id: original.id,
+      objective: original.objective,
+      progress: legacy.progress,
+      compactions: 0,
+      state: state === "completed" ? "completed" : "paused",
+    });
+    expect(goal).not.toHaveProperty("tokenBudget");
+    expect(goal).not.toHaveProperty("tokensUsed");
+    expect(goals.mutate(f.agent.id, "resume", input)).toMatchObject({
+      reused: true,
+      goal,
+    });
+    expect(migrated.runs(f.agent.id)).toHaveLength(0);
+    expect(() =>
+      goals.mutate(f.agent.id, "resume", { ...input, expectedRevision: 9 }),
+    ).toThrow("different goal mutation");
+    migrated.close();
+  },
+);
+
+test("failed resume admission retains the previous counter and old receipt replay cannot reset it", () => {
   const f = fixture();
-  const goal = f.change(f.create(), "resume");
-  const run = f.store.createRun(
-    f.agent.id,
-    "unknown",
-    "fixture",
-    "api",
-    "gpt-6-astra",
+  let goal = f.create();
+  const input = {
+    goalId: goal.id,
+    expectedRevision: goal.revision,
+    requestId: "resume",
+  };
+  goal = f.goals.mutate(f.agent.id, "resume", input).goal;
+  const { run, binding } = admit(f, goal);
+  for (let n = 0; n < 100; n++)
+    f.store.db.transaction(() => f.goals.compacted(binding, String(n)))();
+  expect(f.goals.mutate(f.agent.id, "resume", input).reused).toBe(true);
+  expect(f.goals.get(f.agent.id)!.compactions).toBe(100);
+  expect(() => f.change(f.goals.get(f.agent.id)!, "resume")).toThrow(
+    "current work",
   );
-  const binding = f.goals.admit(goal, run.id);
-  f.goals.account(binding, "unknown-usage", undefined as unknown as Usage);
+  f.store.finishRun(run.id, "cancelled", null);
+  goal = f.change(f.goals.get(f.agent.id)!, "resume");
+  expect(goal.compactions).toBe(100);
+  expect(() => f.goals.admit(goal, "missing-run")).toThrow();
+  f.goals.stop(f.agent.id, "Admission failed", "blocked");
   expect(f.goals.get(f.agent.id)).toMatchObject({
     state: "blocked",
-    usageUnknown: true,
-    tokensUsed: 0,
-  });
-  f.goals.account(binding, "known-late", usage);
-  expect(f.goals.get(f.agent.id)).toMatchObject({
-    state: "blocked",
-    usageUnknown: true,
-    tokensUsed: 18,
+    compactions: 100,
   });
 });
