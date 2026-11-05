@@ -193,7 +193,7 @@ test("Harness composes Pi guidance with Jelly policy, append instructions, proje
       "You are Prompt Fixture, a persistent agent in Jelly.",
       profile.instructions,
       "All tools and subagent delegation are pre-authorized by the operator.",
-      "Use the same provider/model and effort as this parent for delegated work unless asked otherwise.",
+      "Use the same provider/model, effort, and speed tier as this parent for delegated work unless asked otherwise.",
       "The native Pi claude-code provider is available to normal subagent profiles.",
       "Only when explicitly asked for direct Claude CLI work",
       "command -v claude",
@@ -318,12 +318,13 @@ test("Harness composes Pi guidance with Jelly policy, append instructions, proje
   }
 });
 // Multiple isolated native child runtimes need a larger overall startup budget on macOS.
-test("real pi-subagents workflow uses the parent provider and effort and supports abort", async () => {
+test("real pi-subagents inherit provider, effort and speed, preserve overrides/resume and support abort", async () => {
   const h = await Harness.create(dir, undefined, join(dir, "config"));
   await h.auth.saveKey("sk-local-test-not-real");
   let slow = false;
   let holdNext: Promise<void> | undefined;
   let supervisorNext = false;
+  let nestedNext = false;
   const requests: any[] = [];
   const server = Bun.serve({
     port: 0,
@@ -334,7 +335,13 @@ test("real pi-subagents workflow uses the parent provider and effort and support
       holdNext = undefined;
       if (held) await held;
       if (slow) await new Promise((r) => setTimeout(r, 500));
-      const item = supervisorNext
+      const item = nestedNext
+        ? {
+            type: "function_call", id: "fc_nested", call_id: "call_nested", status: "completed",
+            name: "subagent",
+            arguments: JSON.stringify({ agent: "delegate", task: "Reply Child completed", async: false, acceptance: false }),
+          }
+        : supervisorNext
         ? {
             type: "function_call",
             id: "fc_supervisor",
@@ -356,6 +363,7 @@ test("real pi-subagents workflow uses the parent provider and effort and support
             ],
           };
       supervisorNext = false;
+      nestedNext = false;
       const events = [
         { type: "response.created", response: { id: "resp_test" } },
         {
@@ -401,7 +409,7 @@ test("real pi-subagents workflow uses the parent provider and effort and support
   const s = await h.create(
     agent,
     [],
-    h.config("api", { model: "gpt-6.1-sol", effort: "high" }),
+    h.config("api", { model: "gpt-6.1-sol-ultrafast", effort: "high" }),
     instance,
     [],
     (type, data) => {
@@ -425,13 +433,66 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     expect(requests).toHaveLength(1);
     expect(requests[0].model).toBe("gpt-6.1-sol");
     expect(requests[0].reasoning.effort).toBe("high");
+    expect(requests[0].service_tier).toBe("ultrafast");
+    // Both execution routes use the same tier; explicit false/true override it.
+    for (const async of [false, true]) {
+      for (const fast of [undefined, false, true] as const) {
+        const before = requests.length;
+        const result = await tool.execute(`speed-${async}-${fast}`, {
+          agent: "delegate", task: "Reply Child completed", acceptance: false,
+          async, ...(fast !== undefined ? { fast } : {}),
+        }, new AbortController().signal);
+        expect((result as { isError?: boolean }).isError).not.toBe(true);
+        await h.settle(s);
+        const childRequests = requests.slice(before).filter(r =>
+          r.input.some((item: any) => item.role === "developer" && String(item.content).includes("child subagent")));
+        expect(childRequests).toHaveLength(1);
+        expect(childRequests[0].service_tier).toBe(fast === undefined ? "ultrafast" : fast ? "priority" : undefined);
+        if (!async) {
+          const beforeResume = requests.length;
+          const id = (result as any).details.runId;
+          expect(typeof id).toBe("string");
+          const resumed = await tool.execute(`speed-resume-${fast}`, {
+            action: "resume", id, message: "Reply Child completed",
+          }, new AbortController().signal);
+          expect((resumed as { isError?: boolean }).isError).not.toBe(true);
+          await h.settle(s);
+          const resumedChildren = requests.slice(beforeResume).filter(r =>
+            r.input.some((item: any) => item.role === "developer" && String(item.content).includes("child subagent")));
+          expect(resumedChildren).toHaveLength(1);
+          expect(resumedChildren[0].service_tier).toBe(childRequests[0].service_tier);
+        }
+      }
+    }
+    // Per-child overrides beat workflow defaults without affecting siblings.
+    const beforeOverrides = requests.length;
+    await tool.execute("speed-overrides", {
+      async: false,
+      workflowScript: 'return await runs.all([{key:"normal",agent:"delegate",task:"Reply Child completed",fast:false,acceptance:false},{key:"priority",agent:"delegate",task:"Reply Child completed",fast:true,acceptance:false}])',
+    }, new AbortController().signal);
+    expect(requests.slice(beforeOverrides).map(r => r.service_tier ?? "default").sort()).toEqual(["default", "priority"]);
+    // A child that is explicitly allowed to delegate passes its own tier onward.
+    writeFileSync(join(dir, "agents", "tier-coordinator.md"), "---\nname: tier-coordinator\ndescription: Tier inheritance fixture\ntools: subagent\n---\nDelegate the task once, then finish.\n");
+    for (const async of [false, true]) {
+      const beforeNested = requests.length;
+      nestedNext = true;
+      const result = await tool.execute(`nested-speed-${async}`, {
+        agent: "tier-coordinator", task: "Delegate once", async, acceptance: false,
+      }, new AbortController().signal);
+      expect((result as { isError?: boolean }).isError).not.toBe(true);
+      await h.settle(s);
+      const nested = requests.slice(beforeNested);
+      expect(nested.length).toBeGreaterThanOrEqual(3);
+      expect(nested.every(r => r.service_tier === "ultrafast")).toBe(true);
+      expect(nested.some(r => r.input.some((item: any) => item.role === "developer" && String(item.content).includes('name="delegate"')))).toBe(true);
+    }
     for (const name of ALL_PI_TOOLS)
       expect(requests[0].tools.map((t: any) => t.name)).toContain(name);
     // Different parent defaults must not race through a shared project directory.
     const low = await h.create(
       { ...agent, id: "other-parent", managedCwd: 0 },
       [],
-      h.config("api", { model: "gpt-6-sol", effort: "low" }),
+      h.config("api", { model: "gpt-6-sol-fast", effort: "low" }),
       instance,
     );
     try {
@@ -453,6 +514,8 @@ test("real pi-subagents workflow uses the parent provider and effort and support
           .map((r) => `${r.model}:${r.reasoning.effort}`)
           .sort(),
       ).toEqual(["gpt-6-sol:low", "gpt-6.1-sol:high"].sort());
+      expect(requests.slice(before).map(r => `${r.model}:${r.service_tier}`).sort())
+        .toEqual(["gpt-6-sol:priority", "gpt-6.1-sol:ultrafast"].sort());
     } finally {
       await h.dispose(low);
     }
@@ -556,6 +619,7 @@ test("real pi-subagents workflow uses the parent provider and effort and support
     expect(requests.length).toBeGreaterThan(beforeResume);
     expect(requests.at(-1).model).toBe("gpt-6.1-sol");
     expect(requests.at(-1).reasoning.effort).toBe("high");
+    expect(requests.at(-1).service_tier).toBe("ultrafast");
     expect(completions.at(-1)?.success).toBe(true);
     // A real package child stays running while the parent produces a reply,
     // consumes a timed model checkpoint and accepts user steering. Child HTTP

@@ -1,6 +1,100 @@
-diff --git a/node_modules/pi-subagents/.bun-tag-4ce3d12cbefbe9 b/.bun-tag-4ce3d12cbefbe9
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/src/agents/agent-serializer.js b/src/agents/agent-serializer.js
+index 146ce2d701a4e8274042e22f1dc6c228c00c5315..c9868950521ae3f9975f353bee9b65551a5b3b65 100644
+--- a/src/agents/agent-serializer.js
++++ b/src/agents/agent-serializer.js
+@@ -81,8 +81,8 @@ export function serializeAgent(config, options = {}) {
+     }
+     if (config.model || preserve("model"))
+         lines.push(`model: ${config.model ?? ""}`);
+-    if (config.fast === true || preserve("fast"))
+-        lines.push(`fast: ${config.fast === undefined ? "" : config.fast ? "true" : "false"}`);
++    if (config.fast === true || config.fast === "ultrafast" || preserve("fast"))
++        lines.push(`fast: ${config.fast === undefined ? "" : config.fast}`);
+     if ((config.thinking && (config.thinking !== "off" || preserve("thinking"))) || (!config.thinking && preserve("thinking"))) {
+         lines.push(`thinking: ${config.thinking ?? ""}`);
+     }
+diff --git a/src/agents/agents.d.ts b/src/agents/agents.d.ts
+index ef57d28dd095c1443e590f61befd1ec6a2098284..9d86cc897ab5f936d4cb0e41f48940ce328ca0c0 100644
+--- a/src/agents/agents.d.ts
++++ b/src/agents/agents.d.ts
+@@ -28,7 +28,7 @@ export interface BuiltinAgentOverrideBase {
+     defaultReads?: string[];
+     model?: string;
+     modelProvider?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string | false;
+     systemPromptMode: SystemPromptMode;
+     inheritProjectContext: boolean;
+@@ -58,7 +58,7 @@ interface BuiltinAgentOverrideConfig {
+     defaultReads?: string[] | false;
+     model?: string | false;
+     defaultProvider?: string | false;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string | false;
+     systemPromptMode?: SystemPromptMode;
+     inheritProjectContext?: boolean;
+@@ -110,7 +110,7 @@ export interface AgentConfig {
+     mcpDirectTools?: string[];
+     model?: string;
+     modelProvider?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string | false;
+     systemPromptMode: SystemPromptMode;
+     inheritProjectContext: boolean;
+diff --git a/src/agents/agents.js b/src/agents/agents.js
+index c39baa3e3e7ef56190b7445ae2c52cab918d67e6..6768c6414ecafc3804686d888ddfd0ef714af5db 100644
+--- a/src/agents/agents.js
++++ b/src/agents/agents.js
+@@ -735,10 +735,10 @@ function parseBuiltinOverrideEntry(name, value, filePath) {
+             throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'model'; expected a string or false.`);
+     }
+     if ("fast" in input) {
+-        if (typeof input.fast === "boolean")
++        if (typeof input.fast === "boolean" || input.fast === "ultrafast")
+             override.fast = input.fast;
+         else
+-            throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'fast'; expected a boolean.`);
++            throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'fast'; expected true, false, or 'ultrafast'.`);
+     }
+     if ("thinking" in input) {
+         if (typeof input.thinking === "string" || input.thinking === false)
+@@ -1376,7 +1376,7 @@ export function buildBuiltinOverrideConfig(base, draft) {
+     if (draft.modelProvider !== base.modelProvider)
+         override.defaultProvider = draft.modelProvider ?? false;
+     if (draft.fast !== base.fast)
+-        override.fast = draft.fast === true;
++        override.fast = draft.fast ?? false;
+     if (draft.thinking !== base.thinking)
+         override.thinking = draft.thinking ?? false;
+     if (draft.systemPromptMode !== base.systemPromptMode)
+@@ -1929,8 +1929,10 @@ function loadAgentsFromDefinitionFiles(files, source, discoveryPriority, package
+                     fast = true;
+                 else if (frontmatter.fast === "false")
+                     fast = false;
++                else if (frontmatter.fast === "ultrafast")
++                    fast = "ultrafast";
+                 else
+-                    throw new Error(`Agent '${localName}' has invalid fast frontmatter; expected true or false.`);
++                    throw new Error(`Agent '${localName}' has invalid fast frontmatter; expected true, false, or 'ultrafast'.`);
+             }
+             let allowNestedSubagents;
+             if (frontmatter.allowNestedSubagents !== undefined) {
+diff --git a/src/api/preflight.d.ts b/src/api/preflight.d.ts
+index c5e8ab3e6dcf260d912dfe365f389d4e2fa5e4cb..b26e11232185a0a05ed1a99da02d03adc948d8f9 100644
+--- a/src/api/preflight.d.ts
++++ b/src/api/preflight.d.ts
+@@ -21,7 +21,7 @@ export interface SubagentLaunchContractInput {
+     agentScope?: AgentScope;
+     context?: "fresh" | "fork";
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string | false;
+     thinkingCeiling?: ThinkingLevel;
+     inheritedThinkingCeiling?: ThinkingLevel;
 diff --git a/src/extension/fanout-child.js b/src/extension/fanout-child.js
 index d5bd4918ae5dc2d6a476ac93a2a8b2a5599272fd..5a82e40119d598cb237356aca5256d5204595f71 100644
 --- a/src/extension/fanout-child.js
@@ -73,11 +167,185 @@ index b7fe811629c88feb12caf445184a18a68db0d444..12417f2346f1261614e79c478aa815af
          }
          catch (error) {
              console.error("Failed to dispose in-process child sessions:", error);
+diff --git a/src/extension/schemas.d.ts b/src/extension/schemas.d.ts
+index 77b9d0309a77fb14e94fdebaed7edd42e0b943af..d5449a6af07c590fda78cb705f26d7d198028efe 100644
+--- a/src/extension/schemas.d.ts
++++ b/src/extension/schemas.d.ts
+@@ -18,7 +18,7 @@ export declare const ParallelTaskSchema: Type.TObject<{
+     progress: Type.TOptional<Type.TBoolean>;
+     skill: Type.TOptional<Type.TUnsafe<unknown>>;
+     model: Type.TOptional<Type.TString>;
+-    fast: Type.TOptional<Type.TBoolean>;
++    fast: Type.TOptional<Type.TUnion<[Type.TBoolean, Type.TLiteral<"ultrafast">]>>;
+     toolBudget: Type.TOptional<Type.TObject<{
+         soft: Type.TOptional<Type.TInteger>;
+         hard: Type.TInteger;
+@@ -54,7 +54,7 @@ export declare const DynamicParallelTemplateSchema: Type.TObject<{
+     progress: Type.TOptional<Type.TBoolean>;
+     skill: Type.TOptional<Type.TUnsafe<unknown>>;
+     model: Type.TOptional<Type.TString>;
+-    fast: Type.TOptional<Type.TBoolean>;
++    fast: Type.TOptional<Type.TUnion<[Type.TBoolean, Type.TLiteral<"ultrafast">]>>;
+     toolBudget: Type.TOptional<Type.TObject<{
+         soft: Type.TOptional<Type.TInteger>;
+         hard: Type.TInteger;
+@@ -85,7 +85,7 @@ export declare const ChainItem: Type.TObject<{
+     progress: Type.TOptional<Type.TBoolean>;
+     skill: Type.TOptional<Type.TUnsafe<unknown>>;
+     model: Type.TOptional<Type.TString>;
+-    fast: Type.TOptional<Type.TBoolean>;
++    fast: Type.TOptional<Type.TUnion<[Type.TBoolean, Type.TLiteral<"ultrafast">]>>;
+     toolBudget: Type.TOptional<Type.TObject<{
+         soft: Type.TOptional<Type.TInteger>;
+         hard: Type.TInteger;
+@@ -233,7 +233,7 @@ export declare const SubagentParams: Type.TObject<{
+     outputMode: Type.TOptional<Type.TString>;
+     skill: Type.TOptional<Type.TUnsafe<unknown>>;
+     model: Type.TOptional<Type.TString>;
+-    fast: Type.TOptional<Type.TBoolean>;
++    fast: Type.TOptional<Type.TUnion<[Type.TBoolean, Type.TLiteral<"ultrafast">]>>;
+     outputSchema: Type.TOptional<Type.TUnsafe<unknown>>;
+     agentContract: Type.TOptional<Type.TObject<{
+         version: Type.TInteger;
+diff --git a/src/extension/schemas.js b/src/extension/schemas.js
+index 2af5790913431e46d81764e91ee39a5e175b97da..ba5c85b49a72eb0bcab1058743222a03fe718087 100644
+--- a/src/extension/schemas.js
++++ b/src/extension/schemas.js
+@@ -145,7 +145,7 @@ export const ParallelTaskSchema = Type.Object({
+     progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
+     skill: Type.Optional(SkillOverride),
+     model: Type.Optional(Type.String({ description: "Override model for this task" })),
+-    fast: Type.Optional(Type.Boolean({ description: "Opt into priority service tier for supported native OpenAI-Codex child models. This can increase quota or cost." })),
++    fast: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("ultrafast")], { description: "Speed tier: true requests priority, 'ultrafast' requests Ultrafast, false opts out. Supported native OpenAI models only; may increase cost or quota." })),
+     toolBudget: Type.Optional(ToolBudgetOverride),
+     acceptance: Type.Optional(AcceptanceOverride),
+     agentContract: Type.Optional(AgentContractOverride),
+@@ -175,7 +175,7 @@ export const DynamicParallelTemplateSchema = Type.Object({
+     progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
+     skill: Type.Optional(SkillOverride),
+     model: Type.Optional(Type.String({ description: "Override model for this task" })),
+-    fast: Type.Optional(Type.Boolean({ description: "Opt into priority service tier for supported native OpenAI-Codex child models. This can increase quota or cost." })),
++    fast: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("ultrafast")], { description: "Speed tier: true requests priority, 'ultrafast' requests Ultrafast, false opts out. Supported native OpenAI models only; may increase cost or quota." })),
+     toolBudget: Type.Optional(ToolBudgetOverride),
+     acceptance: Type.Optional(AcceptanceOverride),
+     agentContract: Type.Optional(AgentContractOverride),
+@@ -203,7 +203,7 @@ export const ChainItem = Type.Object({
+     progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
+     skill: Type.Optional(SkillOverride),
+     model: Type.Optional(Type.String({ description: "Override model for this step" })),
+-    fast: Type.Optional(Type.Boolean({ description: "Opt into priority service tier for supported native OpenAI-Codex child models. This can increase quota or cost." })),
++    fast: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("ultrafast")], { description: "Speed tier: true requests priority, 'ultrafast' requests Ultrafast, false opts out. Supported native OpenAI models only; may increase cost or quota." })),
+     toolBudget: Type.Optional(ToolBudgetOverride),
+     acceptance: Type.Optional(AcceptanceOverride),
+     agentContract: Type.Optional(AgentContractOverride),
+@@ -357,7 +357,7 @@ const SubagentParamProperties = {
+     outputMode: Type.Optional(OutputModeOverride),
+     skill: Type.Optional(SkillOverride),
+     model: Type.Optional(Type.String({ description: "Child model provider/id; bare id only if unique. Suffix :off/minimal/low/medium/high/xhigh/max overrides agent thinking default." })),
+-    fast: Type.Optional(Type.Boolean({ description: "Native OpenAI-Codex priority tier; default false, may cost more/quota." })),
++    fast: Type.Optional(Type.Union([Type.Boolean(), Type.Literal("ultrafast")], { description: "Speed tier: omit to inherit the Jelly parent's tier; true requests priority, 'ultrafast' requests Ultrafast, false opts out. Supported native OpenAI models only; may increase cost or quota." })),
+     outputSchema: Type.Optional(OutputSchemaOverride),
+     agentContract: Type.Optional(AgentContractOverride),
+     acceptance: Type.Optional(AcceptanceOverride),
+diff --git a/src/runs/background/async-execution.d.ts b/src/runs/background/async-execution.d.ts
+index d668e957de687b5ee434a07fb8d36ade282eee95..d1d48034f466638f7db5591de17a62d4cb3e9ecb 100644
+--- a/src/runs/background/async-execution.d.ts
++++ b/src/runs/background/async-execution.d.ts
+@@ -84,7 +84,7 @@ interface AsyncChainParams {
+     childIntercomTarget?: (agent: string, index: number) => string | undefined;
+     nestedRoute?: NestedRouteInfo;
+     acceptance?: AcceptanceInput;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     timeoutMs?: number;
+     toolBudget?: ResolvedToolBudget;
+     usageBudget?: UsageBudgetConfig;
+@@ -140,7 +140,7 @@ interface AsyncSingleParams {
+     modelOverride?: string;
+     modelOverrideFromParent?: boolean;
+     modelOrigin?: ModelOrigin;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinkingOverride?: AgentConfig["thinking"];
+     availableModels?: AvailableModelInfo[];
+     maxSubagentDepth: number;
+@@ -231,7 +231,7 @@ export interface AsyncRunnerStepBuildParams {
+     asyncDir: string;
+     outputBaseDir?: string;
+     validateOutputBindings?: boolean;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     toolBudget?: ResolvedToolBudget;
+     configToolBudget?: ResolvedToolBudget;
+     /** Optional per-call hard toolTimeoutMs override from the subagent invocation. */
+diff --git a/src/runs/background/async-execution.js b/src/runs/background/async-execution.js
+index 06782770c9717adbd5bfdb3114d5ab53a0c0d168..2ec46b6cf9cd41ba310e9bfe9b05ef9e4de0f3e2 100644
+--- a/src/runs/background/async-execution.js
++++ b/src/runs/background/async-execution.js
+@@ -745,7 +745,7 @@ export function buildAsyncRunnerSteps(id, params) {
+                 unsupported.push("acceptance/agent contract");
+             if (s.toolBudget !== undefined || params.toolBudget !== undefined || a.toolBudget !== undefined || params.configToolBudget !== undefined)
+                 unsupported.push("tool budget");
+-            if ((s.fast ?? params.fast ?? a.fast) === true)
++            if (s.fast ?? params.fast ?? a.fast)
+                 unsupported.push("fast mode");
+             if (params.contextForAgent?.(s.agent) === "fork")
+                 unsupported.push("fork context");
+@@ -1416,7 +1416,7 @@ export function executeAsyncSingle(id, params) {
+         const unsupported = [];
+         if (params.modelOverride !== undefined)
+             unsupported.push("model override");
+-        if ((params.fast ?? agentConfig.fast) === true)
++        if (params.fast ?? agentConfig.fast)
+             unsupported.push("fast mode");
+         if (params.thinkingOverride !== undefined)
+             unsupported.push("thinking override");
+@@ -1657,7 +1657,7 @@ export function executeAsyncSingle(id, params) {
+         ...(sessionFile ? { sessionFile } : {}),
+         cwd: runnerCwd,
+         ...(selectedModel ? { model: selectedModel } : {}),
+-        ...(params.fast ?? recoveryAgentConfig.fast ? { fast: params.fast ?? recoveryAgentConfig.fast } : {}),
++        ...((params.fast ?? recoveryAgentConfig.fast) !== undefined ? { fast: params.fast ?? recoveryAgentConfig.fast } : {}),
+         ...(recoveryAgentConfig.modelProvider ? { modelProvider: recoveryAgentConfig.modelProvider } : {}),
+         ...(modelOrigin === "inherited" ? { modelOverrideFromParent: true } : {}),
+         modelOrigin,
+@@ -1730,7 +1730,7 @@ export function executeAsyncSingle(id, params) {
+                     requestedCwd: machine?.cwd ?? params.requestedCwd ?? runnerCwd,
+                     model: selectedModel,
+                     ...(contextLimit !== undefined ? { contextLimit } : {}),
+-                    ...(params.fast ?? agentConfig.fast ? { fast: params.fast ?? agentConfig.fast } : {}),
++                    ...((params.fast ?? agentConfig.fast) !== undefined ? { fast: params.fast ?? agentConfig.fast } : {}),
+                     thinking: resolveEffectiveThinking(selectedModel, effectiveThinking),
+                     ...(thinkingCeiling ? { thinkingCeiling } : {}),
+                     ...(requestedModel ? { requestedModel } : {}),
+diff --git a/src/runs/background/async-resume.js b/src/runs/background/async-resume.js
+index 3cd0225b1ee17a9675bd94c260cbb58daba288df..5557da05a0e485fe817eef0d18741c7345e31df4 100644
+--- a/src/runs/background/async-resume.js
++++ b/src/runs/background/async-resume.js
+@@ -334,8 +334,8 @@ export function readAsyncRecoveryDescriptor(asyncDir) {
+         throw new Error(`Invalid async recovery descriptor '${descriptorPath}': context is invalid.`);
+     if (parsed.modelOverrideFromParent !== undefined && typeof parsed.modelOverrideFromParent !== "boolean")
+         throw new Error(`Invalid async recovery descriptor '${descriptorPath}': modelOverrideFromParent must be a boolean.`);
+-    if (parsed.fast !== undefined && typeof parsed.fast !== "boolean")
+-        throw new Error(`Invalid async recovery descriptor '${descriptorPath}': fast must be a boolean.`);
++    if (parsed.fast !== undefined && typeof parsed.fast !== "boolean" && parsed.fast !== "ultrafast")
++        throw new Error(`Invalid async recovery descriptor '${descriptorPath}': fast must be true, false, or 'ultrafast'.`);
+     if (parsed.modelOrigin !== undefined && parsed.modelOrigin !== "explicit" && parsed.modelOrigin !== "inherited" && parsed.modelOrigin !== "configured")
+         throw new Error(`Invalid async recovery descriptor '${descriptorPath}': modelOrigin must be 'explicit', 'inherited', or 'configured'.`);
+     if (parsed.modelOrigin === undefined && parsed.model !== undefined)
 diff --git a/src/runs/foreground/execution.js b/src/runs/foreground/execution.js
-index 9555cf4ea9266223df45ccf1fb485ad516a4f16c..9b283ecb8725bb3e5e9e2881cce3397bf329ac45 100644
+index 9555cf4ea9266223df45ccf1fb485ad516a4f16c..fd4f08bb5027c184801e4397e8dc9da40a497855 100644
 --- a/src/runs/foreground/execution.js
 +++ b/src/runs/foreground/execution.js
-@@ -489,7 +489,9 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
+@@ -353,6 +353,7 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
+         messages: [],
+         usage: emptyUsage(),
+         model: modelArg,
++        fast: fast ?? false,
+         ...(resolvedThinking ? { thinking: resolvedThinking } : {}),
+         artifactPaths: shared.artifactPaths,
+         transcriptPath: shared.transcriptWriter ? shared.artifactPaths?.transcriptPath : undefined,
+@@ -489,7 +490,9 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
              });
          };
          const detachForeground = (reason) => {
@@ -88,7 +356,7 @@ index 9555cf4ea9266223df45ccf1fb485ad516a4f16c..9b283ecb8725bb3e5e9e2881cce3397b
                  return false;
              const receiptProgress = snapshotProgress(progress);
              receiptProgress.status = "detached";
-@@ -1319,6 +1321,10 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
+@@ -1319,6 +1322,10 @@ async function runSingleAttempt(runtimeCwd, agent, task, model, options, shared)
                      return;
                  }
                  session = created;
@@ -99,8 +367,23 @@ index 9555cf4ea9266223df45ccf1fb485ad516a4f16c..9b283ecb8725bb3e5e9e2881cce3397b
                  const steer = created.steer.bind(created);
                  const followUp = created.followUp.bind(created);
                  created.steer = async (text) => {
+diff --git a/src/runs/foreground/foreground-history.js b/src/runs/foreground/foreground-history.js
+index 8ac3e2aba126beb668a4f4bc94cc87eb53e4cc7c..9c7d56f1b0d09414187637ec47b0423e4f78ad73 100644
+--- a/src/runs/foreground/foreground-history.js
++++ b/src/runs/foreground/foreground-history.js
+@@ -70,7 +70,9 @@ function isRestorableResumeContract(value) {
+         return false;
+     }
+     const contract = value;
+-    if (Object.keys(contract).some((key) => !["modelResponseAliases", "outputSchema", "agentContract", "acceptance", "output", "outputMode"].includes(key)))
++    if (Object.keys(contract).some((key) => !["fast", "modelResponseAliases", "outputSchema", "agentContract", "acceptance", "output", "outputMode"].includes(key)))
++        return false;
++    if (contract.fast !== undefined && typeof contract.fast !== "boolean" && contract.fast !== "ultrafast")
+         return false;
+     if (contract.outputSchema !== undefined && contract.outputSchema !== false && (!contract.outputSchema || typeof contract.outputSchema !== "object" || Array.isArray(contract.outputSchema)))
+         return false;
 diff --git a/src/runs/foreground/subagent-executor.d.ts b/src/runs/foreground/subagent-executor.d.ts
-index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..45547d06efa87dea1490cb0e8e49c07244d9e3b8 100644
+index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..f5cb7e59fda032a20eb01427be7d9ae5cb1a8143 100644
 --- a/src/runs/foreground/subagent-executor.d.ts
 +++ b/src/runs/foreground/subagent-executor.d.ts
 @@ -12,6 +12,7 @@ import { resolveSubagentResultStatus } from "../../intercom/result-intercom.ts";
@@ -111,6 +394,24 @@ index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..45547d06efa87dea1490cb0e8e49c072
  import { type MissionLaunchBinding } from "../../missions/lifecycle.ts";
  import { type WorkflowSteerOptions, type WorkflowSteerResult } from "../../workflows/scripted-workflow.ts";
  import { type AcceptanceInput, type AgentContract, type ControlConfig, type Details, type ExtensionConfig, type IntercomBridgeConfig, type JsonSchemaObject, type MaxOutputConfig, type ResolvedControlConfig, type RunFanoutBudgetDescriptor, type SteeringRecoveryDescriptor, type SingleResult, type ToolBudgetConfig, type UsageBudgetConfig, type SubagentState, type ScheduleOrigin } from "../../shared/types.ts";
+@@ -27,7 +28,7 @@ interface TaskParam {
+     reads?: string[] | boolean;
+     progress?: boolean;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     skill?: string | string[] | boolean;
+     outputSchema?: JsonSchemaObject | false;
+     acceptance?: AcceptanceInput;
+@@ -124,7 +125,7 @@ export interface SubagentParamsLike {
+     model?: string;
+     /** Internal recovery provenance for a resolved model override. */
+     modelOrigin?: ModelOrigin;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string | false;
+     /** Public named workflow resource. Resolved before entering the workflow sandbox. */
+     workflow?: string;
 @@ -162,6 +163,8 @@ export interface SubagentParamsLike {
      summary?: string;
  }
@@ -121,10 +422,36 @@ index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..45547d06efa87dea1490cb0e8e49c072
      state: SubagentState;
      config: ExtensionConfig;
 diff --git a/src/runs/foreground/subagent-executor.js b/src/runs/foreground/subagent-executor.js
-index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..497718e8521f183b2b92a77feb713a56f9bd3752 100644
+index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c492bb984 100644
 --- a/src/runs/foreground/subagent-executor.js
 +++ b/src/runs/foreground/subagent-executor.js
-@@ -3476,6 +3476,7 @@ async function runSinglePath(data, deps) {
+@@ -428,6 +428,7 @@ function rememberForegroundRun(state, input) {
+         updatedAt,
+         children: input.results.map((result, index) => {
+             const resumeContract = omitUndefinedProperties({
++                fast: result.fast ?? false,
+                 modelResponseAliases: input.modelResponseAliases,
+                 outputSchema: input.params.outputSchema,
+                 agentContract: input.params.agentContract,
+@@ -1793,7 +1794,7 @@ async function resumeAsyncRun(input) {
+         },
+         context: recoveryContext,
+         modelOverride: recoveryDescriptor?.model ?? target.model,
+-        fast: recoveryDescriptor?.fast,
++        fast: recoveryDescriptor?.fast ?? target.resumeContract?.fast,
+         modelOverrideFromParent: recoveryDescriptor?.modelOverrideFromParent,
+         modelOrigin: recoveryDescriptor?.modelOrigin ?? (recoveryDescriptor?.modelOverrideFromParent ? "inherited" : undefined),
+         thinkingOverride: recoveryDescriptor?.thinking ?? target.thinking,
+@@ -2915,7 +2916,7 @@ async function runAsyncPath(data, deps) {
+         const externalRunnerWithoutExplicitModel = (a.runner?.type === "external-cli" || a.runner?.type === "external-job")
+             && params.model === undefined
+             && (a.model === undefined || (a.modelSource?.type === "subagents.defaultModel" && a.model === a.modelSource.model));
+-        if ((a.runner?.type === "external-cli" || a.runner?.type === "external-job") && (params.fast ?? a.fast) === true) {
++        if ((a.runner?.type === "external-cli" || a.runner?.type === "external-job") && (params.fast ?? a.fast)) {
+             return buildRequestedModeError(params, `Agent '${a.name}' uses runner.type='${a.runner.type}' and does not support fast mode.`);
+         }
+         const modelScopes = resolveModelScopesForAgent(data.modelScope, a.name, parentModel);
+@@ -3476,6 +3477,7 @@ async function runSinglePath(data, deps) {
          const launched = await runSync(ctx.cwd, agents, params.agent, task, compactOptional({
              machine: foregroundMachine,
              parentProviderRegistry: ctx.modelRegistry,
@@ -132,6 +459,93 @@ index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..497718e8521f183b2b92a77feb713a56
              remoteReads: foregroundMachine ? readsOverride : undefined,
              permissions: deps.config.permissions,
              runtimeSnapshotHost: deps.pi,
+@@ -4482,6 +4484,12 @@ export function createSubagentExecutor(deps) {
+             return buildWorkflowValidationResult(validation, "management", workflowPreflight);
+         }
+         const normalizedAction = typeof requestParams.action === "string" ? requestParams.action.trim() : requestParams.action;
++        // Immediate-parent defaults only: management/resume retains the original
++        // contract. Never publish a parent's speed through shared settings/env.
++        if (normalizedAction === undefined && requestParams.fast === undefined && deps.childRuntime?.fast !== undefined)
++            requestParams = { ...requestParams, fast: deps.childRuntime.fast };
++        if (requestParams.fast !== undefined && requestParams.fast !== true && requestParams.fast !== false && requestParams.fast !== "ultrafast")
++            return buildRequestedModeError(requestParams, "fast must be true, false, or 'ultrafast'.");
+         if (normalizedAction === "resume" && requestParams.extensionBindings !== undefined)
+             return buildRequestedModeError(requestParams, "extensionBindings is not supported with action='resume'; resume uses the original retained child binding.");
+         let workflowResource;
+diff --git a/src/runs/shared/child-hooks.js b/src/runs/shared/child-hooks.js
+index 2d5c77eba499bd56855bb88925d299a456457d6b..f00b43860c64974c53ca6b3bf3de90288d181525 100644
+--- a/src/runs/shared/child-hooks.js
++++ b/src/runs/shared/child-hooks.js
+@@ -165,7 +165,7 @@ function childHooks(config, capture, holdFinalDrain) {
+         promptProofs.set(hooks[0].factory, proof);
+     }
+     if (config.fast)
+-        hooks.push({ name: "pi-subagents:fast-mode", factory: (pi) => registerSubagentFastModeExtension(pi) });
++        hooks.push({ name: "pi-subagents:fast-mode", factory: (pi) => registerSubagentFastModeExtension(pi, config.fast === "ultrafast" ? "ultrafast" : "priority") });
+     if (config.fanoutChild)
+         hooks.push({ name: "pi-subagents:fanout-child", factory: (pi) => registerFanoutChildSubagentExtension(pi, runtime) });
+     return hooks;
+diff --git a/src/runs/shared/child-launch-plan.d.ts b/src/runs/shared/child-launch-plan.d.ts
+index 2d4dbe12ecbdbe7acfd9dbe8af420f958708ade2..2b1dd34584596ad30e0ae8712ff6348c78309d57 100644
+--- a/src/runs/shared/child-launch-plan.d.ts
++++ b/src/runs/shared/child-launch-plan.d.ts
+@@ -7,7 +7,7 @@ export interface ResolvedStepBehavior {
+     progress: boolean;
+     skills: string[] | false;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     outputSchema?: JsonSchemaObject;
+ }
+ export type OutputOverrideInput = string | boolean;
+@@ -18,7 +18,7 @@ export interface StepOverrides {
+     progress?: boolean;
+     skills?: string[] | false;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     outputSchema?: JsonSchemaObject | false;
+ }
+ export interface ChildLaunchPlanInput {
+diff --git a/src/runs/shared/child-launch.d.ts b/src/runs/shared/child-launch.d.ts
+index eb1cf7cd1b2af3899def261b8afd0a961965a09d..8b82dc19e421a48cf1b5077c0c392fdf3f808445 100644
+--- a/src/runs/shared/child-launch.d.ts
++++ b/src/runs/shared/child-launch.d.ts
+@@ -62,7 +62,7 @@ export interface BuildInProcessChildLaunchInput {
+     };
+     runFanoutBudget?: RunFanoutBudgetDescriptor;
+     structuredOutput?: StructuredOutputRuntime;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     toolBudget?: ResolvedToolBudget;
+     permissionRules?: PermissionRules;
+     permissionAuditPath?: string;
+diff --git a/src/runs/shared/child-launch.js b/src/runs/shared/child-launch.js
+index 2ef110a9d40821d541c9d0652b6e445a24f8e40c..13b17074ed969c52e1a66dbb5ebfbc0e283d08b9 100644
+--- a/src/runs/shared/child-launch.js
++++ b/src/runs/shared/child-launch.js
+@@ -180,7 +180,7 @@ export function buildInProcessChildLaunch(input) {
+             : {}),
+         ...(toolPlan.requiredChildTools.length > 0 ? { requiredTools: toolPlan.requiredChildTools } : {}),
+         ...(toolPlan.effectiveMcpTools.length > 0 ? { mcpDirectTools: toolPlan.effectiveMcpTools } : {}),
+-        fast: input.fast === true,
++        fast: input.fast ?? false,
+     };
+     const capturedHooks = createCapturedChildHooks(config);
+     const extensionPaths = toolPlan.extensionArgs.filter((extensionPath) => !isSubagentRuntimeExtensionPath(extensionPath));
+diff --git a/src/runs/shared/child-runtime-config.d.ts b/src/runs/shared/child-runtime-config.d.ts
+index 1b66cd2ef4aadd47e9f72293c0707ff9b12535dc..69b7abefa11d4d4d71a317d60148a5761912998d 100644
+--- a/src/runs/shared/child-runtime-config.d.ts
++++ b/src/runs/shared/child-runtime-config.d.ts
+@@ -98,7 +98,7 @@ export interface ChildRuntimeConfig {
+     toolDiagnostic?: (diagnostic: ChildToolDiagnostic | undefined) => void;
+     /** Receives the runtime-acknowledged extension ids when the child run ends. */
+     runtimeAcknowledgements?: (ids: string[]) => void;
+-    fast: boolean;
++    fast: boolean | "ultrafast";
+ }
+ export declare function childSupervisorMetadata(config: ChildRuntimeConfig): ChildSupervisorMetadata | undefined;
+ /** Compute the child tool-availability diagnostic; undefined when every required tool is present. */
 diff --git a/src/runs/shared/child-session.d.ts b/src/runs/shared/child-session.d.ts
 index bff066d648e4e84d29a4f309f18040089f0ea76e..e15569903309fc815e7159c031f3024a1da2a618 100644
 --- a/src/runs/shared/child-session.d.ts
@@ -204,3 +618,161 @@ index db9df56da4dbc69f88e876ad7b74346c737288e6..e0fd20d87e29b2e7a718a8da3d6ca4b8
  /**
   * Replace the process-wide factory. Tests install a scripted factory; passing
   * undefined restores the default on next use.
+diff --git a/src/runs/shared/child-tool-plan.d.ts b/src/runs/shared/child-tool-plan.d.ts
+index 3f26c386b7d081d570c74d06a6ef0fd536bb683b..cac93713c1a27086d645bcbdc948e95cb4a1e5d6 100644
+--- a/src/runs/shared/child-tool-plan.d.ts
++++ b/src/runs/shared/child-tool-plan.d.ts
+@@ -23,7 +23,7 @@ export interface ResolvePiLaunchToolPlanInput {
+         schemaPath: string;
+         outputPath: string;
+     };
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     model?: string;
+     capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+     inheritedCapabilityCeiling?: ResolvedSubagentCapabilityCeiling;
+diff --git a/src/runs/shared/child-tool-plan.js b/src/runs/shared/child-tool-plan.js
+index 5eb9e597daf91093b000447044fcdd5438323a02..235c976521c7e5214257f78c5bf3d9231f2f8dd3 100644
+--- a/src/runs/shared/child-tool-plan.js
++++ b/src/runs/shared/child-tool-plan.js
+@@ -66,6 +66,8 @@ function stripThinkingSuffix(model) {
+         : model;
+ }
+ function resolveFastModeExtension(input) {
++    if (input.fast !== undefined && input.fast !== false && input.fast !== true && input.fast !== "ultrafast")
++        throw new Error("fast must be true, false, or 'ultrafast'.");
+     if (!input.fast)
+         return [];
+     const candidates = (input.model ? [input.model] : [])
+@@ -73,9 +75,12 @@ function resolveFastModeExtension(input) {
+     if (candidates.length === 0) {
+         throw new Error(`fast mode requires an explicit supported native OpenAI-Codex model${input.agentName ? ` for agent '${input.agentName}'` : ""}.`);
+     }
+-    const unsupported = candidates.filter((model) => !FAST_MODE_ALLOWED_MODELS.has(model));
++    const supported = (model) => input.fast === "ultrafast"
++        ? /^(openai|openai-codex)\/(gpt-6-astra|gpt-6\.1-sol)$/.test(model)
++        : FAST_MODE_ALLOWED_MODELS.has(model) || /^(openai|openai-codex)\/gpt-6(?:\.1)?-(astra|sol)$/.test(model);
++    const unsupported = candidates.filter((model) => !supported(model));
+     if (unsupported.length > 0) {
+-        throw new Error(`fast mode supports only ${[...FAST_MODE_ALLOWED_MODELS].join(", ")}; unsupported model${unsupported.length === 1 ? "" : "s"}: ${unsupported.join(", ")}.`);
++        throw new Error(`Unsupported model for ${input.fast === "ultrafast" ? "Ultrafast (requires native OpenAI Astra or Sol 6.1)" : "priority fast mode"}: ${unsupported.join(", ")}. Set fast:false to opt out.`);
+     }
+     return [FAST_MODE_EXTENSION_PATH];
+ }
+diff --git a/src/runs/shared/fast-mode-extension.d.ts b/src/runs/shared/fast-mode-extension.d.ts
+index 79665b75f99b44ade1d15922637e8a4c2de7ed7e..5d2f917caa671eb4a91dd5418d0b24e9c8ffbd73 100644
+--- a/src/runs/shared/fast-mode-extension.d.ts
++++ b/src/runs/shared/fast-mode-extension.d.ts
+@@ -1,4 +1,4 @@
+ import type { BeforeProviderRequestEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+-export declare function rewriteFastModeProviderRequest(event: BeforeProviderRequestEvent): unknown;
+-export default function registerSubagentFastModeExtension(pi: ExtensionAPI): void;
++export declare function rewriteFastModeProviderRequest(event: BeforeProviderRequestEvent, tier?: "priority" | "ultrafast"): unknown;
++export default function registerSubagentFastModeExtension(pi: ExtensionAPI, tier?: "priority" | "ultrafast"): void;
+ //# sourceMappingURL=fast-mode-extension.d.ts.map
+\ No newline at end of file
+diff --git a/src/runs/shared/fast-mode-extension.js b/src/runs/shared/fast-mode-extension.js
+index 2f989d8a78c35d56704a7fc42d851ea1da656967..db3ecd945ecea62523e2871b3f805cde76b5b770 100644
+--- a/src/runs/shared/fast-mode-extension.js
++++ b/src/runs/shared/fast-mode-extension.js
+@@ -1,9 +1,9 @@
+-export function rewriteFastModeProviderRequest(event) {
++export function rewriteFastModeProviderRequest(event, tier = "priority") {
+     if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload))
+         return event.payload;
+-    return { ...event.payload, service_tier: "priority" };
++    return { ...event.payload, service_tier: tier };
+ }
+-export default function registerSubagentFastModeExtension(pi) {
+-    pi.on("before_provider_request", rewriteFastModeProviderRequest);
++export default function registerSubagentFastModeExtension(pi, tier = "priority") {
++    pi.on("before_provider_request", (event) => rewriteFastModeProviderRequest(event, tier));
+ }
+ //# sourceMappingURL=fast-mode-extension.js.map
+\ No newline at end of file
+diff --git a/src/runs/shared/parallel-utils.d.ts b/src/runs/shared/parallel-utils.d.ts
+index 2917fb63738546299bf08faf47874ce9f3e5a74d..c69931b6d3e381b91c865a6ec9960ec7f0ffd493 100644
+--- a/src/runs/shared/parallel-utils.d.ts
++++ b/src/runs/shared/parallel-utils.d.ts
+@@ -37,7 +37,7 @@ export interface RunnerSubagentStep {
+     requestedCwd?: string;
+     model?: string;
+     contextLimit?: number;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string;
+     thinkingCeiling?: import("../../shared/model-info.ts").ThinkingLevel;
+     requestedModel?: string;
+diff --git a/src/shared/launch-contract.d.ts b/src/shared/launch-contract.d.ts
+index e6e9d9eea8cdbc5ff389e0d5c58dde7f836418a8..6633e4e0bd2c952f7548ca4fd171c7a0c9321274 100644
+--- a/src/shared/launch-contract.d.ts
++++ b/src/shared/launch-contract.d.ts
+@@ -13,7 +13,7 @@ export interface LaunchBindingInput {
+     /** Caller task; runtime acceptance/output task annotations are explicitly outside the preflight-known subset. */
+     task?: string;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string;
+     systemPrompt?: string | null;
+     systemPromptMode?: AgentConfig["systemPromptMode"];
+diff --git a/src/shared/settings.d.ts b/src/shared/settings.d.ts
+index a4d9318c0df6e28d7442175e55298e49d04403f9..fc2e45ebbce1efaba2393b78fa66565df1e2c950 100644
+--- a/src/shared/settings.d.ts
++++ b/src/shared/settings.d.ts
+@@ -22,7 +22,7 @@ export interface SequentialStep {
+     progress?: boolean;
+     skill?: string | string[] | false;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     toolBudget?: ToolBudgetConfig;
+     acceptance?: AcceptanceInput;
+     agentContract?: AgentContract;
+@@ -47,7 +47,7 @@ export interface ParallelTaskItem {
+     progress?: boolean;
+     skill?: string | string[] | false;
+     model?: string;
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     toolBudget?: ToolBudgetConfig;
+     acceptance?: AcceptanceInput;
+     agentContract?: AgentContract;
+diff --git a/src/shared/types.d.ts b/src/shared/types.d.ts
+index 7363dbf6e04f8e91d1ee0dfd20126cc3ab193590..d44b5536b3fee5899d24e03bbdadbd83c11a01b5 100644
+--- a/src/shared/types.d.ts
++++ b/src/shared/types.d.ts
+@@ -751,7 +751,7 @@ export interface SteeringRecoveryDescriptor {
+     modelProvider?: string;
+     modelOverrideFromParent?: boolean;
+     modelOrigin?: "explicit" | "inherited" | "configured";
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     thinking?: string;
+     thinkingCeiling?: ThinkingLevel;
+     tools?: string[];
+@@ -1118,6 +1118,7 @@ export interface UsageBudgetState {
+     reason?: "tokens" | "costUsd";
+ }
+ export interface SingleResult {
++    fast?: boolean | "ultrafast";
+     /**
+      * Stable child identity within the foreground run. Pair with Details.runId for
+      * cross-run correlation. This is assigned in launch order, remains stable across
+@@ -2060,6 +2061,7 @@ export interface ForegroundResumeChild {
+     agentContract?: AgentContract;
+     /** Private bounded launch fields needed to preserve the child contract on resume. */
+     resumeContract?: {
++        fast?: boolean | "ultrafast";
+         modelResponseAliases?: Record<string, string[]>;
+         outputSchema?: JsonSchemaObject | false;
+         agentContract?: AgentContract;
+@@ -2413,7 +2415,7 @@ export interface RunSyncOptions {
+     /** Override the agent's default model (format: "provider/id" or just "id") */
+     modelOverride?: string;
+     /** Opt into priority service tier for supported native OpenAI-Codex launches. */
+-    fast?: boolean;
++    fast?: boolean | "ultrafast";
+     /** The override came from the running parent session, not configuration. */
+     modelOverrideFromParent?: boolean;
+     /** How the launch model was selected: explicit per-call, configured agent primary, or inherited parent. */
