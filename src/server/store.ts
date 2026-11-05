@@ -531,18 +531,38 @@ export class Store {
     scope: string = "all",
     projectId: string | null = null,
   ) {
+    let cursor: [string, string] | null = null;
+    if (after) {
+      try {
+        const value: unknown = JSON.parse(after);
+        if (
+          !Array.isArray(value) ||
+          value.length !== 2 ||
+          !value.every((part) => typeof part === "string" && part.length > 0)
+        )
+          throw new Error("Invalid cursor");
+        cursor = value as [string, string];
+      } catch {
+        throw new HttpError(400, "Invalid archive cursor.");
+      }
+    }
     const rows = this.db
       .query(
-        `SELECT * FROM agents WHERE archivedAt IS NOT NULL AND id>? ${scope === "ungrouped" ? "AND projectId IS NULL" : scope === "project" ? "AND projectId=?" : ""} ORDER BY id LIMIT ?`,
+        `SELECT * FROM agents WHERE archivedAt IS NOT NULL
+        ${cursor ? "AND (archivedAt, id) < (?, ?)" : ""}
+        ${scope === "ungrouped" ? "AND projectId IS NULL" : scope === "project" ? "AND projectId=?" : ""}
+        ORDER BY archivedAt DESC, id DESC LIMIT ?`,
       )
       .all(
-        ...(scope === "project"
-          ? [after, projectId, limit + 1]
-          : [after, limit + 1]),
+        ...(cursor ?? []),
+        ...(scope === "project" ? [projectId] : []),
+        limit + 1,
       ) as AgentRecord[];
+    const last = rows[limit - 1];
     return {
       agents: rows.slice(0, limit),
-      after: rows.length > limit ? rows[limit - 1]!.id : null,
+      // Keep the sort key even if this agent is restored before the next page.
+      after: rows.length > limit ? JSON.stringify([last!.archivedAt, last!.id]) : null,
     };
   }
   projects() {

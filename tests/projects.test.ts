@@ -62,6 +62,48 @@ const profile = {
   color: "#a4c8e8",
   avatarId: "sea-turtle",
 };
+test("archived agents are newest first with stable scoped pagination", async () => {
+  const { dir, app, request } = await fixture();
+  const project = app.store.saveProject("archive-project", "Archive", "archive", dir);
+  const archived = Array.from({ length: 55 }, (_, i) => {
+    const agent = app.service.createAgent({
+      ...profile,
+      projectId: i % 2 ? project.id : null,
+    });
+    // Archive order differs from creation order, with a tie spanning pages.
+    const archivedAt = new Date(Date.UTC(2025, 0, 1, 0, 0, Math.floor((54 - i) / 3))).toISOString();
+    app.store.db.query("UPDATE agents SET archivedAt=? WHERE id=?").run(archivedAt, agent.id);
+    return { ...agent, archivedAt };
+  }).sort((a, b) =>
+    a.archivedAt > b.archivedAt ? -1 : a.archivedAt < b.archivedAt ? 1 :
+    a.id > b.id ? -1 : a.id < b.id ? 1 : 0,
+  );
+  app.service.createAgent(profile);
+  const first = await (await request("/api/agents/archived")).json() as any;
+  expect(first.agents.map((a: any) => a.id)).toEqual(archived.slice(0, 50).map(a => a.id));
+  expect(typeof first.after).toBe("string");
+  app.store.archiveAgent(first.agents[49].id, false);
+  const second = await (await request(`/api/agents/archived?after=${encodeURIComponent(first.after)}`)).json() as any;
+  expect(second.agents.map((a: any) => a.id)).toEqual(archived.slice(50).map(a => a.id));
+  expect(second.after).toBeNull();
+
+  for (const scope of ["ungrouped", "project"]) {
+    const expected = archived.filter(a =>
+      a.id !== first.agents[49].id && (scope === "project" ? a.projectId === project.id : !a.projectId),
+    );
+    const ids: string[] = [];
+    let after = "";
+    do {
+      const page = app.store.archivedAgents(after, 2, scope, scope === "project" ? project.id : null);
+      ids.push(...page.agents.map(a => a.id));
+      after = page.after ?? "";
+    } while (after);
+    expect(ids).toEqual(expected.map(a => a.id));
+  }
+  for (const after of ["invalid", "null", "[]", '["time",1]']) {
+    expect((await request(`/api/agents/archived?after=${encodeURIComponent(after)}`)).status).toBe(400);
+  }
+});
 test("project lifecycle snapshots immutable cwd, running moves, archived deletion and restart persistence", async () => {
   const { dir, app, request } = await fixture();
   const one = join(dir, "one"),
