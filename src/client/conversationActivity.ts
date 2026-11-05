@@ -1,4 +1,4 @@
-import type { Activity, RunRecord } from "../shared/types";
+import type { Activity, Intervention, RunRecord } from "../shared/types";
 import { toolImages } from "../shared/tool-images";
 
 export function isSubagentProgress(event: Activity) {
@@ -19,6 +19,8 @@ function isWorkDetail(event: Activity) {
       "run_started",
       "run_completed",
       "run_cancelled",
+      "intervention_requested",
+      "intervention_updated",
     ].includes(event.type) ||
     event.type.startsWith("compaction_") ||
     isSubagentProgress(event)
@@ -45,6 +47,7 @@ export function workState(events: Activity[], run?: RunRecord) {
 
 export type ConversationEntry =
   | { kind: "event"; key: string; event: Activity }
+  | { kind: "intervention"; key: string; item: Intervention }
   | { kind: "screenshots"; key: string; events: Activity[] }
   | { kind: "work"; key: string; run?: RunRecord; events: Activity[] };
 
@@ -55,6 +58,7 @@ export function conversationActivity(
   events: Activity[],
   runs: RunRecord[],
   includeActive = true,
+  interventions: Intervention[] = [],
 ): ConversationEntry[] {
   const groups = new Map<
     string,
@@ -83,10 +87,42 @@ export function conversationActivity(
     inserted.add(group.key);
     entries.push(group);
   };
-  for (const event of events) {
+  // A request keeps its original timeline slot as its status changes. History
+  // pages may include the record without its request event: place that fallback
+  // by creation time, never in a permanent list below newer conversation.
+  const requestPositions = new Map<string, number>();
+  events.forEach((event, index) => {
+    const request = event.data.request as { id?: unknown } | undefined;
+    if (
+      event.type === "intervention_requested" &&
+      typeof request?.id === "string"
+    )
+      requestPositions.set(request.id, index);
+  });
+  const cards = new Map<number, Intervention[]>();
+  const requests = [...new Map(interventions.map((item) => [item.id, item])).values()]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  for (const item of requests) {
+    let position = requestPositions.get(item.id);
+    if (position === undefined) {
+      const next = events.findIndex(
+        (event) => Date.parse(event.createdAt) > Date.parse(item.createdAt),
+      );
+      position = next < 0 ? events.length : next;
+    }
+    const atPosition = cards.get(position) ?? [];
+    atPosition.push(item);
+    cards.set(position, atPosition);
+  }
+  const insertCards = (position: number) => {
+    for (const item of cards.get(position) ?? [])
+      entries.push({ kind: "intervention", key: `intervention:${item.id}`, item });
+  };
+  for (const [index, event] of events.entries()) {
     const group = event.runId ? groups.get(event.runId) : undefined;
     const user = event.type === "message" && event.data.role === "user";
     if (group && !user) insert(group);
+    insertCards(index);
     if (!isSubagentProgress(event) && (!group || !isWorkDetail(event) || toolImages(event).length > 0)) {
       const screenshot =
         event.data.name === "browser_screenshot" && toolImages(event).length > 0;
@@ -106,6 +142,7 @@ export function conversationActivity(
     // Active disclosures are deferred to the tail; steering stays in order.
     if (group && user) insert(group);
   }
+  insertCards(events.length);
   for (const group of groups.values())
     if (active.has(group.key) && (includeActive || group.events.length > 0))
       entries.push(group);

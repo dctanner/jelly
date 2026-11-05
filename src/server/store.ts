@@ -1,4 +1,6 @@
 import { HttpError } from "./errors";
+import { migrateHumanTodos } from "./human-todo-schema";
+import type { HumanTodoSource } from "../shared/human-todos";
 import { migrateSchedules } from "./schedule-schema";
 import { migrateGoals, migrateGoalCompactions } from "./goal-schema";
 import type { ScheduleSource } from "../shared/schedules";
@@ -51,7 +53,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 19)
+    if (version > 20)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -203,6 +205,7 @@ export class Store {
     if (version < 17) this.db.transaction(() => migrateSchedules(this.db))();
     if (version < 18) this.db.transaction(() => migrateGoals(this.db))();
     if (version < 19) this.db.transaction(() => migrateGoalCompactions(this.db))();
+    if (version < 20) this.db.transaction(() => migrateHumanTodos(this.db))();
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, record TEXT NOT NULL);
@@ -217,7 +220,7 @@ export class Store {
       ON timeline(agentId, id) WHERE ${assistantMessageFilter}`);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_timeline_notifications ON timeline(agentId, id)
-        WHERE type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired');
+        WHERE type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired', 'human_todo_attention');
       CREATE INDEX IF NOT EXISTS idx_timeline_thinking ON timeline(runId, id) WHERE type='thinking';
       CREATE INDEX IF NOT EXISTS idx_timeline_tool_starts
         ON timeline(runId, id) WHERE type='tool_started';
@@ -372,16 +375,20 @@ export class Store {
     // Use the durable timeline, not the bounded SSE replay log. A reconnect
     // recovers work finished while disconnected, including unselected agents.
     return this.db.query(`
-      SELECT t.id, t.agentId, t.type FROM agents a JOIN timeline t ON t.id = (
+      SELECT t.id, t.agentId, t.type, json_extract(t.data,'$.todoId') AS todoId FROM agents a JOIN timeline t ON t.id = (
         SELECT id FROM timeline WHERE agentId=a.id
-          AND type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired')
+          AND type IN ('run_completed', 'run_failed', 'run_interrupted', 'intervention_requested', 'schedule_blocked', 'schedule_expired', 'human_todo_attention')
         ORDER BY id DESC LIMIT 1
       )
       WHERE a.archivedAt IS NULL AND (
-        t.type IN ('run_completed','schedule_blocked','schedule_expired') OR a.status IN ('waiting', 'error', 'interrupted')
+        t.type IN ('run_completed','schedule_blocked','schedule_expired','human_todo_attention') OR a.status IN ('waiting', 'error', 'interrupted')
       )
       ORDER BY t.id
-    `).all() as AgentNotification[];
+    `).all().map(row => {
+      const marker = row as AgentNotification;
+      if (!marker.todoId) delete marker.todoId;
+      return marker;
+    });
   }
   agentPreviews(): Record<string, { text: string; createdAt: string }> {
     const rows = this.db
@@ -686,7 +693,7 @@ export class Store {
       this.db.query("UPDATE schedule_occurrences SET state=?,reason=?,reasonCode=?,finishedAt=? WHERE runId=? AND state='running'").run(status, error, ["failed", "cancelled", "interrupted"].includes(status) ? status : null, finishedAt, id);
     })();
   }
-  saveMessage(agentId: string, runId: string, message: Message, source?: ScheduleSource) {
+  saveMessage(agentId: string, runId: string, message: Message, source?: ScheduleSource | HumanTodoSource) {
     this.db
       .query("INSERT INTO messages (agentId,runId,payload,source) VALUES (?,?,?,?)")
       .run(agentId, runId, JSON.stringify(message), source ? JSON.stringify(source) : null);

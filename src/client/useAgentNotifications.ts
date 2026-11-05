@@ -57,6 +57,7 @@ export function useAgentNotifications(
             latest.snapshot.agents.some(current => current.id === agent.id && !current.archivedAt) &&
             notificationsEnabled(instance) && notificationSupport() === "supported" &&
             window.Notification.permission === "granted" &&
+            !(event.type === "human_todo_attention" && document.visibilityState !== "hidden" && document.hasFocus() && [...document.querySelectorAll<HTMLElement>("[data-open-todo-id]")].some(element => element.dataset.openTodoId === event.todoId)) &&
             !(document.visibilityState !== "hidden" && document.hasFocus() && latest.openAgent === agent.id);
         };
         if (!allowed()) return;

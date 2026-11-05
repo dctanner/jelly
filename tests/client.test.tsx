@@ -1641,6 +1641,89 @@ test("settled sudo requests render compact tool rows, not password cards", async
   }
 });
 
+test.each(["sudo", "browser_login", "desktop_handoff"] as const)(
+  "completed %s confirmations keep their original conversation position",
+  async (kind) => {
+    const server = await setup();
+    const agent = server.store.agents()[0]!;
+    const run = server.store.createRun(agent.id, crypto.randomUUID(), "Confirmation work", "api", agent.model);
+    server.service.emit(agent.id, run.id, "message", { role: "user", text: "Before confirmation" });
+    const request = server.store.createIntervention(kind, agent.id, run.id, {
+      executable: "/usr/bin/id", args: [], cwd: "/tmp", url: "https://example.com",
+      reason: "Original confirmation context",
+    }, new Date(Date.now() + 60000).toISOString());
+    server.service.emit(agent.id, run.id, "intervention_requested", { request });
+    server.service.emit(agent.id, run.id, "message", { role: "assistant", text: "After confirmation" });
+    render(<App />);
+    const chat = within(await screen.findByLabelText("Conversation"));
+    await chat.findByText("After confirmation");
+    const selector = `[data-activity-key="intervention:${request.id}"]`;
+    const card = document.querySelector(selector)!;
+    expect(card).not.toBeNull();
+    expect(card.closest(".timeline")).not.toBeNull();
+    const isBefore = (left: Element, right: Element) =>
+      !!(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(isBefore(chat.getByText("Before confirmation"), card)).toBe(true);
+    expect(isBefore(card, chat.getByText("After confirmation"))).toBe(true);
+
+    await act(async () => {
+      server.store.updateIntervention(request.id, "completed", { completed: true });
+      server.service.emit(agent.id, run.id, "intervention_updated", { id: request.id, status: "completed" });
+      server.store.finishRun(run.id, "completed", null);
+      server.service.emit(agent.id, run.id, "run_completed", {});
+    });
+    const label = kind === "sudo" ? "Sudo" : kind === "browser_login" ? "Browser login" : "Desktop handoff";
+    await chat.findByText(`${label} completed`);
+    expect(document.querySelector(selector)).toBe(card);
+    expect(isBefore(card, chat.getByText("After confirmation"))).toBe(true);
+
+    await act(async () => {
+      const next = server.store.createRun(agent.id, crypto.randomUUID(), "Later work", "api", agent.model);
+      server.service.emit(agent.id, next.id, "message", { role: "user", text: "A newer conversation turn" });
+      server.store.finishRun(next.id, "completed", null);
+      server.service.emit(agent.id, next.id, "run_completed", {});
+    });
+    await chat.findByText("A newer conversation turn");
+    expect(document.querySelector(selector)).toBe(card);
+    expect(isBefore(card, chat.getByText("A newer conversation turn"))).toBe(true);
+    expect(chat.getAllByText(`${label} completed`)).toHaveLength(1);
+  },
+);
+
+test("confirmation history anchors survive missing request events, pagination and repeated handoffs", async () => {
+  const { conversationActivity } = await import("../src/client/conversationActivity");
+  const time = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  const event = (id: number, type: string, data: Record<string, unknown>): import("../src/shared/types").Activity =>
+    ({ id, type, data, agentId: "agent", runId: "run", createdAt: time(id) });
+  const first: import("../src/shared/types").Intervention = {
+    id: "first", agentId: "agent", runId: "run", kind: "sudo", status: "completed",
+    payload: {}, result: {}, createdAt: time(2), expiresAt: time(20),
+  };
+  const second = { ...first, id: "second", createdAt: time(6) };
+  const events = [
+    event(1, "message", { role: "user" }),
+    event(2, "intervention_requested", { request: first }),
+    event(3, "message", { role: "assistant" }),
+    event(4, "intervention_updated", { id: first.id, status: "completed" }),
+    event(5, "message", { role: "user" }),
+    event(6, "intervention_requested", { request: second }),
+    event(7, "message", { role: "assistant" }),
+  ];
+  const keys = (loaded: typeof events) => conversationActivity(loaded, [], true, [second, first])
+    .filter((entry) => entry.kind !== "work").map((entry) => entry.key);
+  expect(keys(events.slice(2))).toEqual([
+    "intervention:first", "event:3", "event:5", "intervention:second", "event:7",
+  ]);
+  expect(keys(events)).toEqual([
+    "event:1", "intervention:first", "event:3", "event:5", "intervention:second", "event:7",
+  ]);
+  const current = conversationActivity(events, [], true, [
+    { ...first, status: "pending" }, second, first,
+  ]).filter((entry) => entry.kind === "intervention");
+  expect(current).toHaveLength(2);
+  expect(current[0]).toMatchObject({ key: "intervention:first", item: { status: "completed" } });
+});
+
 test("dismissed sudo cards disappear from chat without duplicating the inline tool call", async () => {
   const app = await setup({
     sudoExecutor: async () => ({

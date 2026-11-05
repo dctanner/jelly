@@ -748,6 +748,22 @@ export async function startApp(options: AppOptions) {
               if (req.method === "GET") return json({ timezone: service.schedules.suggestedTimezone("instance") });
               if (req.method === "PUT") return json(service.schedules.saveTimezone("instance", (await body(req)).timezone));
             }
+            const activityMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/activity\/(\d+)$/);
+            if (activityMatch && req.method === "GET") {
+              const [, agentId, rawId] = activityMatch;
+              const id = Number(rawId);
+              if (!Number.isSafeInteger(id) || !store.db.query("SELECT id FROM timeline WHERE agentId=? AND id=?").get(agentId!, id)) throw new HttpError(404, "Source activity not found for this agent.");
+              return json(service.historyPage(agentId!, id + 1));
+            }
+            const todoMatch = url.pathname.match(/^\/api\/human-todos(?:\/([^/]+)(?:\/(complete|continue|delete))?)?$/);
+            if (todoMatch) {
+              const [, id, action] = todoMatch;
+              if (req.method === "GET" && !id) return json(service.humanTodos.list(Object.fromEntries(url.searchParams)));
+              if (req.method === "GET" && id && !action) return json(service.humanTodos.detail(id));
+              if (req.method === "POST" && !id) return json(service.changeHumanTodo("create", null, await body(req)), 201);
+              if (req.method === "PATCH" && id && !action) return json(service.changeHumanTodo("update", id, await body(req)));
+              if (req.method === "POST" && id && action) return json(service.changeHumanTodo(action as "complete" | "continue" | "delete", id, await body(req)));
+            }
             const goalMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/goal(?:\/(create|edit|pause|resume|complete|clear))?$/);
             if (goalMatch) {
               const [, agentId, action] = goalMatch;
@@ -848,7 +864,7 @@ export async function startApp(options: AppOptions) {
           if (target !== staticDir && !target.startsWith(staticDir + sep))
             throw new HttpError(404, "Not found.");
           const file = Bun.file(
-            pathname === "/" || /^\/(?:apps|agents)(?:\/[^/]+(?:\/[^/]+)*)?\/?$/.test(pathname) ? join(staticDir, "index.html") : target,
+            pathname === "/" || /^\/(?:apps|agents|todos)(?:\/[^/]+(?:\/[^/]+)*)?\/?$/.test(pathname) ? join(staticDir, "index.html") : target,
           );
           if (!(await file.exists()))
             throw new HttpError(

@@ -1,3 +1,4 @@
+import { removePostV19SchemaForLegacyFixture } from "./fixtures/schema";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,9 +44,10 @@ function fixture() {
 test("fresh and v17 migration, reopen, scoped one-current-goal, durable mutation replay/conflicts", () => {
   const f = fixture();
   expect(f.store.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 19,
+    user_version: 20,
   });
   // Reconstruct an actual v17 schema before migrating, not merely reset the version.
+  removePostV19SchemaForLegacyFixture(f.store.db);
   f.store.db.exec(
     "DROP TABLE goal_compactions; DROP TABLE goal_usage; DROP TABLE goal_runs; DROP TABLE goal_mutations; DROP TABLE agent_goals; PRAGMA user_version=17;",
   );
@@ -209,6 +211,7 @@ test.each(["active", "budget_exhausted", "blocked", "paused", "completed"])(
     f.store.db
       .query("INSERT INTO goal_mutations VALUES (?,?,?,?)")
       .run(f.agent.id, input.requestId, payload, JSON.stringify(legacy));
+    removePostV19SchemaForLegacyFixture(f.store.db);
     f.store.db.exec("DROP TABLE goal_compactions; PRAGMA user_version=18;");
     const migrated = new Store(f.path);
     const goals = new Goals(migrated);

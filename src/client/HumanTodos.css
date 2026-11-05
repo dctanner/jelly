@@ -1,0 +1,188 @@
+.human-todos {
+  height: 100%;
+  overflow: auto;
+  padding: max(20px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right)) 28px
+    max(20px, env(safe-area-inset-left));
+  min-width: 0;
+}
+.todos-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.todos-heading h1 {
+  font-size: 28px;
+  margin: 8px 0 18px;
+}
+.todo-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.todo-filters label {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 130px;
+  min-width: 0;
+}
+.todo-filters input,
+.todo-filters select,
+.todo-editor input:not([type="checkbox"]),
+.todo-editor select,
+.todo-editor textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--page);
+  color: inherit;
+  font: inherit;
+}
+.todo-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.todo-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.todo-row > div,
+.todo-copy {
+  flex: 1;
+  min-width: 0;
+}
+.todo-row button,
+.human-todos button,
+.todo-editor button {
+  min-height: 44px;
+}
+.todo-copy {
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  background: none;
+  color: inherit;
+  border: 0;
+}
+.todo-copy > span {
+  font-size: 13px;
+  color: var(--muted);
+}
+.todo-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.todo-agent .avatar {
+  width: 24px;
+  height: 24px;
+}
+.todo-editor {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.todo-editor form {
+  display: grid;
+  gap: 12px;
+}
+.todo-editor textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+.todo-editor .chat-form-actions {
+  flex-wrap: wrap;
+}
+.todo-text {
+  white-space: pre-wrap;
+}
+.needs-you-strip {
+  flex: 0 1 auto;
+  min-height: 44px;
+  max-height: 45%;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+}
+.needs-you-strip > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 16px;
+  text-align: left;
+  background: var(--page);
+  color: inherit;
+}
+.needs-you-strip > button > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--muted);
+}
+.agent-todos {
+  height: auto;
+  padding: 12px;
+}
+.agent-todos h1 {
+  font-size: 18px;
+}
+.todo-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.jelly-destinations:not([data-destination="viewer"])
+  .destination-navigation
+  > a {
+  min-width: 0;
+  flex: 1 1 0;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.todo-row .todo-copy,
+.todo-editor p {
+  overflow-wrap: anywhere;
+}
+@media (min-width: 768px) {
+  .destination-layer.todos-layer {
+    left: var(--desktop-sidebar-width);
+  }
+  .jelly-destinations[data-destination="todos"] .destination-sidebar {
+    background: var(--sidebar);
+  }
+}
+@media (max-width: 767px) {
+  .human-todos {
+    padding: 12px;
+  }
+  .human-todos input,
+  .human-todos select,
+  .todo-editor input,
+  .todo-editor textarea,
+  .todo-editor select {
+    font-size: 16px;
+  }
+  .todo-row {
+    align-items: flex-start;
+  }
+  .todo-row > button:last-child {
+    flex-shrink: 0;
+  }
+}

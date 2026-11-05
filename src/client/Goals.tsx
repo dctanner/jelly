@@ -83,6 +83,7 @@ export function GoalNotice({
   );
 }
 export function GoalsPanel({
+  expectedGoalId,
   agentId,
   archived = false,
   onClose,
@@ -90,6 +91,7 @@ export function GoalsPanel({
   agentId: string;
   archived?: boolean;
   onClose: () => void;
+  expectedGoalId?: string;
 }) {
   const [view, setView] = useState<GoalView | null>(null);
   const [error, setError] = useState("");
@@ -154,6 +156,7 @@ export function GoalsPanel({
   }, [agentId]);
   const goal = view?.goal;
   async function change(action: GoalAction) {
+    if (expectedGoalId && goal?.id !== expectedGoalId) { setError("The linked goal is no longer current. Open the agent to review its replacement."); return; }
     setBusy(true);
     setError("");
     writing.current = true;
@@ -205,7 +208,8 @@ export function GoalsPanel({
         {error && <p role="alert">{error}</p>}
         {!view && <p role="status">Loading goal…</p>}
         {archived && <p>Restore this agent to change its goal.</p>}
-        {view && (
+        {view && expectedGoalId && view.goal?.id !== expectedGoalId && <p>The linked goal is no longer current. No replacement goal will be resumed here.</p>}
+        {view && (!expectedGoalId || view.goal?.id === expectedGoalId) && (
           <form
             onSubmit={(e) => {
               e.preventDefault();

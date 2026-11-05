@@ -28,6 +28,7 @@ export function watchNotifications(update: () => void) {
 
 /** No transcripts, commands, handoff details or model errors on the lock screen. */
 export function agentNotificationText(agent: AgentRecord, event: AgentNotification) {
+  if (event.type === "human_todo_attention") return { title: `${agent.name} needs your help`, body: "An agent needs your help. Open Jelly to review Todos." };
   return event.type === "run_completed"
     ? { title: `${agent.name} finished`, body: "Open Jelly to see the result." }
     : { title: `${agent.name} needs attention`, body: "Open Jelly to review what’s needed." };

@@ -20,7 +20,7 @@ Projects and the Familiar UI are delivered. See [the delivery record](../plans_d
 
 ## Proposed features
 
-- [Human todos / Needs you inbox](human-todos.md): proposed durable human-action inbox, per-agent lists, shared human/agent CRUD, explicit continuation, and existing private-handoff visibility. Planning only.
+- [Human todos / Needs you inbox](human-todos.md): durable inbox, per-agent lists, human/agent CRUD, explicit continuation and private-handoff visibility implemented, independently reviewed and verified; live activation and remote-device/provider qualification remain pending. See [usage guide](../docs/HUMAN_TODOS.md).
 - [MCP Events and external webhooks](mcp-events.md): draft SEP-3415 client integration, durable per-agent event wakes, and Hookdeck bridge support. Poll-first without public Jelly ingress; push and signed webhook delivery follow. Research/plan only.
 - [Repeating agents / scheduled tasks](repeating-agents.md): durable one-off/cron wakes, scoped tools, management UI and recovery implemented and verified; live activation and real-device/provider qualification remain pending.
 - [Trusted iframe Apps launcher](apps-trusted-iframes.md): name/URL registry and iframe-only presentation implemented with disposable checks; accepts same-host cookie sharing for trusted apps. Migrations explicitly skipped because no apps/installations exist. Live activation and real-app/remote-device acceptance remain pending; see [current Apps direction](apps.md).

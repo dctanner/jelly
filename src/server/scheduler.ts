@@ -17,6 +17,7 @@ export class Scheduler {
       batchSize?: number;
       pollMs?: number;
     } = {},
+    private todoOpportunity: () => void = () => {},
   ) {
     for (const [key, value] of Object.entries(options))
       if (
@@ -80,10 +81,17 @@ export class Scheduler {
         occurrence.snapshot.maxLatenessSeconds * 1000
       )
         this.schedules.expire(occurrence);
+    // Alternate admitted work, not timer ticks: settlement and its queued wake
+    // can produce two ticks per run, otherwise starving the other backlog.
+    const last = this.schedules.store.db.query(`SELECT json_extract(source,'$.source') AS source
+      FROM runs WHERE json_extract(source,'$.source') IN ('schedule','human_todo')
+      ORDER BY rowid DESC LIMIT 1`).get() as { source: string } | null;
+    const todoFirst = last?.source !== "human_todo";
+    if (todoFirst) this.todoOpportunity();
     let running = (
       this.schedules.store.db
         .query(
-          "SELECT count(*) AS n FROM schedule_occurrences WHERE state='running'",
+          "SELECT count(*) AS n FROM runs WHERE status='running' AND json_extract(source,'$.source') IN ('schedule','human_todo')",
         )
         .get() as { n: number }
     ).n;
@@ -113,5 +121,6 @@ export class Scheduler {
         this.schedules.blocked(occurrence, error);
       }
     }
+    if (!todoFirst) this.todoOpportunity();
   }
 }

@@ -297,6 +297,22 @@ export class Goals {
     const event = this.store.db.transaction(() => this.save(goal))();
     this.publish(event);
   }
+  /** Immutable run provenance survives the first blocker revoking execution authority. */
+  bindingForRun(agentId: string, runId: string): GoalBinding | null {
+    const row = this.store.db.query(`SELECT g.goalId,g.epoch FROM goal_runs g
+      JOIN runs r ON r.id=g.runId WHERE g.runId=? AND r.agentId=?`)
+      .get(runId, agentId) as { goalId: string; epoch: number } | null;
+    return row ? { id: row.goalId, epoch: row.epoch, agentId, runId } : null;
+  }
+  /** Caller commits this blocker with the durable human dependency, then publishes. */
+  blockForHumanTodo(binding: GoalBinding, todoId: string): Activity | null {
+    const goal = this.current(binding);
+    if (!goal) return null;
+    goal.state = "blocked";
+    goal.reason = `Human dependency ${todoId}. Review and explicitly Resume goal after verifying it.`;
+    goal.epoch++; goal.revision++;
+    return this.save(goal, binding.runId);
+  }
   recover() {
     for (const agent of this.store.agents())
       this.stop(

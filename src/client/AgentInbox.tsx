@@ -199,7 +199,8 @@ export function AgentInbox({
                   : "Start a conversation"}
           </small>
         </span>
-        <Indicator needsAttention={attention(a)} unread={unread.has(a.id)} />
+        {!!data?.humanTodoCounts?.agents[a.id] && <span className="todo-count">Needs you · {data.humanTodoCounts.agents[a.id]}</span>}
+        <Indicator needsAttention={attention(a) || !!data?.humanTodoCounts?.agents[a.id]} unread={unread.has(a.id)} />
       </button>
     );
     if (!archiveAction) return button;
@@ -225,6 +226,7 @@ export function AgentInbox({
     ) : (
       <ProjectRow
         key={entry.project.id}
+        todoCount={entry.members.reduce((sum, member) => sum + (data?.humanTodoCounts?.agents[member.id] ?? 0), 0)}
         project={entry.project}
         members={entry.members}
         unread={unread}
@@ -355,11 +357,13 @@ function Indicator({
   ) : null;
 }
 function ProjectRow({
+  todoCount = 0,
   project,
   members,
   unread,
   onClick,
 }: {
+  todoCount?: number;
   project: ProjectRecord;
   members: AgentRecord[];
   unread: Set<string>;
@@ -405,11 +409,11 @@ function ProjectRow({
           <strong>{project.name}</strong>
         </span>
         <small id={id} className="agent-preview">
-          {subtitle}
+          {subtitle}{todoCount ? ` · Needs you · ${todoCount}` : ""}
         </small>
       </span>
       <Indicator
-        needsAttention={needs > 0}
+        needsAttention={needs > 0 || todoCount > 0}
         unread={members.some((a) => unread.has(a.id))}
       />
       <ChevronRight className="project-chevron" size={17} aria-hidden="true" />

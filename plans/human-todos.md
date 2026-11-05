@@ -1,6 +1,33 @@
 # Human todos / Needs you inbox
 
-Status: proposed feature; planning only. No implementation or live-state changes.
+Status: implemented and verified in source; live activation remains pending. No live todos were created, the service was not restarted, and no commit was made.
+
+## Implementation and verification
+
+The implementation delivers schema v20 persistence, human and scoped-agent CRUD,
+the global Todos destination and per-agent Needs you lists, private-handoff
+visibility, opt-in attention notifications, and explicit durable continuation.
+See [Human todos](../docs/HUMAN_TODOS.md) for the current usage and developer contract.
+
+Independent backend/UI review found seven issues; all were fixed with regressions.
+The correction pass also fixed mixed schedule/todo admission fairness and the
+ordinary-continuation fence during active goal work. Final review: **OK**.
+
+Parent verification on the corrected source:
+
+- `bun run check:full`: passed in a disposable source copy, including TypeScript,
+  all configured tests, and both builds. Live `dist` and databases were untouched.
+- `bun run test:human-todos`: 55 passing tests, 440 assertions.
+- Isolated Chromium: 320px, 390px and 1280px passed, including archived
+  root/project navigation, source after unassignment, actual Back, and drafts.
+
+Remaining release work: explicit idle-safe activation, same-host
+loopback/Tailscale/private-HTTPS and control-session checks, then real remote/mobile
+and provider/private-handoff qualification. No remote-device or production
+verification is implied.
+
+The original design below records the feature's intent and deferred scope; the
+delivery notes above and usage guide describe its implemented status.
 
 ## Goal
 

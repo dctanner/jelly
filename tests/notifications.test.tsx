@@ -219,3 +219,22 @@ test("durable markers cover all agents without leaking data, omit settled attent
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("todo attention is opt-in/content-light, deduped across tabs, and suppressed only for the visible task", async () => {
+  setNotificationsEnabled("one", true);
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  document.hasFocus = () => true;
+  const first = render(<><div data-open-todo-id="visible-task" /><Harness data={snapshot(1)} /></>);
+  const second = render(<Harness data={snapshot(1)} />);
+  const visible: AgentNotification = { id: 2, agentId: "a", type: "human_todo_attention", todoId: "visible-task" };
+  first.rerender(<><div data-open-todo-id="visible-task" /><Harness data={snapshot(2, [visible])} /></>);
+  second.rerender(<Harness data={snapshot(2, [visible])} />);
+  await waitFor(() => expect(localStorage.getItem("jelly.notifications.delivered.one.a")).toBe("2"));
+  expect(notices).toHaveLength(0);
+  const other: AgentNotification = { ...visible, id: 3, todoId: "different-task" };
+  first.rerender(<><div data-open-todo-id="visible-task" /><Harness data={snapshot(3, [other])} /></>);
+  second.rerender(<Harness data={snapshot(3, [other])} />);
+  await waitFor(() => expect(notices).toHaveLength(1));
+  expect(notices[0]!.title).toBe("Agent a needs your help");
+  expect(notices[0]!.options.body).toBe("An agent needs your help. Open Jelly to review Todos.");
+});

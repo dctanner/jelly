@@ -755,7 +755,7 @@ test("durable pending schedule survives a process crash; admitted scheduled tool
     server = await launch(dir);
     await until(async () => {
       const state = await request("/api/state") as Snapshot;
-      return state.events.some(event => event.type === "tool_started" && state.runs.find(run => run.id === event.runId)?.source?.occurrenceId === occurrenceId);
+      return state.events.some(event => event.type === "tool_started" && state.runs.some(run => run.id === event.runId && run.source?.source === "schedule" && run.source.occurrenceId === occurrenceId));
     });
     const admitted = (await request(historyPath)).items[0];
     expect(admitted.state).toBe("running");
@@ -764,7 +764,7 @@ test("durable pending schedule survives a process crash; admitted scheduled tool
     const recovered = (await request(historyPath)).items[0];
     expect(recovered.id).toBe(occurrenceId); expect(recovered.runId).toBe(admitted.runId); expect(recovered.state).toBe("interrupted");
     const state = await request("/api/state") as Snapshot;
-    expect(state.runs.filter(run => run.source?.occurrenceId === occurrenceId)).toHaveLength(1);
+    expect(state.runs.filter(run => run.source?.source === "schedule" && run.source.occurrenceId === occurrenceId)).toHaveLength(1);
     expect(state.events.find(event => event.data.messageId === "disposable-draft" && event.type === "message")?.data.deliveryStatus).toBe("cancelled");
     const message = state.events.find(event => event.type === "message" && event.data.role === "user" && event.data.occurrenceId === occurrenceId)!;
     expect(message.data.taskSnapshot).toBe("  Durable exact task\n  ");

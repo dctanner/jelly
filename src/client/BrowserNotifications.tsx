@@ -43,7 +43,7 @@ export function BrowserNotifications({ instance }: { instance: string }) {
       <strong role="status">
         {support === "insecure" ? "HTTPS required" : support === "unavailable" ? "Not supported" : permission === "denied" ? "Blocked by browser" : active ? "Notifications on" : "Notifications off"}
       </strong>
-      <p>Get notified when an agent finishes, requests a private handoff or permission, or encounters an error. Alerts open the agent’s conversation.</p>
+      <p>Get notified when an agent finishes, creates or reopens a human todo, requests a private handoff or permission, or encounters an error. Alerts open the agent’s conversation.</p>
       <p>Saved immediately for this browser and Jelly instance. No message contents are included.</p>
       {support === "insecure" && <p>Notifications require HTTPS or localhost. HTTP Tailscale addresses are not supported.</p>}
       {support === "unavailable" && <p>This browser doesn’t provide notifications. On iPhone or iPad, support depends on an installed Home Screen app and HTTPS.</p>}

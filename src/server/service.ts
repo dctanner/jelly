@@ -1,3 +1,6 @@
+import { HumanTodos } from "./human-todos";
+import { humanTodoTools, HUMAN_TODO_INSTRUCTIONS } from "./human-todo-tools";
+import type { HumanTodoAction, HumanTodoSource } from "../shared/human-todos";
 import { compatibleModel, defaultModelForMode, effortsForModel } from "../shared/models";
 import type { ModelId, Effort } from "../shared/models";
 import type { AgentSession, FileEntry } from "@earendil-works/pi-coding-agent";
@@ -65,6 +68,7 @@ export class JellyService {
   readonly subagents: SubagentStore;
   readonly apps: AppsService;
   readonly goals: Goals;
+  readonly humanTodos: HumanTodos;
   readonly schedules: Schedules;
   readonly scheduler: Scheduler;
   readonly desktop: Desktop;
@@ -83,8 +87,10 @@ export class JellyService {
     store.recover();
     this.goals = new Goals(store, event => this.notify(event));
     this.goals.recover();
+    this.humanTodos = new HumanTodos(store, this.goals, event => this.notify(event));
+    this.humanTodos.hold(null, "Jelly restarted. Review and explicitly retry; admitted work is never replayed.");
     this.schedules = new Schedules(store, options.scheduleClock, event => { this.notify(event); this.scheduler?.wake(); });
-    this.scheduler = new Scheduler(this.schedules, occurrence => this.startScheduled(occurrence), options.schedulerOptions);
+    this.scheduler = new Scheduler(this.schedules, occurrence => this.startScheduled(occurrence), options.schedulerOptions, () => this.deliverHumanTodos());
     this.subagents = new SubagentStore(store.db);
     this.apps = new AppsService(store, {
       dataDir: harness.dataDir,
@@ -203,6 +209,7 @@ export class JellyService {
         agentActivity[state.agentId] = state.thinkingPreview;
     }
     return {
+      humanTodoCounts: this.humanTodos.counts(),
       agentNotifications: this.store.agentNotifications(),
       latestAssistantMessages: this.store.latestAssistantMessages(),
       agentPreviews: this.store.agentPreviews(),
@@ -340,6 +347,7 @@ export class JellyService {
         "Stop this agent or wait for it to finish before archiving.",
       );
     if (!!existing.archivedAt === archived) return existing;
+    if (archived) this.humanTodos.hold(id, "Agent archived. Restore and explicitly confirm again.", true);
     if (archived) this.goals.stop(id, "Agent archived. Restore and explicitly resume to continue.");
     let event: Activity;
     const agent = this.store.db.transaction(() => {
@@ -420,6 +428,7 @@ export class JellyService {
     if (agent.archivedAt) throw new HttpError(409, "Restore this agent before starting a fresh session.");
     if (this.activeFor(agentId)) throw new HttpError(409, "Wait for this agent to finish before starting a fresh session.");
     this.harness.requireConnection(this.agentConfig(agent));
+    this.humanTodos.hold(agentId, "Fresh Session changed context. Review and explicitly retry.");
     this.goals.stop(agentId, "Paused for Fresh Session. Resume explicitly.");
     return this.startRun(agent, `fresh-session:${requestId}`, "Fresh Session", "queue", true);
   }
@@ -431,7 +440,7 @@ export class JellyService {
     browserTimezone?: string,
   ) {
     if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
-    if (requestId.startsWith("schedule:") || requestId.startsWith("goal:")) throw new HttpError(400, "Automated admission request IDs are reserved for the server.");
+    if (requestId.startsWith("schedule:") || requestId.startsWith("goal:") || requestId.startsWith("human-todo:")) throw new HttpError(400, "Automated admission request IDs are reserved for the server.");
     if (mode !== "queue" && mode !== "steer")
       throw new HttpError(400, "Message mode must be queue or steer.");
     const existing = this.store.pendingMessage(requestId);
@@ -545,6 +554,7 @@ export class JellyService {
     if (this.closing) throw new HttpError(409, "Jelly is shutting down.");
     const result = this.goals.mutate(agentId, action, input);
     if (action === "resume" && !result.reused) {
+      this.humanTodos.hold(agentId, "Goal work acquired this agent. Review the goal and explicitly retry any ordinary continuation.");
       try {
         if (this.activeFor(agentId)) throw new HttpError(409, "Wait for current work to finish before resuming.");
         this.startRun(this.store.agent(agentId)!, `goal:${result.goal.id}:${result.goal.epoch}`, goalPrompt(result.goal), "queue", false, undefined, undefined, result.goal);
@@ -553,6 +563,28 @@ export class JellyService {
       }
     }
     return this.goals.view(agentId);
+  }
+  changeHumanTodo(action: HumanTodoAction, id: string | null, input: Record<string, unknown>) {
+    if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
+    const receipt = this.humanTodos.mutate(action, id, input);
+    // Only explicit human continuation requests can create waiting deliveries.
+    if (action === "continue" || input.continueAgent === true) this.deliverHumanTodos();
+    return receipt;
+  }
+  private deliverHumanTodos() {
+    if (this.closing) return;
+    for (const delivery of this.humanTodos.waiting(true)) {
+      if (this.activeFor(delivery.agentId) || this.store.pendingMessages(delivery.agentId).length) continue;
+      const running = (this.store.db.query("SELECT count(*) AS n FROM runs WHERE status='running' AND json_extract(source,'$.source') IN ('schedule','human_todo')").get() as { n: number }).n;
+      if (running >= (this.scheduler.options.concurrency ?? 2)) break;
+      try {
+        const agent = this.store.agent(delivery.agentId);
+        if (!agent || agent.archivedAt || this.goals.get(delivery.agentId)?.state === "active") throw new Error("Review current agent/goal state and explicitly retry; goals never resume through todos.");
+        this.startRun(agent, delivery.requestId, this.humanTodos.prompt(delivery), "queue", false, { source: "human_todo", todoId: delivery.todoId, deliveryId: delivery.id, completionId: delivery.completionId });
+      } catch (error) {
+        this.humanTodos.retryNeeded(delivery.id, `Not started — retry: ${error instanceof Error ? error.message : "Unavailable"}`);
+      }
+    }
   }
   private startScheduled(occurrence: ScheduleOccurrence) {
     if (this.closing || this.activeFor(occurrence.agentId) || this.store.pendingMessages(occurrence.agentId).length) return false;
@@ -570,7 +602,7 @@ export class JellyService {
     prompt: string,
     mode: MessageMode = "queue",
     freshSession = false,
-    source?: ScheduleSource,
+    source?: ScheduleSource | HumanTodoSource,
     browserTimezone?: string,
     goal?: Goal,
   ) {
@@ -599,7 +631,8 @@ export class JellyService {
       );
       if (goal) goalBinding = this.goals.admit(goal, run.id);
       if (source) {
-        this.schedules.admit(source.occurrenceId, run.id, source);
+        if (source.source === "schedule") this.schedules.admit(source.occurrenceId, run.id, source);
+        else events.push(this.humanTodos.admit(source.deliveryId, run.id));
         this.store.db.query("UPDATE runs SET source=? WHERE id=?").run(JSON.stringify(source), run.id);
       }
       this.store.setStatus(agentId, "running");
@@ -646,7 +679,7 @@ export class JellyService {
     browserSelection: ChromeSelection;
     nameAgent: boolean;
     freshSession: boolean;
-    source?: ScheduleSource;
+    source?: ScheduleSource | HumanTodoSource;
     goalBinding?: GoalBinding;
     events: Activity[];
   }) {
@@ -715,7 +748,7 @@ export class JellyService {
           () => deliveredRequestId,
         );
         const session = await this.harness.create(
-          agent,
+          { ...agent, instructions: `${agent.instructions}\n${HUMAN_TODO_INSTRUCTIONS}\n${this.humanTodos.summary(agent.id)}` },
           context ? [] : this.store.history(agentId),
           config,
           instance,
@@ -730,6 +763,7 @@ export class JellyService {
             ...this.desktop.tools(),
             ...appsTools(this.apps, agent),
             ...schedulingTools,
+            ...humanTodoTools(this.humanTodos, agent.id, run.id, () => !this.closing && !state.cancelled && this.store.run(run.id)?.status === "running"),
           ],
           (type, data) => this.emit(agentId, run.id, type, data),
           context,
@@ -1001,9 +1035,13 @@ export class JellyService {
           if (current?.id === goalBinding.id && current.epoch === goalBinding.epoch && current.state === "active")
             this.goals.stop(agentId, failure ?? "Execution settled without goal completion. Review and resume explicitly.", "blocked");
         }
+        if (status !== "completed") this.humanTodos.hold(agentId, "Previous work failed or stopped. Inspect effects and explicitly retry.");
         this.scheduler.wake();
         if (status === "completed" && !this.closing) {
           const next = this.store.pendingMessages(agentId)[0];
+          // The existing automated admission turn alternates schedule/todo priority.
+          // Never let a chain of todo completions monopolize freed capacity.
+          if (!next) this.scheduler.tick();
           if (next) {
             try {
               this.startRun(this.store.agent(agentId)!, next.id, next.text);
@@ -1035,6 +1073,7 @@ export class JellyService {
   async stop(agentId: string) {
     if (!this.store.agent(agentId))
       throw new HttpError(404, "Agent not found.");
+    this.humanTodos.hold(agentId, "Stopped by operator. Explicit confirmation required.", true);
     this.goals.stop(agentId, "Stopped by operator. Resume explicitly to continue.");
     this.store.db.transaction(() => this.schedules.stopAgent(agentId))();
     for (const [id, state] of this.active)
@@ -1058,6 +1097,7 @@ export class JellyService {
   async close() {
     this.scheduler.stop();
     this.closing = true;
+    this.humanTodos.hold(null, "Jelly shut down. Review and explicitly retry.");
     for (const agent of this.store.agents()) this.goals.stop(agent.id, "Jelly shut down. Inspect current work and resume explicitly.");
     const states = [...this.active.values()];
     for (const state of states) { state.cancelled = true; state.naming?.abort(); }

@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { requestId } from "./request-id";
 import { readPreference, savePreference } from "./theme";
 
-export type AppDestination = "agents" | "apps" | "viewer";
+export type AppDestination = "agents" | "apps" | "todos" | "viewer";
 export interface AppsLocation {
   destination: AppDestination;
   appId: string | null;
+  todoId: string | null;
   agentId: string | null;
   navigationId: string;
   focusAppId: string | null;
@@ -16,6 +17,7 @@ export function readAppsLocation(): AppsLocation {
   const path = window.location.pathname;
   const state = window.history.state ?? {};
   const viewer = /^\/apps\/([^/]+)(\/.*)?$/.exec(path);
+  const todo = /^\/todos(?:\/([^/]+))?\/?$/.exec(path);
   const agent = /^\/agents\/([^/]+)\/?$/.exec(path);
   const queryAgent = new URLSearchParams(window.location.search).get("agentId");
   let appId: string | null = null;
@@ -26,7 +28,7 @@ export function readAppsLocation(): AppsLocation {
   } catch {}
   const destination = appId
     ? "viewer"
-    : path === "/apps" || path === "/apps/"
+    : todo ? "todos" : path === "/apps" || path === "/apps/"
       ? "apps"
       : "agents";
   const navigationId =
@@ -41,6 +43,7 @@ export function readAppsLocation(): AppsLocation {
   return {
     destination,
     appId,
+    todoId: todo?.[1] ?? null,
     agentId,
     navigationId,
     focusAppId:
@@ -48,7 +51,7 @@ export function readAppsLocation(): AppsLocation {
     explicit:
       !!viewer ||
       path.startsWith("/agents") ||
-      destination === "apps" ||
+      (destination === "apps" || destination === "todos") ||
       !!queryAgent,
   };
 }
@@ -66,10 +69,11 @@ export function useAppsNavigation(instanceId: string) {
     setRestored(instanceId);
     if (
       !location.explicit &&
-      readPreference(`jelly.destination.${instanceId}`, "agents") === "apps"
+      ["apps", "todos"].includes(readPreference(`jelly.destination.${instanceId}`, "agents"))
     ) {
-      const next = { ...window.history.state, jellyDestination: "apps" };
-      window.history.replaceState(next, "", "/apps");
+      const saved = readPreference(`jelly.destination.${instanceId}`, "agents");
+      const next = { ...window.history.state, jellyDestination: saved };
+      window.history.replaceState(next, "", `/${saved}`);
       setLocation(readAppsLocation());
     }
   }, [instanceId, restored, location.explicit]);
@@ -77,11 +81,11 @@ export function useAppsNavigation(instanceId: string) {
     if (instanceId && restored === instanceId)
       savePreference(
         `jelly.destination.${instanceId}`,
-        location.destination === "agents" ? "agents" : "apps",
+        location.destination === "viewer" ? "apps" : location.destination,
       );
   }, [instanceId, restored, location.destination]);
   function navigate(
-    destination: "agents" | "apps",
+    destination: "agents" | "apps" | "todos",
     focusAppId: string | null = null,
   ) {
     const state = destination === "agents" ? { ...window.history.state } : {};

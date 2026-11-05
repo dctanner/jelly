@@ -41,7 +41,7 @@ export interface AgentRecord {
   archivedAt: string | null;
 }
 export interface RunRecord {
-  source?: import("./schedules").ScheduleSource | null;
+  source?: import("./schedules").ScheduleSource | import("./human-todos").HumanTodoSource | null;
   id: string;
   agentId: string;
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -82,11 +82,13 @@ export interface HistoryPage {
 }
 /** Small, content-free notification markers for every active agent. */
 export interface AgentNotification {
+  todoId?: string | null;
   id: number;
   agentId: string;
-  type: "run_completed" | "run_failed" | "run_interrupted" | "intervention_requested" | "schedule_blocked" | "schedule_expired";
+  type: "run_completed" | "run_failed" | "run_interrupted" | "intervention_requested" | "schedule_blocked" | "schedule_expired" | "human_todo_attention";
 }
 export interface Snapshot {
+  humanTodoCounts?: import("./human-todos").HumanTodoCounts;
   agentNotifications?: AgentNotification[];
   latestAssistantMessages: Record<string, number>;
   agentPreviews?: Record<string, { text: string; createdAt: string }>;

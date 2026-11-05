@@ -75,7 +75,8 @@ test("one-off and cron run with no browser, preserving same-agent context/curren
       receipt.schedule.id,
     ).items[0]!;
     expect(occurrence.state).toBe("running");
-    expect(f.store.run(occurrence.runId!)!.source?.occurrenceId).toBe(
+    const source = f.store.run(occurrence.runId!)!.source;
+    expect(source?.source === "schedule" ? source.occurrenceId : null).toBe(
       occurrence.id,
     );
     return original(...args);

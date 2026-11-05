@@ -1,3 +1,4 @@
+import { HumanTodos, AgentNeedsYou, HumanTodoActivity } from "./HumanTodos";
 import { AppRegistration } from "./AppRegistration";
 import { SchedulesPanel, ScheduledMessage, ScheduleNotice } from "./Schedules";
 import { GoalNotice, GoalExecution } from "./Goals";
@@ -554,6 +555,7 @@ function EventItem({
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [copyVisible, setCopyVisible] = useState(false);
+  if (event.type.startsWith("human_todo_") || (event.type === "message" && event.data.role === "user" && event.data.source === "human_todo")) return <HumanTodoActivity event={event} />;
   if (event.type === "message" && event.data.role === "user" && event.data.source === "schedule")
     return <ScheduledMessage event={event} />;
   if (event.type === "message" && event.data.role === "user" && event.data.source === "goal") return <GoalExecution event={event} archived={!!agent.archivedAt} />;
@@ -797,6 +799,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const [moveTarget, setMoveTarget] = useState<AgentRecord | null>(null);
   const [data, setData] = useState<Snapshot | null>(null);
   const [selected, setSelected] = useState("");
+  const pendingAgentLink = useRef<string | null>(null);
   useEffect(() => { if (data) onSnapshot(data); }, [data, onSnapshot]);
   const [scope, setScope] = useState<Scope>({ kind: "all" });
   const [listOpen, setListOpen] = useState(true);
@@ -856,6 +859,10 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const creationPending = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [stopping, setStopping] = useState<string | null>(null);
+  const [sourceActivity, setSourceActivity] = useState<HistoryPage | null>(null);
+  const [sourceError, setSourceError] = useState("");
+  const sourceKey = useRef("");
+  const [sourceRevision, setSourceRevision] = useState(0);
   const [linkedSchedule, setLinkedSchedule] = useState<string | null>(() => new URLSearchParams(window.location.search).get("schedule"));
   const [history, setHistory] = useState<{
     agentId: string;
@@ -922,6 +929,17 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
   }, [mobile]);
+  useEffect(() => {
+    if (!active || !explicitAgentId) { sourceKey.current = ""; setSourceActivity(null); setSourceError(""); return; }
+    const activity = new URLSearchParams(window.location.search).get("activity");
+    if (!activity || !/^\d+$/.test(activity)) { sourceKey.current = ""; setSourceActivity(null); setSourceError(""); return; }
+    const key = `${explicitAgentId}:${activity}`;
+    if (sourceKey.current !== key) { sourceKey.current = key; setSourceActivity(null); }
+    const controller = new AbortController();
+    setSourceError("");
+    void api<HistoryPage>(`/agents/${encodeURIComponent(explicitAgentId)}/activity/${activity}`, { signal: controller.signal }).then(page => { if (!controller.signal.aborted) setSourceActivity(page); }).catch(error => { if (!controller.signal.aborted) setSourceError(error.message); });
+    return () => controller.abort();
+  }, [active, explicitAgentId, explicitNavigationId, data?.cursor, sourceRevision]);
   const rememberScroll = () => {
     const chat = conversation.current;
     if (chat && selected === data?.selectedAgentId) {
@@ -975,6 +993,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
         } catch (error) {
           if (
             nav.current.selected &&
+            nav.current.selected !== pendingAgentLink.current &&
             (error as Error).message === "Agent not found."
           ) {
             nav.current.selected = "";
@@ -1021,6 +1040,15 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           if (nav.current.scope.kind === "project" && !window.history.state?.jellyProject)
             window.history.replaceState({ ...window.history.state, jellyProject: nav.current.scope.projectId, jellyProjectEntry: false }, "");
         }
+        // Explicit links can target archived agents absent from ordinary snapshots.
+        // Resolve their own snapshot before deriving scope or choosing a fallback.
+        const linked = next.agents.find(agent => agent.id === pendingAgentLink.current);
+        if (linked && next.selectedAgentId === linked.id) {
+          nav.current.selected = linked.id;
+          nav.current.scope = linked.projectId ? { kind: "project", projectId: linked.projectId } : { kind: "all" };
+          pendingAgentLink.current = null;
+          window.history.replaceState({ ...window.history.state, jellyProject: linked.projectId, jellyProjectEntry: false }, "");
+        }
         const currentScope = validScope(nav.current.scope, next.projects);
         nav.current.scope = currentScope;
         setScope(currentScope);
@@ -1063,6 +1091,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
           : previous);
         setData(next);
         window.dispatchEvent(new window.CustomEvent("jelly:goals-updated"));
+        window.dispatchEvent(new window.CustomEvent("jelly:todos-updated"));
         setLoadError("");
         if (!source) {
           const connection = new EventSource(
@@ -1256,6 +1285,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
     !editingIdentity &&
     !!draft.trim();
   const select = (id: string, fromLink = false) => {
+    pendingAgentLink.current = fromLink ? id : null;
     rememberScroll();
     if (fromLink)
       window.history.replaceState({ ...window.history.state, jellyChat: mobile, jellyAgent: id, jellyChatOwner: window.history.state?.jellyChatOwner === chatHistoryOwner ? chatHistoryOwner : null }, "");
@@ -1354,15 +1384,16 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   }
   function openInboxAgent(id: string, fromLink = false) {
     const target = data?.agents.find(a => a.id === id);
-    if (fromLink) {
-      const next: Scope = target?.projectId ? { kind: "project", projectId: target.projectId } : { kind: "all" };
+    if (fromLink && target) {
+      const next: Scope = target.projectId ? { kind: "project", projectId: target.projectId } : { kind: "all" };
       if (scopeKey(next) !== scopeKey(nav.current.scope)) switchScope(next, id);
     } else if (target?.projectId && (scope.kind !== "project" || scope.projectId !== target.projectId)) openProject(target.projectId);
     select(id, fromLink);
   }
   useEffect(() => {
-    if (active && explicitAgentId && data?.agents.some(agent => agent.id === explicitAgentId)) openInboxAgent(explicitAgentId, true);
-  }, [explicitNavigationId, explicitAgentId, data?.instance.id]);
+    if (active && explicitAgentId) openInboxAgent(explicitAgentId, true);
+    else pendingAgentLink.current = null;
+  }, [active, explicitNavigationId, explicitAgentId]);
   useLayoutEffect(() => {
     // Inactive layers retain their geometry and mounted state; restore the
     // reader's anchor rather than following background work when returning.
@@ -1516,6 +1547,11 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const page = history?.agentId === agent?.id ? history?.page : null;
   const visibleEvents = page?.events ?? data?.events ?? [];
   const visibleRuns = page?.runs ?? data?.runs ?? [];
+  const visibleInterventions = [...new Map(
+    [...(page?.interventions ?? []), ...(data?.interventions ?? [])]
+      .filter((item) => item.agentId === agent?.id)
+      .map((item) => [item.id, item]),
+  ).values()];
   const before = page ? page.before : data?.historyBefore;
   async function olderHistory() {
     if (!agent || before == null || loadingHistory) return;
@@ -1559,6 +1595,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   }
   const meaningful =
     visibleEvents.some((e) => e.type === "message") ||
+    visibleInterventions.length > 0 ||
     running ||
     before != null ||
     !!(agent && data?.agentPreviews?.[agent.id]);
@@ -1568,6 +1605,10 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
       className={`app t-page-slide ${listOpen ? "show-agent-list" : "show-chat"}`}
       data-page={listOpen ? "1" : "2"}
     >
+      {active && (sourceActivity || sourceError) && <Modal title="Source conversation" onClose={() => { setSourceActivity(null); setSourceError(""); window.history.replaceState(window.history.state, "", window.location.pathname); }} focusHeading>
+        {sourceError && <p role="alert">{sourceError} <button onClick={() => setSourceRevision(value => value + 1)}>Retry source</button></p>}
+        {sourceActivity && agent && <><p>Historical source context. Private requests retain their current status and original approval/expiry controls.</p>{sourceActivity.events.filter(event => event.type === "message" || event.type === "human_todo_changed").slice(-10).map(event => <EventItem key={event.id} event={event} events={sourceActivity.events} runs={sourceActivity.runs} agent={agent} />)}{sourceActivity.interventions.map(item => <InterventionCard key={item.id} item={data?.interventions.find(current => current.id === item.id) ?? item} hasInlineTool={false} onChange={() => void refresh.current()} />)}</>}
+      </Modal>}
       <span className="sr-only" role="status">
         {announcement}
       </span>
@@ -1673,6 +1714,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             )}
           </div>
         </header>
+        {agent && data && <AgentNeedsYou key={agent.id} snapshot={data} agentId={agent.id} active={active} />}
         {creationError && mobile && !listOpen && <p className="error-text" role="alert">{creationError}</p>}
         {loadError && (
           <div className="connection-error" role="alert">
@@ -1723,7 +1765,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             </div>
           ) : agent ? (
             <div className="timeline">
-              {conversationActivity(visibleEvents, visibleRuns).map(
+              {conversationActivity(visibleEvents, visibleRuns, true, visibleInterventions).map(
                 (entry) =>
                   entry.kind === "work" ? (
                     <div key={entry.key} data-activity-key={entry.key}>
@@ -1755,7 +1797,21 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                     </div>
                   ) : (
                     <div key={entry.key} data-activity-key={entry.key}>
-                      {entry.kind === "screenshots" ? (
+                      {entry.kind === "intervention" ? (
+                        <InterventionCard
+                          item={entry.item}
+                          hasInlineTool={visibleEvents.some(
+                            (event) =>
+                              event.runId === entry.item.runId &&
+                              isToolActivity(event) &&
+                              event.data.name ===
+                                (entry.item.kind === "sudo"
+                                  ? "request_sudo"
+                                  : entry.item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"),
+                          )}
+                          onChange={() => void refresh.current()}
+                        />
+                      ) : entry.kind === "screenshots" ? (
                         <BrowserScreenshots events={entry.events} />
                       ) : (
                       <EventItem
@@ -1802,28 +1858,6 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
               </div>
             </div>
           )}
-          {(page?.interventions ?? data?.interventions ?? [])
-            .filter((i) => i.agentId === agent?.id)
-            .map((item) => (
-              <InterventionCard
-                key={item.id}
-                hasInlineTool={visibleEvents.some(
-                  (event) =>
-                    event.runId === item.runId &&
-                    isToolActivity(event) &&
-                    event.data.name ===
-                      (item.kind === "sudo"
-                        ? "request_sudo"
-                        : item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"),
-                )}
-                item={
-                  data?.interventions.find(
-                    (current) => current.id === item.id,
-                  ) ?? item
-                }
-                onChange={() => void refresh.current()}
-              />
-            ))}
           {agent &&
             (data?.pendingMessages ?? [])
               .filter((message) => message.agentId === agent.id)
@@ -2151,6 +2185,7 @@ export function App() {
   const viewing = location.destination === "viewer" && !!location.appId;
   const destinationNavigation = !viewing && <nav className="destination-navigation" aria-label="Jelly destinations">
     <a href="/agents" aria-current={location.destination === "agents" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("agents"); } }}>Agents</a>
+    <a href="/todos" aria-current={location.destination === "todos" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("todos"); } }}>Todos{workspace?.humanTodoCounts?.total ? ` · ${workspace.humanTodoCounts.total}` : ""}</a>
     <a href="/apps" aria-current={location.destination === "apps" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("apps"); } }}>Apps</a>
   </nav>;
   return <div className="jelly-destinations" data-destination={location.destination} ref={shell}>
@@ -2162,6 +2197,7 @@ export function App() {
       <div className="destination-layer apps-layer" data-active={location.destination === "apps"} inert={location.destination !== "apps"} aria-hidden={location.destination !== "apps"}>
         <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={editApp} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />
       </div>
+      <div className="destination-layer todos-layer" data-active={location.destination === "todos"} inert={location.destination !== "todos"} aria-hidden={location.destination !== "todos"}><HumanTodos snapshot={workspace} active={location.destination === "todos"} todoId={location.todoId} /></div>
       {viewing && <AppViewer appId={location.appId!} navigationId={location.navigationId} changedApp={changedApp} revision={revision} onHome={() => navigate("apps", location.appId)} onLaunch={launch} onChanged={changed} onDetails={setDetails} onEdit={editApp} onRemove={setRemoving} />}
     </div>
     {mobileNavigation && destinationNavigation}
