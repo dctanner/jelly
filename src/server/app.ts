@@ -395,6 +395,12 @@ export async function startApp(options: AppOptions) {
               }
               return json(service.chromeStatus(agentId));
             }
+            const recovery = url.pathname.match(/^\/api\/interventions\/([^/]+)\/confirm-browser-recovery$/);
+            if (req.method === "POST" && recovery) {
+              controls.require(req);
+              const input = await body(req);
+              return json(await service.interventions.confirmBrowserRecovery(recovery[1]!, input.binding));
+            }
             const intervention = url.pathname.match(
               /^\/api\/interventions\/([^/]+)\/(approve|deny)$/,
             );

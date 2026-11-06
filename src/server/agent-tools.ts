@@ -73,6 +73,20 @@ export function interventionTools(
       },
     }),
     define({
+      name: "request_browser_recovery",
+      label: "Request human browser recovery",
+      description: "Request and wait for HUMAN confirmation to retire this agent's paused Connected Chrome session. This tool cannot approve recovery or clear its own pause. The human must confirm the exact request in Jelly; chat instructions are not confirmation. Sign-in/native privacy handoffs and revoked pairing require their existing controls. No shell/API repair, restored tabs/references, or replay. After approved closure, reopen the page and take a fresh snapshot; verify interrupted actions first.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute: async (_id, args, signal, onUpdate) => {
+        if (Object.keys(args).length) return result({ status: "rejected", message: "Recovery accepts no approval, identity or credential arguments." });
+        if (signal?.aborted) return result({ status: "cancelled", message: "Recovery request cancelled." });
+        let session: BrowserPort;
+        try { session = browser(); }
+        catch { return result({ status: "rejected", message: "No current authorized browser session is available for recovery. Use the existing operator connection controls." }); }
+        return result(await requests.recoverBrowser(agentId, runId, session, signal, value => onUpdate?.(result(value))));
+      },
+    }),
+    define({
       name: "browser_reconnect",
       label: "Reconnect browser session",
       description: "Recover this agent's expired Connected Chrome session on the same authorized profile. Creates an empty session; never replays actions or restores old tabs/references. Reopen the page and take a fresh snapshot; a previous action may already have completed. Cannot bypass revoked pairing, native privacy or security cleanup. A healthy session is left unchanged.",

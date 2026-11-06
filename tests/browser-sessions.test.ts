@@ -15,6 +15,7 @@ const port: BrowserPort = {
 function fixture(fail = false) {
   const calls: { agent: string; run: string; selection: ChromeSelection; name: string }[] = [];
   const chrome = {
+    recoveryRetired: () => false,
     allocate(agent: string, run: string, selection: ChromeSelection, name: string) {
       if (fail) throw new Error("Chrome is disconnected");
       calls.push({ agent, run, selection: structuredClone(selection), name });

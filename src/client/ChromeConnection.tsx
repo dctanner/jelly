@@ -158,8 +158,10 @@ export function ChromeConnection({
       <p className="chat-form-hint">
         Existing sessions keep their profile until closed.
         Personal tabs are not shared. Agents recover expired sessions using
-        browser_reconnect. Close an idle session in Computer control → Advanced
-        only to change its profile or perform operator repair.
+        browser_reconnect. Security-pause recovery requests require your explicit
+        confirmation in Jelly; agents cannot approve their own recovery.
+        Close an idle session in Computer control → Advanced to change its profile
+        or perform operator repair.
       </p>
       <button
         className="primary"

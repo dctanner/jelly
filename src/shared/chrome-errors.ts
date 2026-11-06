@@ -85,7 +85,7 @@ export function chromePauseError(value: unknown, diagnostic?: unknown): string {
   const detail = reason === "navigation_denied"
     ? `${classification} Diagnostic revisions: backend=${CHROME_NAVIGATION_DIAGNOSTIC_REVISION}, worker=${navigation?.revision ?? "unreported"}.`
     : "";
-  return `Chrome automation paused [${reason ?? "unknown"}]: ${reason ? pauseReasons[reason] : "The pause cause was not reported by the connected extension."}${detail} Finish any native private handoff or ask the operator to repair the affected session; browser_reconnect cannot bypass this boundary. Human computer-control status and observation refusals alone do not pause automation.`;
+  return `Chrome automation paused [${reason ?? "unknown"}]: ${reason ? pauseReasons[reason] : "The pause cause was not reported by the connected extension."}${detail} Finish any sign-in/native private handoff using its existing human control. For other security pauses, request_browser_recovery can request human confirmation to retire the affected session; it cannot approve repair. browser_reconnect cannot bypass this boundary. Human computer-control status and observation refusals alone do not pause automation.`;
 }
 
 export function chromeOperationError(value: unknown): string {

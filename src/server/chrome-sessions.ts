@@ -7,6 +7,8 @@ import {
 } from "../shared/chrome-protocol";
 import { chromePauseError, chromeNavigationDiagnostic, type ChromePauseReason, type ChromeNavigationDiagnostic } from "../shared/chrome-errors";
 import { HttpError } from "./errors";
+import type { BrowserPort, BrowserRecovery } from "./browser-sessions";
+import type { BrowserRecoveryBinding } from "../shared/browser-recovery";
 interface Task {
   agent: string;
   id: string;
@@ -30,11 +32,17 @@ interface Task {
   pendingRemovals: Set<Set<string>>;
   handoff: string | null;
   chain: Promise<unknown>;
+  recoveryRequest?: boolean;
+  recoveryClosing?: boolean;
 }
 export class ChromeSessions {
   readonly bridge: ChromeBridge;
   private tasks = new Map<string, Task>();
   private nativePauses = new Map<Task, number>();
+  private nativeHandoff = false;
+  private nativeRevision = 0;
+  private retiredPorts = new WeakSet<BrowserPort>();
+  recoveryRetired(port: BrowserPort) { return this.retiredPorts.has(port); }
   private protected: string[] = [];
   private humanDesktop = false;
   /** Advisory only: never used by automation admission. */
@@ -55,6 +63,7 @@ export class ChromeSessions {
     if (t.handoff !== handoff) throw new HttpError(409, "This browser request is no longer current.");
     t.humanUsing = false;
     t.handoff = null;
+    if (handoff) ++t.transition;
     this.changed(agent);
     return handoff;
   }
@@ -110,10 +119,13 @@ export class ChromeSessions {
           t.profile === profile &&
           t.generation === generation &&
           t.id === session &&
-          (t.run ?? t.authorityRun) === run &&
+          (t.run === run || (!t.begun && t.authorityRun === run)) &&
           !t.lost
         ) {
           t.paused = true;
+          // The confirmed end RPC emits its own settlement pause. It cannot
+          // invalidate itself, but independent/unknown/failed pauses still do.
+          if (t.recoveryClosing && reason === "settlement" && state !== "failed") return;
           // Legacy peers omit the reason on generic pause acknowledgements.
           // Retain a known current native cause, never an independent failure.
           const nativeAcknowledgement =
@@ -198,10 +210,11 @@ export class ChromeSessions {
       throw new Error("Chrome task is still owned by another run.");
     t.run = run;
     const assertRun = () => {
-      if (this.tasks.get(agent) !== t || t.run !== run || t.settling)
+      if (this.tasks.get(agent) !== t || t.run !== run || t.settling || t.recoveryClosing)
         throw new Error("Chrome run authority expired. Only the current active run can use or reconnect its session.");
     };
     const serialize = <T>(fn: () => Promise<T> | T) => {
+      try { assertRun(); } catch (error) { return Promise.reject<T>(error); }
       const session = t.id;
       const next = t.chain.catch(() => {}).then(() => {
         assertRun();
@@ -245,15 +258,91 @@ export class ChromeSessions {
           chromePauseError(t.pauseReason, t.navigationDiagnostic),
         );
     };
-    return {
+    const port = {
       target: "chrome" as const,
+      prepareRecovery: (): BrowserRecovery => {
+        assertRun();
+        assertReconnectAllowed();
+        if (t.recoveryRequest) throw new Error("A recovery request is already awaiting the human.");
+        if (this.nativeHandoff || this.nativePauses.has(t) || t.pauseReason === "native_handoff" || t.handoff || t.pausePending || t.resumePending)
+          throw new Error("Finish the existing sign-in or native private handoff using its own control. Recovery cannot clear it.");
+        if (!t.lost && !t.paused) throw new Error("This browser session does not need operator recovery.");
+        const paired = this.bridge.profiles().find(p => p.id === t.profile);
+        if (!paired || !this.bridge.canReconnect(t.profile, paired.generation) ||
+            (t.lost ? paired.generation === t.generation : paired.generation !== t.generation))
+          throw new Error("The pinned profile needs operator Reconnect and confirmed debugger cleanup in the Chrome extension first.");
+        const binding: BrowserRecoveryBinding = {
+          agent, run, authorityRun: t.authorityRun, session: t.id, profile: t.profile, generation: t.generation,
+          pairedGeneration: paired.generation, revision: t.transition,
+          pauseState: t.pauseState, lost: t.lost,
+        };
+        const nativeRevision = this.nativeRevision;
+        let consumed = false, released = false;
+        const check = () => {
+          assertReconnectAllowed();
+          if (released || this.tasks.get(agent) !== t || t.run !== run || t.settling ||
+              t.id !== binding.session || t.profile !== binding.profile || t.generation !== binding.generation || t.authorityRun !== binding.authorityRun ||
+              t.transition !== binding.revision || t.lost !== binding.lost ||
+              (!consumed && t.pauseState !== binding.pauseState) ||
+              this.nativeRevision !== nativeRevision || this.nativeHandoff || this.nativePauses.has(t) ||
+              t.pauseReason === "native_handoff" || t.handoff || t.pausePending || t.resumePending ||
+              !this.bridge.canReconnect(binding.profile, binding.pairedGeneration))
+            throw new Error("The recovery request is stale. Nothing was restored or replayed.");
+        };
+        t.recoveryRequest = true;
+        return {
+          binding,
+          check,
+          release: () => {
+            if (released) return;
+            released = true;
+            t.recoveryRequest = false;
+          },
+          close: (signal) => {
+            if (consumed) return Promise.reject(new Error("Recovery confirmation was already consumed."));
+            check();
+            signal.throwIfAborted();
+            consumed = true;
+            t.recoveryClosing = true; // Revoke admission before draining, including queued work.
+            const prior = t.chain;
+            const closing = (async () => {
+              await prior.catch(() => {});
+              signal.throwIfAborted();
+              check();
+              if (!binding.lost) {
+                // end's authenticated response follows extension queue drain and
+                // debugger cleanup. Never interpret mere dispatch as closure.
+                const ack = await this.call(t, "end", { discard: true }, signal, binding.authorityRun) as { ok?: boolean; retained?: unknown[] };
+                if (ack?.ok !== true || !Array.isArray(ack.retained) || ack.retained.length)
+                  throw new Error("Chrome did not acknowledge session retirement.");
+              }
+              signal.throwIfAborted();
+              check();
+              this.tasks.delete(agent);
+              this.retiredPorts.add(port);
+              this.changed(agent);
+              return {
+                status: "approved_closed" as const,
+                disposition: binding.lost ? "retired_lost_session" as const : "closed_connected_session" as const,
+                message: binding.lost
+                  ? "The human approved retirement of the lost backend session. Old tabs may remain and cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting."
+                  : "The human approved closure and Chrome acknowledged retirement of this session. Old tabs/references cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting.",
+              };
+            })();
+            // Settlement must drain confirmation too. Failure retains the fence;
+            // only existing operator repair can remove that blocked task.
+            t.chain = closing;
+            return closing;
+          },
+        };
+      },
       reconnect: (signal?: AbortSignal) => serialize(() => {
         signal?.throwIfAborted();
         // Revalidate at the head of the queue, not merely at tool admission.
         assertReconnectAllowed();
-        if (t.handoff || t.pausePending || t.resumePending ||
+        if (this.nativeHandoff || t.handoff || t.pausePending || t.resumePending ||
             t.pauseState !== "active" || this.nativePauses.has(t))
-          throw new Error("Browser reconnect cannot clear a sign-in handoff, native privacy pause or security fault. Finish the handoff or ask the operator to repair the affected session.");
+          throw new Error("Browser reconnect cannot clear a sign-in handoff, native privacy pause or security fault. Finish handoffs through their existing human controls. For a security pause, request_browser_recovery can request human confirmation to retire only this session; it cannot approve repair.");
         const profile = this.bridge.profiles().find(p => p.id === t.profile);
         if (!profile || !this.bridge.canReconnect(t.profile, profile.generation) ||
             (t.lost && profile.generation === t.generation))
@@ -361,6 +450,7 @@ export class ChromeSessions {
         // overwritten by that operation's late response.
         if (t.handoff) throw new HttpError(409, "A browser sign-in request is already pending.");
         t.handoff = id;
+        ++t.transition;
         t.humanUsing = true;
         this.changed(agent);
         return serialize(async () => {
@@ -381,7 +471,8 @@ export class ChromeSessions {
       cancelLogin: (id: string) => {
         if (t.handoff === id) this.done(agent, id);
       },
-    };
+    } satisfies BrowserPort;
+    return port;
   }
   private pause(t: Task, signal?: AbortSignal, reason: ChromePauseReason = "requested"): Promise<void> {
     if (t.pausePending) return t.pausePending;
@@ -413,6 +504,7 @@ export class ChromeSessions {
     method: ChromeMethod,
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    authorityRun = t.run ?? t.authorityRun,
   ) {
     if (t.lost) throw new Error("Chrome session authority expired. Call browser_reconnect; never replay an unconfirmed action.");
     if (!chromeParams(method, params))
@@ -428,7 +520,7 @@ export class ChromeSessions {
         t.profile,
         t.generation,
         t.id,
-        t.run ?? t.authorityRun,
+        authorityRun,
         method,
         params,
         signal,
@@ -474,6 +566,8 @@ export class ChromeSessions {
     };
   }
   async pauseForNativeHandoff() {
+    this.nativeHandoff = true;
+    ++this.nativeRevision;
     await Promise.all([...this.tasks.values()].map(async t => {
       if (t.lost || t.paused) return;
       await this.pause(t, undefined, "native_handoff");
@@ -488,6 +582,8 @@ export class ChromeSessions {
       else { t.paused = false; t.pauseState = "active"; this.changed(t.agent); }
     }
     this.nativePauses.clear();
+    this.nativeHandoff = false;
+    ++this.nativeRevision;
   }
   async control(agent: string, operation: string, pageId?: string) {
     const t = this.tasks.get(agent);

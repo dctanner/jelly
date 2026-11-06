@@ -1,5 +1,14 @@
 import type { ChromeSessions } from "./chrome-sessions";
 import type { ChromeSelection } from "../shared/chrome-protocol";
+import type { BrowserRecoveryBinding, BrowserRecoveryResult } from "../shared/browser-recovery";
+
+/** Server-only continuation, never serialized or exposed as an agent tool. */
+export interface BrowserRecovery {
+  binding: BrowserRecoveryBinding;
+  check(): void;
+  close(signal: AbortSignal): Promise<BrowserRecoveryResult>;
+  release(): void;
+}
 
 export type ConnectedBrowserMethod =
   | "open"
@@ -20,6 +29,7 @@ export interface BrowserPort {
     status: "reconnected" | "already_connected";
     message: string;
   }>;
+  prepareRecovery?: () => BrowserRecovery;
   keepTab?: (mark?: "deliverable" | "handoff") => Promise<unknown>;
   action(
     method: ConnectedBrowserMethod,
@@ -47,7 +57,13 @@ export class BrowserSessions {
       get: (id) => {
         if (id !== agent)
           throw new Error("Child/foreign Chrome browser access is unavailable.");
+        // Only an acknowledged human recovery may retire a port during a run.
+        if (port && this.chrome.recoveryRetired(port)) {
+          port = undefined;
+        }
         if (!port) {
+          // Allocation can fail after retirement; every retry needs fresh authority.
+          assertReconnectAllowed?.();
           port = this.chrome.allocate(agent, run, selected, name, assertReconnectAllowed);
           this.pins.set(agent, selected);
         }

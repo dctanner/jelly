@@ -1814,7 +1814,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                     event.data.name ===
                       (item.kind === "sudo"
                         ? "request_sudo"
-                        : item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"),
+                        : item.kind === "desktop_handoff" ? "request_desktop_handoff" : item.kind === "browser_recovery" ? "request_browser_recovery" : "request_browser_login"),
                 )}
                 item={
                   data?.interventions.find(

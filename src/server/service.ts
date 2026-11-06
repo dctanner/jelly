@@ -37,7 +37,6 @@ import { appsTools } from "./apps-tools";
 import type { SudoExecutor } from "./sudo";
 import { validateDirectory, effectiveCwd } from "./directories";
 import { Desktop, type DesktopOptions } from "./desktop";
-import type { BrowserPort } from "./browser-sessions";
 
 const MAX_RUN_TURNS = 10_000;
 const MAX_RUN_DURATION_MS = 24 * 60 * 60 * 1_000;
@@ -147,16 +146,7 @@ export class JellyService {
       if (this.closing || active?.agentId !== agentId || active.cancelled)
         throw new Error("Browser reconnect requires this agent's current active run.");
     });
-    let port: BrowserPort | undefined;
-    return {
-      target: scoped.target,
-      get: (id: string): BrowserPort => {
-        if (port && id === agentId) return port;
-        const browser = scoped.get(id);
-        port = browser;
-        return port;
-      },
-    };
+    return scoped;
   }
   subscribe(listener: (event: Activity) => void) {
     this.listeners.add(listener);
