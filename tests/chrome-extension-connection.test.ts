@@ -235,7 +235,7 @@ test("navigation exceptions never admit main inherited documents or forbidden ch
     ["blob:https://auth.fixture.example/PRIVATE", "blob", [0, 1]],
     ["chrome://settings/PRIVATE", "chrome_internal", [0, 1]],
     ["about:blank-not-inherited#PRIVATE", "about_other", [0, 1]],
-    ["https://auth.fixture.example/?PRIVATE=" + "x".repeat(2048), "url_too_long", [0, 1]],
+    ["https://auth.fixture.example/?PRIVATE=" + "x".repeat(2048), "url_too_long", [0]],
     ["PRIVATE invalid URL", "invalid_url", [0, 1]],
   ] as const;
   for (const [event, kind] of events) {
@@ -368,6 +368,177 @@ test("other-extension children are opaque across navigation events; no child or 
     f.secret();
     expect((await f.call("snapshot", { tab: f.tab })).error.reason).toBe("secret_field");
   }
+});
+
+const paddedNavigationURL = (length: number, prefix = "https://child.fixture.example/?PRIVATE=") =>
+  prefix + "x".repeat(length - prefix.length);
+
+async function longWebFrameFixture(length = 2049) {
+  const f = await opaqueFrameFixture();
+  const frames = f.opaqueTree();
+  frames[2]!.url = paddedNavigationURL(length);
+  return { ...f, longTree: frames };
+}
+
+test("bounded long web child events omit every child without poisoning the session or unrelated tabs", async () => {
+  for (const event of ["onCommitted", "onHistoryStateUpdated", "onReferenceFragmentUpdated"]) {
+    for (const length of [2049, 4096]) {
+      const f = await longWebFrameFixture(length);
+      await f.call("snapshot", { tab: f.tab });
+      const beforeEvent = f.port.messages.length;
+      f.injected.length = 0;
+      f.frames(f.longTree);
+      f.chrome.webNavigation[event].fire({ tabId: 1, frameId: 2, url: f.longTree[2]!.url });
+      await tick();
+      expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
+      for (const ref of ["main-ref", "sibling-ref"])
+        expect((await f.call("click", { tab: f.tab, ref })).error).toBeDefined();
+      expect(f.injected.some(doc => doc.endsWith(":click"))).toBe(false);
+      const partial = (await f.call("snapshot", { tab: f.tab })).result;
+      expect(partial.framesOmitted).toBe(true);
+      expect(partial.frames.map((frame: any) => frame.frame)).toEqual([0]);
+      expect(partial.elements.map((element: any) => element.ref)).toEqual(["main-ref"]);
+      expect(JSON.stringify(partial)).not.toContain("PRIVATE");
+      expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).result.ok).toBe(true);
+      expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
+      expect((await f.call("wait_for", { tab: f.tab, condition: "text_absent", text: "PRIVATE", timeoutMs: 0 })).result.ok).toBe(false);
+      expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
+      expect(JSON.stringify(f.port.messages.slice(beforeEvent))).not.toContain("PRIVATE");
+      // Another public task tab still opens and observes in the same session.
+      f.chrome.tabs.create = async () => ({ id: 2, windowId: 1 });
+      const originalFrames = f.chrome.webNavigation.getAllFrames;
+      f.chrome.webNavigation.getAllFrames = async ({ tabId }: any) => tabId === 2 ? f.longTree.slice(0, 1) : originalFrames();
+      const other = (await f.call("open", { url: "https://auth.fixture.example/login" })).result.pageId;
+      expect((await f.call("snapshot", { tab: other })).result.text).toContain("Main auth page");
+      f.secret();
+      expect((await f.call("snapshot", { tab: f.tab })).error.reason).toBe("secret_field");
+    }
+  }
+});
+
+test("long web omission keeps the 2048 observation and 4096 worker boundaries unchanged", async () => {
+  for (const length of [2048, 2049, 4096, 4097]) {
+    const f = await longWebFrameFixture(length);
+    f.frames(f.longTree); // Metadata alone must restrict exposure, without an event.
+    const result = await f.call("snapshot", { tab: f.tab });
+    if (length === 2048) {
+      expect(result.result.frames).toHaveLength(5);
+      expect(f.injected.some(doc => doc.startsWith("opaque:"))).toBe(true);
+    } else if (length <= 4096) {
+      expect(result.result.framesOmitted).toBe(true);
+      expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
+    } else {
+      expect(result.error).toBeDefined();
+      expect(f.injected).toEqual([]);
+    }
+    // Model-supplied URLs retain their original admission policy.
+    if (length <= 4096) {
+      const opened = await f.call("open", { url: f.longTree[2]!.url });
+      if (length > 2048) expect(opened.error).toBeDefined();
+      else expect(opened.result).toBeDefined();
+    } else expect(chromeParams("open", { url: f.longTree[2]!.url })).toBe(false);
+  }
+});
+
+test("long URL omission rejects unsafe, ambiguous, top-level and unknown destinations across events", async () => {
+  const denied: [unknown, string][] = [
+    ...[0, -1, undefined, "2", 1.5, Number.MAX_SAFE_INTEGER + 1].map(frameId => [frameId, paddedNavigationURL(2049)] as [unknown, string]),
+    [0, paddedNavigationURL(4096)], [0, paddedNavigationURL(4097)], [2, paddedNavigationURL(4097)],
+    [2, `https://${"a".repeat(2048)}.example/PRIVATE`], // The origin must still fit chromeOrigin's bound.
+    ...[
+      "http://localhost:3100/PRIVATE=", "http://localhost.:3100/PRIVATE=",
+      "https://user:PRIVATE@child.fixture.example/", "https://%75ser@child.fixture.example/PRIVATE=",
+      "data:text/html,PRIVATE", "blob:https://child.fixture.example/PRIVATE", "file:///PRIVATE",
+      "ws://child.fixture.example/PRIVATE", "chrome://settings/PRIVATE", "chrome-error://chromewebdata/PRIVATE",
+      `chrome-extension://${opaqueFixtureId}/PRIVATE`, "javascript:PRIVATE", "PRIVATE invalid URL ",
+      " HTTPS://child.fixture.example/PRIVATE=", "https://CHILD.fixture.example/PRIVATE=",
+      "https://child.fixture.example:443/PRIVATE=", "https://child.fixture.example/a/../PRIVATE=",
+      "https://child.fixture.example/%2e%2e/PRIVATE=", "https://%63hild.fixture.example/PRIVATE=",
+      "https://child.fixture.example/bad%zz/PRIVATE=", "https://child.fixture.example/\nPRIVATE=",
+    ].map(prefix => [2, paddedNavigationURL(2049, prefix)] as [unknown, string]),
+  ];
+  for (const event of ["onCommitted", "onHistoryStateUpdated", "onReferenceFragmentUpdated"]) {
+    for (const [frameId, url] of denied) {
+      const f = await longWebFrameFixture();
+      f.frames(f.longTree);
+      f.chrome.webNavigation[event].fire({ tabId: 1, frameId, url });
+      await tick();
+      expect(f.port.messages.some((m: any) => m.type === "pauseState" && m.reason === "navigation_denied" && m.navigationDiagnostic.destination === "url_too_long")).toBe(true);
+      expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
+      expect((await f.call("open", { url: "https://public.fixture.example/" })).error).toBeDefined();
+      expect(f.injected).toEqual([]);
+      expect(JSON.stringify(f.port.messages)).not.toContain("PRIVATE");
+    }
+  }
+});
+
+test("canonical encoded long web paths are omitted, while unleased events cannot change scope", async () => {
+  for (const prefix of ["https://child.fixture.example/encoded%20path?PRIVATE=", "http://child.fixture.example:8080/%2F?PRIVATE="]) {
+    const f = await longWebFrameFixture();
+    f.longTree[2]!.url = paddedNavigationURL(2049, prefix);
+    f.chrome.webNavigation.onCommitted.fire({ tabId: 99, frameId: 2, url: f.longTree[2]!.url });
+    await tick();
+    const untouched = (await f.call("snapshot", { tab: f.tab })).result;
+    expect(untouched.frames).toHaveLength(2);
+    expect(untouched.framesOmitted).toBeUndefined();
+    f.frames(f.longTree);
+    f.injected.length = 0;
+    f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: f.longTree[2]!.url });
+    await tick();
+    expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
+    expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
+    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
+  }
+});
+
+test("long web omission revalidates unsafe siblings and descendants even without navigation events", async () => {
+  for (const frameIndex of [1, 3, 4]) {
+    for (const url of ["http://localhost:3100/PRIVATE", paddedNavigationURL(2049, "http://localhost:3100/PRIVATE="), "data:text/html,PRIVATE", "PRIVATE invalid URL"]) {
+      const f = await longWebFrameFixture();
+      f.longTree[frameIndex]!.url = url;
+      f.frames(f.longTree);
+      expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
+      expect(f.injected).toEqual([]);
+    }
+  }
+});
+
+test("long web frame provenance changes invalidate refs and racing observations; missing ancestry stays opaque", async () => {
+  for (const change of ["document", "parent", "remove", "postcheck", "missing-ancestor"]) {
+    const f = await longWebFrameFixture();
+    f.frames(f.longTree);
+    await f.call("snapshot", { tab: f.tab });
+    f.injected.length = 0;
+    if (change === "postcheck") {
+      f.changeDuringSnapshot();
+      expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
+    } else {
+      if (change === "document") f.longTree[2]!.documentId = "changed-long-child";
+      if (change === "parent") f.longTree[3]!.parentFrameId = 1;
+      if (change === "remove") f.longTree.splice(2);
+      if (change === "missing-ancestor") f.longTree.splice(2, 1);
+      expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).error).toBeDefined();
+      expect(f.injected.some(doc => doc.endsWith(":click"))).toBe(false);
+      expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
+    }
+    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
+  }
+});
+
+test("long child URL omission does not clear a real pause or a verified-new-document privacy latch", async () => {
+  const f = await longWebFrameFixture();
+  f.frames(f.longTree);
+  await f.call("snapshot", { tab: f.tab });
+  f.longTree[0]!.documentId = "new-main";
+  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "new-main", url: f.longTree[0]!.url, timeStamp: Date.now() + 10000 });
+  await tick();
+  f.frames(f.longTree.slice(0, 2)); // A long child present at verification prevents reset.
+  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
+  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 3, url: "http://localhost:3100/PRIVATE" });
+  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: f.longTree[2]!.url });
+  await tick();
+  expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
+  expect(f.port.messages.some((m: any) => m.type === "pauseState" && m.reason === "navigation_denied")).toBe(true);
 });
 
 test("opaque frame exposure binds omitted document identities and parent topology, including postchecks", async () => {

@@ -479,6 +479,25 @@ function opaqueExtensionFrame(frameId, value) {
       !url.username && !url.password && !url.port && url.href === value;
   } catch { return false; }
 }
+// A URL length refusal alone does not identify an unsafe destination.
+// Positively classify only canonical browser-reported web children within the
+// existing worker bound, then OMIT them (and all children), never admit them.
+// All non-length chromeOrigin policy still applies; ambiguous URLs fail closed.
+function unsupportedLongWebFrame(s, frameId, value) {
+  if (!Number.isSafeInteger(frameId) || frameId <= 0 || typeof value !== "string" ||
+      value.length <= 2048 || value.length > 4096 || /%(?![a-fA-F0-9]{2})/.test(value))
+    return false;
+  try {
+    const url = new URL(value);
+    if (url.href !== value || url.username || url.password || !["http:", "https:"].includes(url.protocol))
+      return false;
+    chromeOrigin(url.origin, s.protected);
+    return true;
+  } catch { return false; }
+}
+function opaqueChildFrame(s, frameId, url) {
+  return opaqueExtensionFrame(frameId, url) || unsupportedLongWebFrame(s, frameId, url);
+}
 function checkURL(s, url) {
   chromeOrigin(
     url,
@@ -574,7 +593,7 @@ function verifyMainCommit(s, tab, details) {
     // Recheck policy; failed/forbidden commits never clear uncertainty.
     checkURL(s, mains[0].url);
     if (mains[0].errorOccurred !== false) return;
-    if (!completeFrameTree(frames) || frames.some(f => opaqueExtensionFrame(f.frameId, f.url))) {
+    if (!completeFrameTree(frames) || frames.some(f => opaqueChildFrame(s, f.frameId, f.url))) {
       markOpaqueChildren(tab);
       return;
     }
@@ -608,13 +627,13 @@ async function documentGuard(s, run, tab, screenshot = false) {
   }
   // Establish the current lifetime without ever clearing its exclusion latch.
   tab.mainDocumentId ??= frames.find(f => f.frameId === 0).documentId;
-  if (!completeFrameTree(frames) || frames.some(f => opaqueExtensionFrame(f.frameId, f.url)))
+  if (!completeFrameTree(frames) || frames.some(f => opaqueChildFrame(s, f.frameId, f.url)))
     markOpaqueChildren(tab);
   const opaqueChildren = tab.opaqueChildren;
   // No pixels from inherited, privileged or unaccounted children can be certified safe.
   if (screenshot && (opaqueChildren || frames.some(f => inheritedFrame(f.frameId, f.url))))
     throw new ChromeObservationError("unsupported_frame");
-  const webFrames = frames.filter(f => !inheritedFrame(f.frameId, f.url) && !opaqueExtensionFrame(f.frameId, f.url));
+  const webFrames = frames.filter(f => !inheritedFrame(f.frameId, f.url) && !opaqueChildFrame(s, f.frameId, f.url));
   // Do not relax destination policy for a forbidden descendant or sibling.
   // This inspects browser metadata only, never a frame's DOM or private pixels.
   for (const frame of webFrames) checkURL(s, frame.url);
@@ -631,7 +650,7 @@ async function documentGuard(s, run, tab, screenshot = false) {
     // relationships. Exposure can change without an included document changing.
     signature: JSON.stringify(frames.map(f => [
       f.frameId, f.parentFrameId, f.documentId,
-      opaqueExtensionFrame(f.frameId, f.url) ? "opaque" : inheritedFrame(f.frameId, f.url) ? "inherited" : "web",
+      opaqueChildFrame(s, f.frameId, f.url) ? "opaque" : inheritedFrame(f.frameId, f.url) ? "inherited" : "web",
     ]).sort((a, b) => a[0] - b[0])),
   };
 }
@@ -1061,7 +1080,7 @@ chrome.webNavigation.onCommitted.addListener((details) => {
       return;
     // Even unobserved helper changes revoke refs, not session authority.
     s.epoch = crypto.randomUUID();
-    if (opaqueExtensionFrame(details.frameId, details.url)) {
+    if (opaqueChildFrame(s, details.frameId, details.url)) {
       if (tab) markOpaqueChildren(tab, details.timeStamp);
       return;
     }
@@ -1085,7 +1104,7 @@ for (const [event, kind] of [
       s.epoch = crypto.randomUUID();
       // Same inherited-child boundary as commits. History/fragment changes in
       // an unobserved helper are not forbidden top-level destinations.
-      if (opaqueExtensionFrame(details.frameId, details.url)) {
+      if (opaqueChildFrame(s, details.frameId, details.url)) {
         const tab = [...s.tabs.values()].find(t => t.id === details.tabId);
         if (tab) markOpaqueChildren(tab, details.timeStamp);
         return;
