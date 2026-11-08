@@ -1,11 +1,12 @@
 import { ChromeBridge } from "./chrome-bridge";
 import {
-  chromeOrigin,
   chromeParams,
   type ChromeMethod,
   type ChromeSelection,
 } from "../shared/chrome-protocol";
-import { chromePauseError, chromeNavigationDiagnostic, type ChromePauseReason, type ChromeNavigationDiagnostic } from "../shared/chrome-errors";
+import { chromePauseError, type ChromePauseReason } from "../shared/chrome-errors";
+import { BrowserEngine } from "./browser/engine";
+import type { ChromePort, ChromePortEvent, TabInfo } from "./browser/types";
 import { HttpError } from "./errors";
 import type { BrowserPort, BrowserRecovery } from "./browser-sessions";
 import type { BrowserRecoveryBinding } from "../shared/browser-recovery";
@@ -21,17 +22,20 @@ interface Task {
   paused: boolean; // Authority revoked, not necessarily safe for credential entry.
   pauseState: "active" | "pausing" | "paused" | "resuming" | "failed";
   pauseReason?: ChromePauseReason;
-  navigationDiagnostic?: ChromeNavigationDiagnostic;
   pausePending: Promise<void> | null;
   resumePending: boolean;
   transition: number;
   humanUsing: boolean;
   lost: boolean;
-  active: string | null;
-  tabs: Set<string>;
-  pendingRemovals: Set<Set<string>>;
+  active: number | null;
+  tabs: Set<number>;
   handoff: string | null;
   chain: Promise<unknown>;
+  inflight: Set<Promise<unknown>>;
+  beginning: Promise<void> | null;
+  listeners: Set<(event: ChromePortEvent) => void>;
+  engine: BrowserEngine;
+  admit?: <T>(fn: () => Promise<T>) => Promise<T>;
   recoveryRequest?: boolean;
   recoveryClosing?: boolean;
 }
@@ -83,37 +87,36 @@ export class ChromeSessions {
           this.changed(t.agent);
         }
     };
-    this.bridge.onTabRemoved = (profile, generation, session, run, tab) => {
+    // Extension notifications are scoped to the session, not to one run: a
+    // retained handoff tab keeps reporting between runs.
+    const forSession = (profile: string, generation: string, session: string, fn: (t: Task) => void) => {
       for (const t of this.tasks.values())
-        if (
-          t.profile === profile &&
-          t.generation === generation &&
-          t.id === session &&
-          (t.run === run || (!t.begun && t.authorityRun === run)) &&
-          !t.lost
-        ) {
-          for (const removed of t.pendingRemovals) removed.add(tab);
-          t.tabs.delete(tab);
-          if (t.active === tab) t.active = t.tabs.values().next().value ?? null;
-          this.changed(t.agent);
-        }
+        if (t.profile === profile && t.generation === generation && t.id === session && !t.lost) fn(t);
     };
-    this.bridge.onTabAdded = (profile, generation, session, run, tab) => {
-      for (const t of this.tasks.values())
-        if (
-          t.profile === profile &&
-          t.generation === generation &&
-          t.id === session &&
-          t.run === run &&
-          !t.lost &&
-          t.tabs.size < 12
-        ) {
-          t.tabs.add(tab);
-          t.active ??= tab;
-          this.changed(t.agent);
-        }
+    const emit = (t: Task, event: ChromePortEvent) => {
+      for (const listener of t.listeners) {
+        try { listener(event); } catch {}
+      }
     };
-    this.bridge.onPauseState = (profile, generation, session, run, state, reason, navigationDiagnostic) => {
+    this.bridge.onTabRemoved = (profile, generation, session, _run, tabId) =>
+      forSession(profile, generation, session, (t) => {
+        t.tabs.delete(tabId);
+        if (t.active === tabId) t.active = t.tabs.values().next().value ?? null;
+        emit(t, { type: "tabRemoved", tabId });
+        this.changed(t.agent);
+      });
+    this.bridge.onTabAdded = (profile, generation, session, _run, tab) =>
+      forSession(profile, generation, session, (t) => {
+        t.tabs.add(tab.id);
+        t.active ??= tab.id;
+        emit(t, { type: "tabAdded", tab });
+        this.changed(t.agent);
+      });
+    this.bridge.onCdpEvent = (profile, generation, session, _run, event) =>
+      forSession(profile, generation, session, (t) => emit(t, { type: "cdpEvent", ...event }));
+    this.bridge.onCdpDetach = (profile, generation, session, _run, tabId, reason) =>
+      forSession(profile, generation, session, (t) => emit(t, { type: "cdpDetach", tabId, reason }));
+    this.bridge.onPauseState = (profile, generation, session, run, state, reason) => {
       for (const t of this.tasks.values())
         if (
           t.profile === profile &&
@@ -133,10 +136,8 @@ export class ChromeSessions {
             state !== "failed" && t.pauseReason === "native_handoff" &&
             (t.pausePending || t.pauseState === "pausing" || this.nativePauses.has(t));
           if (!nativeAcknowledgement &&
-              !(t.settling && (reason === "settlement" || reason === "requested"))) {
+              !(t.settling && (reason === "settlement" || reason === "requested")))
             t.pauseReason = reason;
-            t.navigationDiagnostic = reason === "navigation_denied" ? chromeNavigationDiagnostic(navigationDiagnostic) : undefined;
-          }
           ++t.transition;
           // A local acknowledgement must not revive a safe indicator while
           // Resume is in flight or finish a still-pending server pause RPC.
@@ -199,10 +200,22 @@ export class ChromeSessions {
         lost: false,
         active: null,
         tabs: new Set(),
-        pendingRemovals: new Set(),
         handoff: null,
         chain: Promise.resolve(),
+        inflight: new Set(),
+        beginning: null,
+        listeners: new Set(),
+        engine: undefined as unknown as BrowserEngine,
       };
+      const created = task;
+      const chromePort: ChromePort = {
+        call: (method, params = {}, signal, timeoutMs) => this.portCall(created, method, params, signal, timeoutMs),
+        onEvent: (listener) => {
+          created.listeners.add(listener);
+          return () => created.listeners.delete(listener);
+        },
+      };
+      task.engine = new BrowserEngine(chromePort);
       this.tasks.set(agent, task);
     }
     const t = task;
@@ -219,44 +232,43 @@ export class ChromeSessions {
       const next = t.chain.catch(() => {}).then(() => {
         assertRun();
         if (t.id !== session)
-          throw new Error("Chrome session changed while this operation was queued. Nothing was replayed. Open the page and take a fresh browser_snapshot.");
+          throw new Error("Chrome session changed while this operation was queued. Nothing was replayed. Open the page again and call tab.ax.write().");
         return fn();
       });
       t.chain = next;
       return next;
     };
-    const begin = async () => {
+    const begin = (): Promise<void> => {
       if (t.lost || t.run !== run)
-        throw new Error(
-          "Chrome authority expired. Call browser_reconnect to create a fresh session, then reopen the page and take a fresh browser_snapshot. Do not replay an unconfirmed action.",
-        );
-      if (!t.begun) {
+        return Promise.reject(new Error(
+          "Chrome authority expired. Call browser_reconnect to create a fresh session, then reopen the page. Do not replay an unconfirmed action.",
+        ));
+      if (t.paused) return Promise.reject(new Error(chromePauseError(t.pauseReason)));
+      if (t.begun && !t.beginning) return Promise.resolve();
+      t.beginning ??= (async () => {
         // Record cleanup authority before dispatch; a connection failure can
         // revoke the result after the extension has already created the task.
         t.begun = true;
         t.authorityRun = run;
-        const resumed = (await this.call(t, "begin", {
-          name: name.slice(0, 75),
-          agent,
-          protected: this.protected,
-        })) as { paused?: boolean; tabs?: string[] };
-        if (resumed.paused) {
-          t.tabs = new Set(
-            (resumed.tabs ?? []).filter((cap) => t.tabs.has(cap)),
-          );
-          if (!t.active || !t.tabs.has(t.active))
-            t.active = t.tabs.values().next().value ?? null;
-          // End detaches retained tabs. A new run reclaims only valid retained
-          // authority; extension cleanup failures still reject resume.
-          if (!t.paused) await this.call(t, "resume", {});
-        }
+        const resumed = (await this.call(t, "begin", { name: name.slice(0, 75), agent })) as { paused?: boolean; tabs?: number[] };
+        t.tabs = new Set((resumed.tabs ?? []).filter((id) => Number.isSafeInteger(id)));
+        if (!t.active || !t.tabs.has(t.active)) t.active = t.tabs.values().next().value ?? null;
+        // End detaches retained tabs. A new run reclaims retained handoff tabs.
+        if (resumed.paused && !t.paused) await this.call(t, "resume", {});
         t.authorityRun = run;
-        t.begun = true;
-      }
-      if (t.paused)
-        throw new Error(
-          chromePauseError(t.pauseReason, t.navigationDiagnostic),
-        );
+      })().catch((error) => {
+        t.begun = false;
+        throw error;
+      }).finally(() => { t.beginning = null; });
+      return t.beginning.then(() => {
+        if (t.paused) throw new Error(chromePauseError(t.pauseReason));
+      });
+    };
+    t.admit = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      assertRun();
+      await begin();
+      assertRun();
+      return fn();
     };
     const port = {
       target: "chrome" as const,
@@ -307,6 +319,7 @@ export class ChromeSessions {
             const prior = t.chain;
             const closing = (async () => {
               await prior.catch(() => {});
+              await Promise.allSettled([...t.inflight]);
               signal.throwIfAborted();
               check();
               if (!binding.lost) {
@@ -352,7 +365,7 @@ export class ChromeSessions {
         if (!t.lost)
           return {
             status: "already_connected" as const,
-            message: "This agent's browser session is already connected; nothing was reset. Use browser_snapshot for current references, or browser_open if no page is open.",
+            message: "This agent's browser session is already connected; nothing was reset. Use browser_js: list tabs with browser.tabs.list() or open one with browser.tabs.new(url).",
           };
         // A new empty session, never revival of old tabs/references or replay of
         // an old RPC. Keep the exact pinned profile.
@@ -364,86 +377,22 @@ export class ChromeSessions {
         t.paused = false;
         t.active = null;
         t.tabs.clear();
+        t.engine.reset();
         ++t.transition;
         this.changed(agent);
         return {
           status: "reconnected" as const,
-          message: "A fresh empty session is ready on the same Chrome profile. No browser action was performed or replayed. A previous action may already have completed: verify its outcome rather than repeat it. Reopen the desired page with browser_open and take a fresh browser_snapshot before acting. Old tabs and references are not reusable.",
+          message: "A fresh empty session is ready on the same Chrome profile. No browser action was performed or replayed. A previous action may already have completed: verify its outcome rather than repeat it. Reopen the desired page with browser.tabs.new(url) and call tab.ax.write() before acting. Old tab handles and element indices are not reusable.",
         };
       }),
-      keepTab: (mark: "deliverable" | "handoff" = "deliverable") =>
-        serialize(async () => {
-          await begin();
-          if (!t.active || !t.tabs.has(t.active))
-            throw new Error("No owned Chrome tab.");
-          return this.call(t, "mark", { tab: t.active, mark });
-        }),
-      action: (
-        method: string,
-        params: Record<string, unknown> = {},
-        signal?: AbortSignal,
-      ) =>
-        serialize(async () => {
-          signal?.throwIfAborted();
-          await begin();
-          if (
-            ![
-              "open",
-              "name",
-              "snapshot",
-              "screenshot",
-              "click",
-              "fill",
-              "select",
-              "key",
-              "wait_for",
-              "scroll",
-              "tabs",
-            ].includes(method)
-          )
-            throw new Error(
-              "Unavailable in Connected Chrome: free typing, coordinates, diagnostics and file artifacts. Use exact snapshot references and scoped input.",
-            );
-          if (
-            method === "click" &&
-            (typeof params.ref !== "string" ||
-              params.x !== undefined ||
-              params.y !== undefined)
-          )
-            throw new Error(
-              "Connected Chrome requires an exact snapshot reference; coordinates are unavailable.",
-            );
-          if (
-            method === "open" ||
-            (method === "tabs" && params.operation === "new")
-          )
-            chromeOrigin(params.url, this.protected);
-          if (
-            method === "tabs" &&
-            ["select", "close"].includes(String(params.operation)) &&
-            !t.tabs.has(String(params.pageId))
-          )
-            throw new Error("Stale or foreign Chrome tab capability.");
-          const result = (await this.call(
-            t,
-            method as ChromeMethod,
-            { ...params, tab: t.active },
-            signal,
-          )) as Record<string, unknown>;
-          if (!result || typeof result !== "object" || Array.isArray(result))
-            throw new Error("Invalid Chrome result.");
-          if (typeof result.pageId === "string") {
-            t.tabs.add(result.pageId);
-            t.active = result.pageId;
-          }
-          if (method === "tabs" && params.operation === "close") {
-            t.tabs.delete(String(params.pageId));
-            if (t.active === params.pageId)
-              t.active = t.tabs.values().next().value ?? null;
-          }
-          this.changed(agent);
-          return { ...result, humanUsing: this.humanState() } as Record<string, unknown> & { humanUsing: boolean };
-        }),
+      // Per-run facade: the engine (tab state, REPL handles) persists across runs,
+      // but every call is admitted only for the run that allocated this port.
+      engine: {
+        execute: (op: string, args: Record<string, unknown>, signal?: AbortSignal) => {
+          try { assertRun(); } catch (error) { return Promise.reject(error); }
+          return t.engine.execute(op, args, signal);
+        },
+      },
       reserveLogin: (id: string, url: string, signal?: AbortSignal) => {
         assertRun();
         // Bind before queuing, so cancel/Done during a delayed open cannot be
@@ -457,11 +406,12 @@ export class ChromeSessions {
           if (t.handoff !== id) return;
           try {
             await begin();
-            chromeOrigin(url, this.protected);
-            const result = (await this.call(t, "open", { url }, signal)) as { pageId: string };
-            t.tabs.add(result.pageId);
-            t.active = result.pageId;
-            await this.call(t, "mark", { tab: t.active, mark: "handoff" }, signal);
+            const { tab } = (await this.call(t, "createTab", { url }, signal)) as { tab: TabInfo };
+            t.tabs.add(tab.id);
+            t.active = tab.id;
+            await this.call(t, "markTab", { tabId: tab.id, mark: "handoff" }, signal);
+            await this.call(t, "showTab", { tabId: tab.id }, signal).catch(() => {});
+            this.changed(agent);
           } catch (error) {
             if (t.handoff === id) this.done(agent, id);
             throw error;
@@ -505,39 +455,36 @@ export class ChromeSessions {
     params: Record<string, unknown>,
     signal?: AbortSignal,
     authorityRun = t.run ?? t.authorityRun,
-  ) {
+    timeoutMs?: number,
+  ): Promise<any> {
     if (t.lost) throw new Error("Chrome session authority expired. Call browser_reconnect; never replay an unconfirmed action.");
     if (!chromeParams(method, params))
-      throw new Error(
-        "Unavailable Chrome operation parameters; use exact references and bounded inputs.",
-      );
-    // Removal can arrive before an in-flight open/select response. Never restore
-    // a revoked capability from that response; retain tombstones only while pending.
-    const removed = new Set<string>();
-    t.pendingRemovals.add(removed);
-    try {
-      const result = await this.bridge.call(
-        t.profile,
-        t.generation,
-        t.id,
-        authorityRun,
-        method,
-        params,
-        signal,
-      );
-      if (
-        result &&
-        typeof result === "object" &&
-        "pageId" in result &&
-        removed.has(String(result.pageId))
-      )
-        throw new Error(
-          "Chrome tab was closed during the operation. No action was replayed.",
-        );
+      throw new Error(`Invalid Chrome ${method} parameters.`);
+    return this.bridge.call(t.profile, t.generation, t.id, authorityRun, method, params, signal, timeoutMs);
+  }
+  /** Engine → extension relay call, admitted under the current run's authority. */
+  private portCall(t: Task, method: string, params: Record<string, unknown>, signal?: AbortSignal, timeoutMs?: number) {
+    const admit = t.admit;
+    if (!admit) return Promise.reject(new Error("No active run owns this Chrome session."));
+    const session = t.id;
+    const pending = admit(async () => {
+      const result = await this.call(t, method as ChromeMethod, params, signal, undefined, timeoutMs);
+      if (t.id !== session) throw new Error("Chrome session changed during the operation. Nothing was replayed.");
+      const tab = (result as { tab?: TabInfo } | null)?.tab;
+      if ((method === "createTab" || method === "claimTab") && tab && Number.isSafeInteger(tab.id)) {
+        t.tabs.add(tab.id);
+        t.active = tab.id;
+        this.changed(t.agent);
+      } else if (method === "closeTab") {
+        t.tabs.delete(Number(params.tabId));
+        if (t.active === params.tabId) t.active = t.tabs.values().next().value ?? null;
+        this.changed(t.agent);
+      }
       return result;
-    } finally {
-      t.pendingRemovals.delete(removed);
-    }
+    });
+    t.inflight.add(pending);
+    void pending.catch(() => {}).finally(() => t.inflight.delete(pending));
+    return pending;
   }
   state(agent?: string) {
     const t = agent ? this.tasks.get(agent) : undefined;
@@ -556,10 +503,9 @@ export class ChromeSessions {
               ? "disconnected"
               : t.pauseState,
             pauseReason: t.paused ? t.pauseReason : undefined,
-            navigationDiagnostic: t.paused && t.pauseReason === "navigation_denied" ? t.navigationDiagnostic : undefined,
             connected: !t.lost,
-            active: t.active,
-            tabs: [...t.tabs],
+            active: t.active === null ? null : String(t.active),
+            tabs: [...t.tabs].map(String),
             handoff: t.handoff,
           }
         : null,
@@ -613,7 +559,7 @@ export class ChromeSessions {
       )
     )
       throw new HttpError(400, "Unsupported Chrome operation.");
-    const tab = pageId ?? t.active;
+    const tab = pageId === undefined ? t.active : Number(pageId);
     if (
       ["focus", "deliverable", "handoff"].includes(operation) &&
       (!tab || !t.tabs.has(tab))
@@ -663,17 +609,8 @@ export class ChromeSessions {
         this.changed(agent);
       }
     }
-    await this.call(
-      t,
-      ["deliverable", "handoff"].includes(operation)
-        ? "mark"
-        : (operation as ChromeMethod),
-      ["deliverable", "handoff"].includes(operation)
-        ? { tab, mark: operation }
-        : operation === "focus"
-          ? { tab }
-          : {},
-    );
+    if (operation === "focus") await this.call(t, "showTab", { tabId: tab });
+    else await this.call(t, "markTab", { tabId: tab, mark: operation });
     this.changed(agent);
     return null;
   }
@@ -684,8 +621,9 @@ export class ChromeSessions {
     const nativePaused = this.nativePauses.get(t) === t.transition;
     ++t.transition;
     await t.chain.catch(() => {});
+    await Promise.allSettled([...t.inflight]);
     const securityPaused = t.paused;
-    let retained: string[] = !t.begun && !t.lost ? [...t.tabs] : [];
+    let retained: number[] = !t.begun && !t.lost ? [...t.tabs] : [];
     try {
       if (t.begun && !t.lost) {
         if (this.humanState() && !securityPaused) {
@@ -693,10 +631,8 @@ export class ChromeSessions {
           // overwriting explicit deliverable/handoff marks.
           await this.call(t, "pause", {});
         }
-        const result = (await this.call(t, "end", {})) as {
-          retained?: string[];
-        };
-        retained = result?.retained?.filter((cap) => t.tabs.has(cap)) ?? [];
+        const result = (await this.call(t, "end", {})) as { retained?: number[] };
+        retained = result?.retained?.filter((id) => Number.isSafeInteger(id)) ?? [];
       }
     } catch {
       this.bridge.disconnect(t.profile);

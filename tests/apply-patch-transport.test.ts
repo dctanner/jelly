@@ -195,14 +195,9 @@ for (const mode of ["api", "chatgpt"] as const)
             requests[0].tools.find((tool: any) => tool.name === "write").type,
           ).toBe("function");
           for (const name of [
-            "browser_snapshot",
-            "browser_click",
-            "browser_fill",
-            "browser_select",
-            "browser_tabs",
-            "browser_scroll",
-            "browser_wait_for",
-            "browser_keep_tab",
+            "browser_js",
+            "browser_reconnect",
+            "request_browser_login",
           ]) {
             expect(session.getActiveToolNames()).toContain(name);
             expect(

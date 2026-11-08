@@ -21,6 +21,7 @@ import { ChromeSessions } from "../src/server/chrome-sessions";
 import { ChromeShare } from "../src/server/chrome-share";
 import { openChromeViewer } from "./fixtures/chrome-viewer";
 import { interventionTools } from "../src/server/agent-tools";
+import type { TabInfo } from "../src/server/browser/types";
 
 const capturePids = new Set<number>();
 function expectNoCaptureShm(pid: number) {
@@ -239,6 +240,23 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 1500
     await Bun.sleep(50);
   }
 }
+type EnginePort = { engine: { execute(op: string, args: Record<string, unknown>): Promise<unknown> } };
+/** Full Codex-style AX text (no diff) so element indices are always present. */
+async function axState(port: EnginePort, tab: number) {
+  return ((await port.engine.execute("tab.ax.get", { tab, mode: "state", disableDiffing: true })) as { state: string }).state;
+}
+/** Element index from an AX state line such as `12 text entry area Human text`. */
+function elementIndex(state: string, pattern: RegExp) {
+  const match = pattern.exec(state);
+  if (!match) throw new Error(`No AX element matching ${pattern} in:\n${state.slice(0, 2000)}`);
+  return Number(match[1]);
+}
+const textAreaIndex = (state: string) => elementIndex(state, /^\s*(\d+) text entry area\b/m);
+/** An engine observation that reaches the extension, then the advisory human-use state. */
+async function humanUsingAfter(port: EnginePort, tab: number) {
+  await axState(port, tab);
+  return chrome.humanState();
+}
 try {
   const extension = join(dir, "extension");
   await command(
@@ -387,28 +405,15 @@ try {
   const b = app.service.browsers
     .forRun(other.id, "run-b", selected, other.name)
     .get(other.id);
-  // Production policy permits these disposable loopback test pages. No live
-  // settings or production URL-validation bypass is introduced.
   const tasks = (chrome as any).tasks as Map<string, any>;
-  for (const agentId of [agent.id, other.id])
-    tasks.get(agentId).origins = [site.url.origin];
-  await a.action("name", { name: "Human handoff" });
-  await b.action("name", { name: "Other task" });
-  for (const agentId of [agent.id, other.id]) {
-    const task = tasks.get(agentId);
-    const opened = (await chrome.bridge.call(
-      peer.id,
-      peer.generation,
-      task.id,
-      task.run,
-      "open",
-      { url: `${site.url.origin}/?agent=${agentId}` },
-    )) as any;
-    task.tabs.add(opened.pageId);
-    task.active = opened.pageId;
-  }
-  const taskA = tasks.get(agent.id);
-  const oldBrowserTab = taskA.active;
+  await a.engine.execute("nameSession", { name: "Human handoff" });
+  await b.engine.execute("nameSession", { name: "Other task" });
+  // v9 allows every URL; open the disposable loopback pages through each engine.
+  const openFixture = async (port: EnginePort, query: string) =>
+    ((await port.engine.execute("tabs.new", { url: `${site.url.origin}/?${query}` })) as TabInfo).id;
+  const oldBrowserTab = await openFixture(a, `agent=${agent.id}`);
+  const otherTab = await openFixture(b, `agent=${other.id}`);
+  expect(chrome.state(agent.id).task?.active).toBe(String(oldBrowserTab));
   const remote = personal
     .pages()
     .find((p) => p.url().includes(`agent=${agent.id}`))!;
@@ -455,10 +460,10 @@ try {
   expect(sharing.status).toBe("sharing");
   expect(chrome.humanState()).toBe(true);
   expect(chrome.state(other.id).task?.paused).toBe(false);
-  const originalSnapshot = await a.action("snapshot") as any;
-  expect(originalSnapshot).toMatchObject({ humanUsing: true });
-  const oldBrowserRef = originalSnapshot.elements.find((element: any) => element.tag === "textarea").ref;
-  expect(await b.action("snapshot")).toMatchObject({ humanUsing: true });
+  // Human use is advisory: automation is still admitted and observes it.
+  const oldBrowserIndex = textAreaIndex(await axState(a, oldBrowserTab));
+  expect(chrome.humanState()).toBe(true);
+  expect(await humanUsingAfter(b, otherTab)).toBe(true);
   const newAgent = app.service.createAgent({ name: "New", instructions: "Fixture", color: "#b5bafc" });
   expect(() => chrome.allocate(newAgent.id, "new-run", selected, "New")).not.toThrow();
   // x11vnc has no TCP listener, including the separate LibVNCServer IPv6 port.
@@ -844,7 +849,7 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   await page.keyboard.press("Escape");
   await page.getByRole("dialog", { name: "Computer control" }).waitFor({ state: "detached" });
   expect(chrome.humanState()).toBe(false);
-  expect(await a.action("snapshot")).toMatchObject({ humanUsing: false });
+  expect(await humanUsingAfter(a, oldBrowserTab)).toBe(false);
   share.stopCapture = stopCapture;
   await openChromeViewer(page);
   await page.getByRole("button", { name: "Retry cleanup", exact: true }).click();
@@ -918,7 +923,7 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   expect(failedTask.paused).toBe(true);
   expect(chrome.state(agent.id).task?.paused).toBe(!failedTask.lost);
   expect(app.service.chromeStatus(agent.id).task?.paused).toBe(false);
-  await expect(a.action("snapshot")).rejects.toThrow("expired");
+  await expect(a.engine.execute("tabs.list", {})).rejects.toThrow("expired");
   expect(() =>
     chrome.allocate("blocked-new", "blocked-run", selected, "Blocked"),
   ).toThrow("disconnected");
@@ -1055,20 +1060,24 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   expect(personal.pages()).toHaveLength(pagesBeforeRecovery);
   expect(chrome.state(agent.id).task).toMatchObject({ connected: true, active: null, tabs: [] });
   expect(chrome.state(other.id).task?.connected).toBe(false);
-  await expect(a.action("tabs", { operation: "select", pageId: oldBrowserTab })).rejects.toThrow("Stale or foreign");
-  await expect(a.action("open", { url: "https://not-approved.invalid/" })).rejects.toThrow("outside");
-  const recovered = await a.action("open", { url: `${site.url.origin}/?recovered=explicit` }) as any;
-  expect(recovered.pageId).not.toBe(oldBrowserTab);
-  // browser_open acknowledges navigation dispatch, not document readiness.
-  // Wait for this known disposable fixture to load before testing references.
+  // Old tab handles are forgotten by the fresh session and never reach Chrome.
+  await expect(a.engine.execute("tab.show", { tab: oldBrowserTab })).rejects.toThrow("not part of this browser session");
+  const recovered = await openFixture(a, "recovered=explicit");
+  expect(recovered).not.toBe(oldBrowserTab);
+  // Confirm the known disposable fixture is loaded in the real profile too.
   await waitFor(() => personal!.pages().some(p => p.url().includes("recovered=explicit")));
   const recoveredPage = personal.pages().find(p => p.url().includes("recovered=explicit"))!;
   await recoveredPage.getByRole("heading", { name: "Connected Chrome human fixture" }).waitFor();
-  await a.action("snapshot");
-  await expect(a.action("fill", { ref: oldBrowserRef, text: "MUST NOT APPEAR" })).rejects.toThrow("unavailable");
-  const recoveredSnapshot = await a.action("snapshot") as any;
-  await a.action("fill", { ref: recoveredSnapshot.elements.find((element: any) => element.tag === "textarea").ref, text: "fresh session input" });
+  const recoveredState = await axState(a, recovered);
+  // An element index from the old session's tab cannot act on anything.
+  await expect(a.engine.execute("tab.ax.action", {
+    tab: oldBrowserTab, action: { kind: "set_value", element_index: oldBrowserIndex, value: "MUST NOT APPEAR" },
+  })).rejects.toThrow("not part of this browser session");
+  await a.engine.execute("tab.ax.action", {
+    tab: recovered, action: { kind: "set_value", element_index: textAreaIndex(recoveredState), value: "fresh session input" },
+  });
   expect(await recoveredPage.getByRole("textbox").inputValue()).toBe("fresh session input");
+  expect(await remote.getByRole("textbox").inputValue()).not.toContain("MUST NOT APPEAR");
   expect(remote.isClosed()).toBe(false);
 
   // Ordinary transport loss reconnects on the extension's real 30-second retry
@@ -1076,19 +1085,19 @@ print(rx.value, ry.value) if ${position ? "True" : "False"} else print(bool(a[k 
   const recoveredGeneration = chrome.bridge.profiles()[0]!.generation;
   (chrome.bridge as any).peers.get(peer.id).socket.destroy();
   await waitFor(() => chrome.state(agent.id).task?.connected === false);
-  await expect(a.action("snapshot")).rejects.toThrow("browser_reconnect");
+  await expect(a.engine.execute("tabs.list", {})).rejects.toThrow("browser_reconnect");
   await waitFor(() => chrome.bridge.profiles().some(p => p.id === peer.id && p.generation !== recoveredGeneration), 60000);
-  await expect(a.action("snapshot")).rejects.toThrow("browser_reconnect");
+  await expect(a.engine.execute("tabs.list", {})).rejects.toThrow("browser_reconnect");
   expect(await recover()).toMatchObject({ status: "reconnected" });
-  await expect(a.action("tabs", { operation: "select", pageId: recovered.pageId })).rejects.toThrow("Stale or foreign");
-  await a.action("open", { url: `${site.url.origin}/?recovered=automatic-transport` });
+  await expect(a.engine.execute("tab.show", { tab: recovered })).rejects.toThrow("not part of this browser session");
+  const automatic = await openFixture(a, "recovered=automatic-transport");
   await waitFor(() => personal!.pages().some(p => p.url().includes("recovered=automatic-transport")));
   await personal.pages().find(p => p.url().includes("recovered=automatic-transport"))!
     .getByRole("heading", { name: "Connected Chrome human fixture" }).waitFor();
-  expect(JSON.stringify(await a.action("snapshot"))).toContain("Connected Chrome human fixture");
+  expect(await axState(a, automatic)).toContain("Connected Chrome human fixture");
   expect(readlinkSync(join(profileDir, "SingletonLock"))).toBe(pidBefore);
   expect((await personal.cookies(site.url.origin)).some(c => c.name === "sameProfile" && c.value === "preserved")).toBe(true);
-  console.log("PASS: browser_reconnect tool cannot clear intentional disconnect; after operator repair or ordinary transport auto-reconnect it creates only the caller's fresh session, preserves scope/profile/cookies, rejects old tabs/refs, and performs no action replay.");
+  console.log("PASS: browser_reconnect tool cannot clear intentional disconnect; after operator repair or ordinary transport auto-reconnect it creates only the caller's fresh session, preserves scope/profile/cookies, rejects old tabs/element indices, and performs no action replay.");
   expect(errors).toEqual([]);
   for (const pid of capturePids) expectNoCaptureShm(pid);
   console.log("PASS: capture creates no System V shared-memory segments during viewing, reconnect, forced SIGKILL or real parent death; input-cleanup checks remain enforced.");

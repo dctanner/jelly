@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startApp } from "./fixtures/app";
 import { interventionTools } from "../src/server/agent-tools";
 import type { BrowserRecoveryResult } from "../src/shared/browser-recovery";
+import type { ChromePauseReason } from "../src/shared/chrome-errors";
 
 function gate<T>() {
   let resolve!: (value: T) => void;
@@ -21,7 +22,15 @@ async function fixture(ttlMs = 10000) {
   const chrome = app.service.chrome, profile = crypto.randomUUID();
   let generation = crypto.randomUUID(), connected = true, admission = true;
   const calls: { session: string; run: string; method: string; params: Record<string, unknown> }[] = [];
-  let handle = async (method: string): Promise<any> => method === "end" ? { ok: true, retained: [] } : method === "open" ? { pageId: crypto.randomUUID() } : { ok: true };
+  let nextTab = 1;
+  // Minimal v9 extension peer.
+  const v9 = (method: string): any =>
+    method === "begin" ? { ok: true, tabs: [] }
+    : method === "end" ? { ok: true, retained: [] }
+    : method === "createTab" ? { tab: { id: nextTab++, title: "", url: "about:blank", windowId: 1, active: true, origin: "agent", mark: null } }
+    : method === "listTabs" ? { tabs: [] }
+    : { ok: true };
+  let handle = async (method: string): Promise<any> => v9(method);
   chrome.bridge.profiles = () => connected ? [{ id: profile, generation, connected: true }] : [];
   chrome.bridge.canReconnect = (p, g) => admission && connected && p === profile && g === generation;
   chrome.bridge.call = async (_p, _g, session, authorityRun, method, params) => {
@@ -30,9 +39,9 @@ async function fixture(ttlMs = 10000) {
   };
   const scoped = (app.service as any).scopedBrowser(agent, run, { chromeProfile: profile }, "Fixture");
   const browser = scoped.get(agent);
-  await browser.action("open", { url: "https://example.com" });
+  await browser.engine.execute("tabs.new", {});
   const session = calls[0]!.session;
-  const pause = (reason: "navigation_denied" | "cleanup_failed" | "native_handoff" = "navigation_denied") =>
+  const pause = (reason: ChromePauseReason = "cleanup_failed") =>
     chrome.bridge.onPauseState(profile, generation, session, run, "paused", reason);
   pause();
   const tools = interventionTools(scoped, app.service.interventions, agent, run, dir);
@@ -49,7 +58,7 @@ async function fixture(ttlMs = 10000) {
     method: "POST", headers: extraHeaders, body: JSON.stringify({ binding }),
   });
   return {
-    app, chrome, agent, run, profile, session, scoped, browser, tools, tool, updates, calls, active, request, item, confirm, headers, pause,
+    app, chrome, agent, run, profile, session, scoped, browser, tools, tool, updates, calls, active, request, item, confirm, headers, pause, v9,
     set handle(value: typeof handle) { handle = value; },
     set connected(value: boolean) { connected = value; },
     set admission(value: boolean) { admission = value; },
@@ -64,7 +73,7 @@ test("human confirmation retires exact active connected session, drains ACK, pre
   try {
     const otherId = f.app.service.createAgent({ name: "Other", instructions: "Fixture", color: "#b5bafc" }).id;
     const other = f.app.service.browsers.forRun(otherId, "other-run", { chromeProfile: f.profile }, "Other").get(otherId);
-    await other.action("open", { url: "https://example.com/other" });
+    await other.engine.execute("tabs.new", {});
     const otherState = f.chrome.state(otherId).task;
     const done = f.request();
     expect(f.updates.map(u => u.status)).toEqual(["requested", "awaiting_human"]);
@@ -80,13 +89,13 @@ test("human confirmation retires exact active connected session, drains ACK, pre
         f.chrome.bridge.onPauseState(f.profile, b.generation, f.session, f.run, "pausing", "settlement");
         entered.resolve(); return ack.promise;
       }
-      return { ok: true, pageId: "fresh-tab" };
+      return f.v9(method);
     };
     const confirmed = f.confirm();
     await entered.promise;
     expect(f.app.store.intervention(before.id)?.status).toBe("executing");
     expect(f.chrome.state(f.agent).task).not.toBeNull();
-    await expect(f.browser.action("snapshot")).rejects.toThrow("authority expired");
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("authority expired");
     expect((await f.confirm(before.id, before.payload.binding)).status).toBe(409);
     ack.resolve({ ok: true, retained: [] });
     expect((await confirmed).status).toBe(200);
@@ -95,12 +104,12 @@ test("human confirmation retires exact active connected session, drains ACK, pre
     expect(f.chrome.state(otherId).task).toEqual(otherState);
     expect(f.app.service.browsers.target(f.agent)).toBe("chrome");
     expect(f.calls.filter(c => c.method === "end")).toEqual([{ session: f.session, run: f.run, method: "end", params: { discard: true } }]);
-    expect(f.calls.filter(c => c.method === "open")).toHaveLength(2);
+    expect(f.calls.filter(c => c.method === "createTab")).toHaveLength(2);
     const fresh = f.scoped.get(f.agent);
-    await fresh.action("open", { url: "https://example.com/fresh" });
+    await fresh.engine.execute("tabs.new", {});
     expect(f.calls.at(-1)!.session).not.toBe(f.session);
     expect(f.chrome.state(f.agent).task!.profile).toBe(f.profile);
-    await expect(f.browser.action("snapshot")).rejects.toThrow("authority expired");
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("authority expired");
     expect((await f.confirm(before.id, before.payload.binding)).status).toBe(409);
   } finally { await f.close(); }
 });
@@ -201,7 +210,7 @@ for (const cause of ["new-pause", "cancel", "pairing", "bad-ack", "cleanup-failu
       f.handle = async method => { if (method === "end") { entered.resolve(); return ack.promise; } return {}; };
       const confirmation = f.confirm();
       await entered.promise;
-      if (cause === "new-pause") f.pause("navigation_denied");
+      if (cause === "new-pause") f.pause("requested");
       if (cause === "cancel") controller.abort();
       if (cause === "pairing") f.changePairing();
       if (cause === "cleanup-failure") f.pause("cleanup_failed");
@@ -210,7 +219,7 @@ for (const cause of ["new-pause", "cancel", "pairing", "bad-ack", "cleanup-failu
       expect((await done).status).toBe(cause === "cancel" ? "cancelled" : "failed");
       expect(f.chrome.state(f.agent).task).not.toBeNull();
       expect(f.scoped.get(f.agent)).toBe(f.browser);
-      await expect(f.browser.action("snapshot")).rejects.toThrow("authority expired");
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("authority expired");
     } finally { ack.resolve({ ok: true, retained: [] }); await f.close(); }
   });
 }
@@ -222,22 +231,22 @@ test("approval fences and drains accepted work without waiting on its own reques
     // A transport-loss error can leave an already admitted browser call draining.
     const task = (f.chrome as any).tasks.get(f.agent);
     task.paused = false; task.pauseState = "active";
-    f.handle = async method => { if (method === "snapshot") { entered.resolve(); return ack.promise; } return { ok: true, retained: [] }; };
-    const work = f.browser.action("snapshot");
+    f.handle = async method => { if (method === "listTabs") { entered.resolve(); return ack.promise; } return f.v9(method); };
+    const work = f.browser.engine.execute("tabs.list", {});
     await entered.promise;
     f.pause();
     const done = f.request();
     const confirmation = f.confirm();
     for (let i = 0; i < 100 && f.item()?.status !== "executing"; i++) await Bun.sleep(2);
     expect(f.item().status).toBe("executing");
-    const queued = f.browser.action("open", { url: "https://example.com/no-replay" }).catch((e: Error) => e.message);
+    const queued = f.browser.engine.execute("tabs.new", {}).catch((e: Error) => e.message);
     expect(f.calls.some(c => c.method === "end")).toBe(false);
-    ack.resolve({ text: "old observation" });
+    ack.resolve({ tabs: [] });
     await work;
     await confirmation;
     expect(await queued).toContain("authority expired");
     expect((await done).status).toBe("approved_closed");
-    expect(f.calls.filter(c => c.method === "open")).toHaveLength(1);
+    expect(f.calls.filter(c => c.method === "createTab")).toHaveLength(1);
   } finally { ack.resolve({}); await f.close(); }
 });
 
@@ -285,10 +294,10 @@ for (const cause of ["cancel", "new-pause", "settlement"] as const) {
       const task = (f.chrome as any).tasks.get(f.agent);
       task.paused = false; task.pauseState = "active";
       f.handle = async method => {
-        if (method === "snapshot") { entered.resolve(); return drained.promise; }
-        return { ok: true, retained: [] };
+        if (method === "listTabs") { entered.resolve(); return drained.promise; }
+        return f.v9(method);
       };
-      const work = f.browser.action("snapshot");
+      const work = f.browser.engine.execute("tabs.list", {});
       await entered.promise;
       f.pause();
       const controller = new AbortController(), done = f.request(controller.signal);
@@ -300,7 +309,7 @@ for (const cause of ["cancel", "new-pause", "settlement"] as const) {
       if (cause === "new-pause") f.pause("cleanup_failed");
       if (cause === "settlement") settling = f.chrome.settle(f.agent, f.run);
       expect(f.calls.some(c => c.method === "end")).toBe(false);
-      drained.resolve({ text: "old" });
+      drained.resolve({ tabs: [] });
       await work;
       await confirmation;
       await settling;
@@ -308,7 +317,7 @@ for (const cause of ["cancel", "new-pause", "settlement"] as const) {
       // Settlement may send its normal end, never recovery's discard request.
       expect(f.calls.some(c => c.method === "end" && c.params.discard)).toBe(false);
       expect(f.chrome.state(f.agent).task).not.toBeNull();
-      await expect(f.browser.action("snapshot")).rejects.toThrow("authority expired");
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("authority expired");
     } finally { drained.resolve({}); await f.close(); }
   });
 }

@@ -1,4 +1,5 @@
 import type { ChromeSessions } from "./chrome-sessions";
+import type { BrowserEngine } from "./browser/engine";
 import type { ChromeSelection } from "../shared/chrome-protocol";
 import type { BrowserRecoveryBinding, BrowserRecoveryResult } from "../shared/browser-recovery";
 
@@ -10,19 +11,6 @@ export interface BrowserRecovery {
   release(): void;
 }
 
-export type ConnectedBrowserMethod =
-  | "open"
-  | "name"
-  | "snapshot"
-  | "screenshot"
-  | "click"
-  | "fill"
-  | "select"
-  | "key"
-  | "wait_for"
-  | "scroll"
-  | "tabs";
-
 export interface BrowserPort {
   target?: "chrome";
   reconnect?: (signal?: AbortSignal) => Promise<{
@@ -30,12 +18,8 @@ export interface BrowserPort {
     message: string;
   }>;
   prepareRecovery?: () => BrowserRecovery;
-  keepTab?: (mark?: "deliverable" | "handoff") => Promise<unknown>;
-  action(
-    method: ConnectedBrowserMethod,
-    params?: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown>;
+  /** Codex-style engine driving this agent's Connected Chrome session. */
+  engine: Pick<BrowserEngine, "execute">;
   reserveLogin(id: string, url: string, signal?: AbortSignal): Promise<unknown>;
   cancelLogin(id: string): void;
 }

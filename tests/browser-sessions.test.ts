@@ -8,7 +8,7 @@ const selection = (profile: string): ChromeSelection => ({
 });
 const port: BrowserPort = {
   target: "chrome",
-  action: async () => ({}),
+  engine: {} as BrowserPort["engine"],
   reserveLogin: async () => {},
   cancelLogin: () => {},
 };

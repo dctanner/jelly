@@ -89,7 +89,7 @@ export function conversationActivity(
     if (group && !user) insert(group);
     if (!isSubagentProgress(event) && (!group || !isWorkDetail(event) || toolImages(event).length > 0)) {
       const screenshot =
-        event.data.name === "browser_screenshot" && toolImages(event).length > 0;
+        (event.data.name === "browser_js" || event.data.name === "browser_screenshot") && toolImages(event).length > 0;
       const previous = entries.at(-1);
       if (screenshot) {
         if (

@@ -1,16 +1,17 @@
+// Jelly Connected Chrome worker (protocol v9): a thin CDP relay plus tab,
+// lease and tab-group management. All observation/action logic lives on the
+// Jelly server. Requests are handled concurrently; per-tab attach/detach and
+// per-session lifecycle operations are serialised.
 import {
-  chromeRequest,
-  chromeOrigin,
-  chromeWebEndpoint,
+  chromeEnvelope,
+  chromeParamsError,
   CHROME_PROTOCOL,
   CHROME_METHODS,
   CHROME_MAX_FRAME,
+  CHROME_CDP_TIMEOUT,
+  CHROME_CDP_BATCH_TIMEOUT,
 } from "../../src/shared/chrome-protocol";
-import { observation } from "./observation";
-import { chromeFailureReason, ChromeObservationError, chromeNavigationDiagnostic, CHROME_NAVIGATION_DIAGNOSTIC_REVISION } from "../../src/shared/chrome-errors";
-import {
-  chromeInternetDenyRegexes,
-} from "../../src/shared/chrome-policy";
+
 let port = null,
   instance = null,
   generation = crypto.randomUUID(),
@@ -19,7 +20,35 @@ let pendingPair = false, pendingReady = false;
 let handshakeAlarm = null;
 let connecting = null, connectionEpoch = 0, optedOut = false;
 let connectionError = null, retryAttempt = 0;
-const RETRY_ALARM = "jelly-connect-retry", HANDSHAKE_ALARM = "jelly-connect-handshake";
+let desktopFrozen = false;
+let disconnecting = null;
+const RETRY_ALARM = "jelly-connect-retry",
+  HANDSHAKE_ALARM = "jelly-connect-handshake",
+  DEADMAN_ALARM = "jelly-debugger-deadman";
+const GROUP_COLORS = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+const PAUSE_DRAIN_LIMIT = 15000;
+
+const sessions = new Map(); // session id -> session
+const leases = new Map(); // tab id -> session id
+const attached = new Set(); // tab ids this worker attached the debugger to
+// Persisted cleanup obligations: every tab we may have attached to. After a
+// worker restart these are detached; they never restore a lease.
+const debuggerCleanup = new Set();
+const tabLocks = new Map();
+
+const fail = (message) => {
+  throw new Error(message);
+};
+function errorMessage(error) {
+  if (typeof error === "string") return error;
+  if (typeof error?.message === "string") return error.message;
+  try {
+    return JSON.stringify(error) ?? String(error);
+  } catch {
+    return String(error);
+  }
+}
+
 // Only bounded categories reach the popup, never native error text or host paths.
 function nativeFailure(message) {
   if (message === "Specified native messaging host not found.") return "host-missing";
@@ -30,9 +59,10 @@ async function scheduleRetry() {
   if (optedOut || debuggerCleanup.size) return;
   retryAttempt = Math.min(retryAttempt + 1, 5);
   await chrome.storage.local.set({ retryAttempt });
-  if (!optedOut) await chrome.alarms.create(RETRY_ALARM, {
-    delayInMinutes: Math.min(0.5 * 2 ** (retryAttempt - 1), 5),
-  });
+  if (!optedOut)
+    await chrome.alarms.create(RETRY_ALARM, {
+      delayInMinutes: Math.min(0.5 * 2 ** (retryAttempt - 1), 5),
+    });
 }
 async function lostConnection(error) {
   connectionError = error;
@@ -43,12 +73,16 @@ async function lostConnection(error) {
 function connect(explicit = false) {
   if (connecting) return connecting;
   const epoch = connectionEpoch;
-  connecting = establish(explicit, epoch).catch(async () => {
-    if (epoch !== connectionEpoch) return;
-    connectionError = debuggerCleanup.size ? "cleanup-required" : "host-unavailable";
-    await disconnect();
-    await scheduleRetry();
-  }).finally(() => { connecting = null; });
+  connecting = establish(explicit, epoch)
+    .catch(async () => {
+      if (epoch !== connectionEpoch) return;
+      connectionError = debuggerCleanup.size ? "cleanup-required" : "host-unavailable";
+      await disconnect();
+      await scheduleRetry();
+    })
+    .finally(() => {
+      connecting = null;
+    });
   return connecting;
 }
 async function automaticConnect() {
@@ -58,144 +92,167 @@ async function automaticConnect() {
     const retry = await chrome.alarms.get(RETRY_ALARM);
     if (retry && retry.scheduledTime > Date.now()) return;
     await connect();
-  } catch { connectionError = "initialization-failed"; }
+  } catch {
+    connectionError = "initialization-failed";
+  }
 }
-const sessions = new Map(),
-  leases = new Map();
-// Cleanup obligations are not leases. These numeric IDs may only detach or
-// block access, never restore tab authority after disconnect/worker recreation.
-const debuggerCleanup = new Set(),
-  confirmedDetached = new Set();
+
+// ---- Debugger cleanup persistence and per-tab serialisation ----
 let cleanupWrites = Promise.resolve();
 function persistCleanup() {
   const ids = [...debuggerCleanup];
   const write = cleanupWrites
     .catch(() => {})
-    .then(() =>
-      chrome.storage.session.set({
-        debuggerCleanupVersion: 1,
-        debuggerCleanup: ids,
-      }),
-    );
+    .then(() => chrome.storage.session.set({ debuggerCleanupVersion: 2, debuggerCleanup: ids }));
   cleanupWrites = write;
   return write;
 }
+function withTabLock(tabId, fn) {
+  const previous = tabLocks.get(tabId) ?? Promise.resolve();
+  const result = previous.then(fn);
+  const tail = result.catch(() => {});
+  tabLocks.set(tabId, tail);
+  void tail.then(() => {
+    if (tabLocks.get(tabId) === tail) tabLocks.delete(tabId);
+  });
+  return result;
+}
+const notAttached = (message) => /not attached|No tab with given id|No target with given id/i.test(message);
 async function releaseDebugger(tabId) {
   try {
     await chrome.debugger.detach({ tabId });
   } catch (error) {
-    if (!confirmedDetached.has(tabId)) {
-      const target = (await chrome.debugger.getTargets()).find(
-        (t) => t.tabId === tabId,
-      );
-      // Another debugger also makes this conservative: a generic rejection
-      // alone is never accepted as proof that our old attachment is gone.
+    if (!notAttached(errorMessage(error))) {
+      const target = (await chrome.debugger.getTargets()).find((t) => t.tabId === tabId);
       if (target?.attached) throw error;
     }
   }
-  debuggerCleanup.delete(tabId);
-  confirmedDetached.delete(tabId);
-  await persistCleanup();
+  attached.delete(tabId);
+  if (debuggerCleanup.delete(tabId)) await persistCleanup();
+}
+function detachTab(tabId) {
+  return withTabLock(tabId, async () => {
+    if (attached.has(tabId) || debuggerCleanup.has(tabId)) await releaseDebugger(tabId);
+  });
 }
 async function cleanupDebuggers() {
-  const outcomes = await Promise.allSettled(
-    [...debuggerCleanup].map(releaseDebugger),
-  );
-  if (outcomes.some((r) => r.status === "rejected")) unavailable();
+  const outcomes = await Promise.allSettled([...debuggerCleanup].map(detachTab));
+  if (outcomes.some((r) => r.status === "rejected")) fail("Debugger cleanup failed.");
 }
-let queue = Promise.resolve(),
-  queued = 0,
-  ruleId = 1000;
-const messageBytes = (value) =>
-  new TextEncoder().encode(JSON.stringify(value)).byteLength;
-const unavailable = () => {
-  throw new Error("Unavailable or revoked");
-};
+// Codex-style dead-man switch: if Jelly is not connected, no debugger of ours
+// may linger (the "started debugging this browser" banner disappears).
+async function deadman() {
+  if (port && instance) return;
+  const targets = await chrome.debugger.getTargets().catch(() => []);
+  const ids = new Set([
+    ...attached,
+    ...debuggerCleanup,
+    ...targets.filter((t) => t.attached && Number.isSafeInteger(t.tabId)).map((t) => t.tabId),
+  ]);
+  await Promise.allSettled(
+    [...ids].map((tabId) =>
+      withTabLock(tabId, () => releaseDebugger(tabId)).catch(() => {}),
+    ),
+  );
+}
+
 const initialized = (async () => {
   const stored = await chrome.storage.local.get(["profile", "connectionOptOut", "retryAttempt"]);
   optedOut = stored.connectionOptOut === true;
   retryAttempt = Number.isInteger(stored.retryAttempt) ? Math.max(0, Math.min(stored.retryAttempt, 5)) : 0;
   profile = stored.profile ?? crypto.randomUUID();
   await chrome.storage.local.set({ profile });
-  const cleanup = await chrome.storage.session.get([
-    "debuggerCleanupVersion",
-    "debuggerCleanup",
-  ]);
-  if (
-    cleanup.debuggerCleanup !== undefined &&
-    (!Array.isArray(cleanup.debuggerCleanup) ||
-      cleanup.debuggerCleanup.length > 256 ||
-      !cleanup.debuggerCleanup.every(
-        (id) => Number.isSafeInteger(id) && id >= 0,
-      ))
-  )
-    unavailable();
-  for (const id of cleanup.debuggerCleanup ?? []) debuggerCleanup.add(id);
-  // Rules belong only to this extension. Startup reconciles cleanup, never
-  // authority: detach our old debugger sessions and lift stale restrictions.
-  // Numeric IDs are used only to release, never to grant access or close tabs.
-  const rules = await chrome.declarativeNetRequest.getSessionRules();
-  // Older extension builds did not persist attachments. Quarantine their rule
-  // targets rather than assuming an empty new lease means they are detached.
-  if (cleanup.debuggerCleanupVersion !== 1)
-    for (const tabId of rules.flatMap((r) => r.condition.tabIds ?? []))
-      debuggerCleanup.add(tabId);
+  const cleanup = await chrome.storage.session.get(["debuggerCleanup"]);
+  if (Array.isArray(cleanup.debuggerCleanup))
+    for (const id of cleanup.debuggerCleanup) if (Number.isSafeInteger(id) && id >= 0) debuggerCleanup.add(id);
   await persistCleanup();
   await cleanupDebuggers().catch(() => {});
-  await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: rules.map((r) => r.id),
-  });
+  if (!(await chrome.alarms.get(DEADMAN_ALARM)))
+    await chrome.alarms.create(DEADMAN_ALARM, { periodInMinutes: 0.5 });
 })();
+
+// ---- Messaging ----
 function post(value) {
-  if (port && messageBytes(value) <= CHROME_MAX_FRAME) port.postMessage(value);
-  else unavailable();
+  if (!port) fail("Chrome extension is not connected to Jelly.");
+  const json = JSON.stringify(value);
+  if (json.length * 3 > CHROME_MAX_FRAME) {
+    const bytes = new TextEncoder().encode(json).byteLength;
+    if (bytes > CHROME_MAX_FRAME)
+      fail(`Chrome message too large (${bytes} bytes; limit ${CHROME_MAX_FRAME}).`);
+  }
+  port.postMessage(value);
 }
-function tabEvent(type, s, tab) {
-  if (port && instance)
-    post({ type, generation, session: s.id, run: s.run, tab: tab.cap });
+function notify(s, type, payload) {
+  if (!port || !instance) return;
+  try {
+    post({ type, generation, session: s.id, run: s.run, ...payload });
+  } catch {} // Oversized notifications are dropped; responses carry their own errors.
 }
-let desktopFrozen = false;
-function current(s, run, allowPaused = false) {
-  if (
-    !port ||
-    !instance ||
-    sessions.get(s.id) !== s ||
-    s.run !== run ||
-    (!allowPaused && (desktopFrozen || s.paused || s.idle))
-  )
-    unavailable();
+
+// ---- Sessions ----
+const groupTitle = (name) => (name.startsWith("🔎") ? name : `🔎 ${name}`);
+function check(s, run, allowPaused = false) {
+  if (!port || !instance) fail("Chrome extension is not connected to Jelly.");
+  if (!s || sessions.get(s.id) !== s) fail("Browser session is not active; call begin first.");
+  if (s.run !== run) fail("Browser session run is stale; a newer run has begun.");
+  if (allowPaused) return;
+  if (desktopFrozen) fail("Chrome automation is frozen for a native desktop handoff.");
+  if (s.idle) fail("Browser session turn has ended; call begin first.");
+  if (s.paused) fail("Browser session is paused.");
 }
-function owned(s, cap) {
-  const tab = s.tabs.get(cap);
-  if (!tab || leases.get(tab.id) !== s.id) unavailable();
+function usable(s, run) {
+  try {
+    check(s, run);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function sessionTab(s, tabId) {
+  const tab = s.tabs.get(tabId);
+  if (!tab || leases.get(tabId) !== s.id) fail(`Tab ${tabId} is not part of this browser session.`);
   return tab;
 }
-function pause(s, retain = true, reason = "requested", diagnostic) {
-  // Any pause that hands control to the human preserves their working tabs.
-  // Run settlement opts out explicitly; it is cleanup, not a private handoff.
+function lifecycle(s, fn) {
+  const next = s.queue.then(fn);
+  s.queue = next.catch(() => {});
+  return next;
+}
+async function tracked(s, promise) {
+  s.pending.add(promise);
+  try {
+    return await promise;
+  } finally {
+    s.pending.delete(promise);
+  }
+}
+function pause(s, retain = true, reason = "requested") {
+  // A pause that hands control to the human preserves their working tabs at
+  // turn end. Settlement opts out explicitly; it is cleanup, not a handoff.
   if (retain)
-    for (const tab of s.tabs.values())
-      if (tab.origin === "agent" && tab.mark === "temporary")
-        tab.pauseRetained = true;
-  if (s.pausing) return s.pausing;
+    for (const tab of s.tabs.values()) if (tab.origin === "agent" && !tab.mark) tab.pauseRetained = true;
   s.paused = true;
+  if (s.pausing) return s.pausing;
   s.pauseFailed = false;
-  s.epoch = crypto.randomUUID();
   const run = s.run;
   const report = (state) => {
     if (port && instance && sessions.get(s.id) === s && s.run === run)
-      post({ type: "pauseState", generation, session: s.id, run, state, reason: state === "failed" ? "cleanup_failed" : reason,
-        ...(reason === "navigation_denied" && state !== "failed" && chromeNavigationDiagnostic(diagnostic)
-          ? { navigationDiagnostic: chromeNavigationDiagnostic(diagnostic) } : {}),
-      });
+      try {
+        post({ type: "pauseState", generation, session: s.id, run, state, reason: state === "failed" ? "cleanup_failed" : reason });
+      } catch {}
   };
   report("pausing");
   s.pausing = (async () => {
-    await Promise.allSettled([...s.pending]);
-    const detached = await Promise.allSettled(
-      [...s.tabs.values()].map(pauseTab),
-    );
-    if (detached.some((result) => result.status === "rejected")) unavailable();
+    const release = () => Promise.allSettled([...s.tabs.keys()].map(detachTab));
+    await release(); // In-flight CDP commands fail fast once detached.
+    let timer;
+    await Promise.race([
+      Promise.allSettled([...s.pending]),
+      new Promise((resolve) => (timer = setTimeout(resolve, PAUSE_DRAIN_LIMIT))),
+    ]);
+    clearTimeout(timer);
+    const outcomes = await release(); // Catch attaches that raced the first pass.
+    if (outcomes.some((r) => r.status === "rejected")) fail("Debugger cleanup failed.");
     report("paused");
   })()
     .catch((error) => {
@@ -208,11 +265,6 @@ function pause(s, retain = true, reason = "requested", diagnostic) {
     });
   return s.pausing;
 }
-function localPause(s, retain = true, reason = "requested", diagnostic) {
-  // Local revocation is immediate; errors are exposed as failed, never paused.
-  void pause(s, retain, reason, diagnostic).catch(() => {});
-}
-let disconnecting = null;
 function disconnect() {
   ++connectionEpoch;
   if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
@@ -225,12 +277,6 @@ function disconnect() {
   for (const s of sessions.values()) s.paused = true;
   disconnecting = (async () => {
     await Promise.allSettled([...sessions.values()].map((s) => pause(s)));
-    const rules = [...sessions.values()].flatMap((s) =>
-      [...s.tabs.values()].flatMap((t) => t.rules),
-    );
-    await chrome.declarativeNetRequest
-      .updateSessionRules({ removeRuleIds: rules })
-      .catch(() => {});
     sessions.clear();
     leases.clear();
     old?.disconnect();
@@ -250,8 +296,7 @@ async function establish(explicit, epoch) {
   if (epoch !== connectionEpoch || optedOut) return;
   connectionError = null;
   await chrome.alarms.clear(RETRY_ALARM);
-  // Reconnect never forgives an unresolved detach. Explicit retry may clean it
-  // up, but no profile pairs or tab can be re-granted until that is confirmed.
+  // Unresolved old debugger attachments must be released before pairing.
   await cleanupDebuggers();
   if (epoch !== connectionEpoch || optedOut) return;
   desktopFrozen = false;
@@ -260,7 +305,10 @@ async function establish(explicit, epoch) {
   port = native;
   handshakeAlarm = `${HANDSHAKE_ALARM}-${generation}`;
   void chrome.alarms.create(handshakeAlarm, { delayInMinutes: 0.5 });
-  if (epoch !== connectionEpoch || port !== native) { native.disconnect(); return; }
+  if (epoch !== connectionEpoch || port !== native) {
+    native.disconnect();
+    return;
+  }
   native.onDisconnect.addListener(() => {
     const error = nativeFailure(chrome.runtime.lastError?.message);
     if (port === native) void lostConnection(error);
@@ -279,91 +327,55 @@ async function establish(explicit, epoch) {
       void disconnect();
       return;
     }
-    if (message.type === "pending" && message.version === CHROME_PROTOCOL &&
-        message.generation === generation && typeof message.instance === "string" &&
-        Array.isArray(message.capabilities) && CHROME_METHODS.every(m => message.capabilities.includes(m))) {
-      if (instance || pendingPair) { void lostConnection("protocol-error"); return; }
+    const compatible =
+      message.version === CHROME_PROTOCOL &&
+      message.generation === generation &&
+      typeof message.instance === "string" &&
+      Array.isArray(message.capabilities) &&
+      CHROME_METHODS.every((m) => message.capabilities.includes(m));
+    if (message.type === "pending" && compatible) {
+      if (instance || pendingPair) {
+        void lostConnection("protocol-error");
+        return;
+      }
       if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
       pendingPair = true;
       desktopFrozen = true;
-      // Connect already reconciled debugger obligations. No instance, sessions,
-      // lease or RPC authority is granted while the private desktop is active.
-      void cleanupDebuggers().then(() => {
-        if (port === native && pendingPair && !instance) {
-          pendingReady = true;
-          post({ type: "pendingReady", generation });
-        }
-      }).catch(() => {
-        if (port === native && epoch === connectionEpoch)
-          void lostConnection("cleanup-required");
-      });
+      // No sessions or RPC authority while the private desktop is active.
+      void cleanupDebuggers()
+        .then(() => {
+          if (port === native && pendingPair && !instance) {
+            pendingReady = true;
+            post({ type: "pendingReady", generation });
+          }
+        })
+        .catch(() => {
+          if (port === native && epoch === connectionEpoch) void lostConnection("cleanup-required");
+        });
       return;
     }
-    if (
-      message.type === "paired" &&
-      message.version === CHROME_PROTOCOL &&
-      Array.isArray(message.capabilities) &&
-      CHROME_METHODS.every((m) => message.capabilities.includes(m)) &&
-      message.generation === generation &&
-      typeof message.instance === "string"
-    ) {
-      if (instance || (pendingPair && !pendingReady)) { void lostConnection("protocol-error"); return; }
+    if (message.type === "paired" && compatible) {
+      if (instance || (pendingPair && !pendingReady)) {
+        void lostConnection("protocol-error");
+        return;
+      }
       if (handshakeAlarm) void chrome.alarms.clear(handshakeAlarm);
       retryAttempt = 0;
       void chrome.storage.local.set({ retryAttempt: 0 });
       connectionError = null;
       instance = message.instance;
-      if (pendingPair) { pendingPair = false; desktopFrozen = false; }
+      if (pendingPair) {
+        pendingPair = false;
+        desktopFrozen = false;
+      }
       return;
     }
-    if (
-      !chromeRequest(message) ||
-      message.instance !== instance ||
-      message.generation !== generation ||
-      messageBytes(message) > CHROME_MAX_FRAME ||
-      queued >= 32
-    ) {
+    if (!chromeEnvelope(message) || !instance || message.instance !== instance || message.generation !== generation) {
       void lostConnection("protocol-error");
       return;
     }
-    if (message.method === "freeze") {
-      desktopFrozen = true; // Preempt queued begins/resumes and revoke in-flight results.
-      for (const s of sessions.values()) localPause(s, true, "native_handoff");
-    }
-    const urgent = sessions.get(message.session);
-    if (
-      ["pause", "end"].includes(message.method) &&
-      urgent?.run === message.run
-    )
-      localPause(urgent, message.method === "pause", message.method === "pause" ? "requested" : "settlement");
-    queued++;
-    queue = queue
-      .catch(() => {})
-      .then(async () => {
-        if (port !== native) return;
-        try {
-          const result = await dispatch(message);
-          if (["snapshot", "screenshot", "wait_for"].includes(message.method))
-            current(sessions.get(message.session), message.run);
-          if (port === native)
-            post({ jsonrpc: "2.0", id: message.id, generation, result });
-        } catch (error) {
-          if (port === native)
-            post({
-              jsonrpc: "2.0",
-              id: message.id,
-              generation,
-              error: {
-                code: -32000,
-                message: "Unavailable or revoked",
-                ...(error instanceof ChromeObservationError ? { reason: error.reason } : {}),
-              },
-            });
-        }
-      })
-      .finally(() => {
-        queued--;
-      });
+    preempt(message);
+    void handle(native, message);
   });
   native.postMessage({
     type: "hello",
@@ -374,884 +386,504 @@ async function establish(explicit, epoch) {
     generation,
   });
 }
-async function protect(tabId, s) {
-  const regexes = chromeInternetDenyRegexes(s.protected);
-  if (regexes.length > 500) unavailable();
-  const ids = regexes.map(() => ruleId++);
-  await chrome.declarativeNetRequest.updateSessionRules({
-    addRules: regexes.map((regexFilter, i) => ({
-      id: ids[i],
-      priority: 1,
-      action: { type: "block" },
-      condition: {
-        tabIds: [tabId],
-        regexFilter,
-        isUrlFilterCaseSensitive: false,
-        resourceTypes: [
-          "main_frame",
-          "sub_frame",
-          "stylesheet",
-          "script",
-          "image",
-          "font",
-          "object",
-          "xmlhttprequest",
-          "ping",
-          "csp_report",
-          "media",
-          "websocket",
-          "webtransport",
-          "other",
-        ],
-      },
-    })),
-  });
-  return ids;
+// Revocations take effect on receipt, ahead of any queued lifecycle work.
+function preempt(r) {
+  if (r.method === "freeze") {
+    desktopFrozen = true;
+    for (const s of sessions.values()) void pause(s, true, "native_handoff").catch(() => {});
+    return;
+  }
+  const s = sessions.get(r.session);
+  if (s && s.run === r.run && (r.method === "pause" || r.method === "end"))
+    void pause(s, r.method === "pause", r.method === "pause" ? "requested" : "settlement").catch(() => {});
 }
-async function create(s, run, url) {
-  checkURL(s, url);
-  if (s.tabs.size >= 12) unavailable();
-  const created = await chrome.tabs.create({
-    url: "about:blank",
-    active: false,
-  });
-  const tab = {
-    id: created.id,
-    cap: crypto.randomUUID(),
-    initializing: true,
-    opaqueChildren: false,
-    opaqueSince: 0,
-    privacyEvidenceGeneration: 0,
-    mainDocumentId: null,
-    attached: false,
-    document: null,
-    mark: "temporary",
-    origin: "agent",
-    refs: new Map(),
-    rules: [],
-  };
+async function handle(native, r) {
+  let reply;
   try {
-    current(s, run);
-    if (debuggerCleanup.has(tab.id)) unavailable();
-    tab.rules = await protect(tab.id, s);
-    current(s, run);
-    if (s.tabs.size >= 12) unavailable();
-    leases.set(tab.id, s.id);
-    s.tabs.set(tab.cap, tab);
-    const group = await chrome.tabs.group({
-      tabIds: tab.id,
-      ...(s.groups.has(created.windowId)
-        ? { groupId: s.groups.get(created.windowId) }
-        : {}),
-    });
-    current(s, run);
-    s.groups.set(created.windowId, group);
-    await chrome.tabGroups.update(group, { title: s.name, color: s.color });
-    current(s, run);
-    await tracked(s, chrome.tabs.update(tab.id, { url }));
-    current(s, run);
-    return tab;
-  } catch (e) {
-    leases.delete(tab.id);
-    s.tabs.delete(tab.cap);
-    await chrome.tabs.remove(tab.id).catch(() => {});
-    await chrome.declarativeNetRequest
-      .updateSessionRules({ removeRuleIds: tab.rules })
-      .catch(() => {});
-    throw e;
+    const problem = CHROME_METHODS.includes(r.method)
+      ? chromeParamsError(r.method, r.params)
+      : `Unknown Chrome method "${r.method}".`;
+    if (problem) fail(problem);
+    const result = await dispatch(r);
+    reply = { jsonrpc: "2.0", id: r.id, generation, result: result === undefined ? null : result };
+  } catch (error) {
+    reply = { jsonrpc: "2.0", id: r.id, generation, error: { code: -32000, message: errorMessage(error) || "Chrome request failed." } };
   }
-}
-// Inherited documents are never separately observed. Rendered inherited frames
-// force main-document-only text observations and still block screenshots.
-function inheritedFrame(frameId, url) {
-  return Number.isInteger(frameId) && frameId > 0 && /^about:(blank|srcdoc)(?:[?#]|$)/.test(String(url));
-}
-// A different extension's canonical child URL identifies an opaque document,
-// not browser authority. Never inspect it or any child document when present.
-function opaqueExtensionFrame(frameId, value) {
-  if (!Number.isInteger(frameId) || frameId <= 0 || typeof value !== "string" || value.length > 2048)
-    return false;
-  const match = /^chrome-extension:\/\/([a-p]{32})\//.exec(value);
-  if (!match || match[1] === chrome.runtime.id || /%(?![a-fA-F0-9]{2})/.test(value)) return false;
+  if (port !== native) return;
   try {
-    const url = new URL(value);
-    return url.protocol === "chrome-extension:" && url.hostname === match[1] &&
-      !url.username && !url.password && !url.port && url.href === value;
-  } catch { return false; }
-}
-// A URL length refusal alone does not identify an unsafe destination.
-// Positively classify only canonical browser-reported web children within the
-// existing worker bound, then OMIT them (and all children), never admit them.
-// All non-length chromeOrigin policy still applies; ambiguous URLs fail closed.
-function unsupportedLongWebFrame(s, frameId, value) {
-  if (!Number.isSafeInteger(frameId) || frameId <= 0 || typeof value !== "string" ||
-      value.length <= 2048 || value.length > 4096 || /%(?![a-fA-F0-9]{2})/.test(value))
-    return false;
-  try {
-    const url = new URL(value);
-    if (url.href !== value || url.username || url.password || !["http:", "https:"].includes(url.protocol))
-      return false;
-    chromeOrigin(url.origin, s.protected);
-    return true;
-  } catch { return false; }
-}
-function opaqueChildFrame(s, frameId, url) {
-  return opaqueExtensionFrame(frameId, url) || unsupportedLongWebFrame(s, frameId, url);
-}
-function checkURL(s, url) {
-  chromeOrigin(
-    url,
-    s.protected,
-  );
-  if (
-    typeof url !== "string" ||
-    url.length > 4096
-  )
-    unavailable();
-}
-// Called only after policy rejected an event. Classification is diagnostic,
-// never an admission decision; no URL components leave this function.
-function navigationDestination(s, value) {
-  if (typeof value !== "string") return "invalid_url";
-  if (value.length > 2048) return "url_too_long";
-  // Diagnostic only: do not normalize near-matches or admit this document.
-  // In particular, a child frame with this exact URL is still denied.
-  if (value === "chrome-error://chromewebdata/") return "chromium_error_document";
-  let url;
-  try { url = new URL(value); } catch { return "invalid_url"; }
-  if (url.username || url.password) return "credentials";
-  if (url.protocol === "about:") {
-    if (url.pathname === "blank") return "inherited_blank";
-    if (url.pathname === "srcdoc") return "inherited_srcdoc";
-    return "about_other";
-  }
-  if (["data:", "blob:", "file:"].includes(url.protocol)) return url.protocol.slice(0, -1);
-  // Subclasses expose neither URL components nor extension IDs. A same-host
-  // error variant is NOT a canonical document and grants no exception.
-  if (url.protocol === "chrome-error:")
-    return url.hostname.toLowerCase() === "chromewebdata" ? "chromium_error_variant" : "chrome_error_other";
-  if (url.protocol === "chrome:") return "chrome_internal";
-  if (url.protocol === "chrome-extension:")
-    return url.hostname === chrome.runtime.id ? "extension_self" : "extension_other";
-  if (url.protocol === "devtools:") return "devtools";
-  if (!["http:", "https:"].includes(url.protocol)) return "other_nonweb";
-  try {
-    const origin = chromeWebEndpoint(value);
-    if (s.protected.some(protectedOrigin => chromeWebEndpoint(protectedOrigin) === origin))
-      return "protected_origin";
-  } catch { return "invalid_policy"; }
-  return "unknown";
-}
-function navigationDenied(s, details, event) {
-  localPause(s, true, "navigation_denied", {
-    event,
-    frame: details.frameId === 0 ? "main" : Number.isInteger(details.frameId) && details.frameId > 0 ? "child" : "unknown",
-    destination: navigationDestination(s, details.url),
-    revision: CHROME_NAVIGATION_DIAGNOSTIC_REVISION,
-  });
-}
-function markOpaqueChildren(tab, timeStamp = Date.now()) {
-  // Fence pending reset verification even when scope is already main-only.
-  // This evidence counter is not a reference epoch: repeated guards must not
-  // invalidate otherwise safe actions in an unchanged partial scope.
-  tab.privacyEvidenceGeneration++;
-  tab.opaqueChildren = true;
-  tab.opaqueSince = Math.max(tab.opaqueSince ?? 0, Number.isFinite(timeStamp) ? timeStamp : Date.now());
-}
-function completeFrameTree(frames) {
-  const byId = new Map();
-  for (const frame of frames) {
-    if (!Number.isInteger(frame.frameId) || frame.frameId < 0 || byId.has(frame.frameId)) return false;
-    byId.set(frame.frameId, frame);
-  }
-  if (byId.get(0)?.parentFrameId !== -1) return false;
-  for (const frame of frames) {
-    if (frame.frameId === 0) continue;
-    const seen = new Set([frame.frameId]);
-    let parent = frame.parentFrameId;
-    while (parent !== 0) {
-      if (!Number.isInteger(parent) || parent < 0 || seen.has(parent) || !byId.has(parent)) return false;
-      seen.add(parent);
-      parent = byId.get(parent).parentFrameId;
-    }
-  }
-  return true;
-}
-// Chrome can omit extension ancestors from getAllFrames while returning their
-// HTTP descendants. An absent frame cannot prove privacy UI was removed. Only a
-// verified NEW main-document commit may clear the tab's conservative latch.
-function verifyMainCommit(s, tab, details) {
-  const epoch = s.epoch, previous = tab.mainDocumentId;
-  const privacyEvidenceGeneration = tab.privacyEvidenceGeneration;
-  if (typeof details.documentId !== "string" || details.documentId === previous) return;
-  void chrome.webNavigation.getAllFrames({ tabId: tab.id }).then(frames => {
-    if (sessions.get(s.id) !== s || leases.get(tab.id) !== s.id ||
-        s.tabs.get(tab.cap) !== tab || s.epoch !== epoch || tab.mainDocumentId !== previous ||
-        tab.privacyEvidenceGeneration !== privacyEvidenceGeneration) return;
-    const mains = frames?.filter(f => f.frameId === 0) ?? [];
-    if (mains.length !== 1 || mains[0].documentId !== details.documentId || mains[0].url !== details.url) return;
-    // Recheck policy; failed/forbidden commits never clear uncertainty.
-    checkURL(s, mains[0].url);
-    if (mains[0].errorOccurred !== false) return;
-    if (!completeFrameTree(frames) || frames.some(f => opaqueChildFrame(s, f.frameId, f.url))) {
-      markOpaqueChildren(tab);
-      return;
-    }
-    tab.mainDocumentId = details.documentId;
-    // Browser timestamps prevent a late/stale main commit from clearing a
-    // privacy event that occurred later within that same document lifetime.
-    if (tab.opaqueChildren && previous != null && Number.isFinite(details.timeStamp) && details.timeStamp > tab.opaqueSince) {
-      tab.opaqueChildren = false;
-      s.epoch = crypto.randomUUID();
-    }
-  }).catch(() => {}); // Unverified scope remains conservatively restricted.
-}
-async function documentGuard(s, run, tab, screenshot = false) {
-  current(s, run);
-  owned(s, tab.cap);
-  const info = await chrome.tabs.get(tab.id);
-  current(s, run);
-  checkURL(s, info.url);
-  if (info.pendingUrl) unavailable();
-  const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-  current(s, run);
-  if (
-    !frames ||
-    !frames.length ||
-    frames.length > 64 ||
-    frames.filter(f => f.frameId === 0).length !== 1 ||
-    !frames.some(f => f.frameId === 0 && f.url === info.url && typeof f.documentId === "string")
-  ) {
-    markOpaqueChildren(tab);
-    unavailable();
-  }
-  // Establish the current lifetime without ever clearing its exclusion latch.
-  tab.mainDocumentId ??= frames.find(f => f.frameId === 0).documentId;
-  if (!completeFrameTree(frames) || frames.some(f => opaqueChildFrame(s, f.frameId, f.url)))
-    markOpaqueChildren(tab);
-  const opaqueChildren = tab.opaqueChildren;
-  // No pixels from inherited, privileged or unaccounted children can be certified safe.
-  if (screenshot && (opaqueChildren || frames.some(f => inheritedFrame(f.frameId, f.url))))
-    throw new ChromeObservationError("unsupported_frame");
-  const webFrames = frames.filter(f => !inheritedFrame(f.frameId, f.url) && !opaqueChildFrame(s, f.frameId, f.url));
-  // Do not relax destination policy for a forbidden descendant or sibling.
-  // This inspects browser metadata only, never a frame's DOM or private pixels.
-  for (const frame of webFrames) checkURL(s, frame.url);
-  const observed = opaqueChildren ? webFrames.filter(f => f.frameId === 0) : webFrames;
-  if (observed.length > 16) unavailable();
-  return {
-    docs: observed.map(f => ({
-      documentId: f.documentId,
-      frameId: f.frameId,
-      origin: new URL(f.url).origin,
-    })),
-    opaqueChildren,
-    // Bind to the ENTIRE frame tree, including omitted documents and parent
-    // relationships. Exposure can change without an included document changing.
-    signature: JSON.stringify(frames.map(f => [
-      f.frameId, f.parentFrameId, f.documentId,
-      opaqueChildFrame(s, f.frameId, f.url) ? "opaque" : inheritedFrame(f.frameId, f.url) ? "inherited" : "web",
-    ]).sort((a, b) => a[0] - b[0])),
-  };
-}
-async function tracked(s, promise) {
-  s.pending.add(promise);
-  try {
-    return await promise;
-  } finally {
-    s.pending.delete(promise);
-  }
-}
-async function execute(s, run, tab, doc, op, args, epoch) {
-  current(s, run);
-  const result = await tracked(
-    s,
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id, documentIds: [doc.documentId] },
-      world: "ISOLATED",
-      func: observation,
-      args: [op, args, doc.origin, epoch],
-    }),
-  );
-  current(s, run);
-  owned(s, tab.cap);
-  if (
-    s.epoch !== epoch ||
-    result.length !== 1 ||
-    result[0].documentId !== doc.documentId ||
-    !result[0].result
-  )
-    unavailable();
-  if (Object.hasOwn(result[0].result, "observationBlocked")) {
-    const reason = chromeFailureReason(result[0].result.observationBlocked);
-    if (reason) throw new ChromeObservationError(reason);
-    unavailable();
-  }
-  return result[0].result;
-}
-// No DOM-element <-> Chrome frame-ID guessing: if the frame tree cannot be
-// observed in full, omit every child document. The fallback flag is internal,
-// never an RPC parameter. Screenshots retain the strict whole-tab guard.
-async function exposure(s, run, tab, tree, epoch, screenshot) {
-  const docs = tree.docs;
-  const top = docs.find((doc) => doc.frameId === 0);
-  if (!top) unavailable();
-  const mode = screenshot ? "screenshot" : "guard";
-  const main = await execute(s, run, tab, top, mode,
-    screenshot ? {} : { topDocumentOnly: true }, epoch);
-  const scopes = new Map([[top.documentId, main.shadowScope ?? ""]]);
-  let shadowRootsOmitted = main.shadowRootsOmitted === true;
-  // A frame inside an omitted host cannot be mapped safely to a Chrome frame
-  // ID. As with hidden frames, omit ALL child documents, not guessed subsets.
-  if (tree.opaqueChildren || main.framesOmitted === true || shadowRootsOmitted)
-    return { docs: [top], topOnly: true, shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
-  for (const doc of docs) {
-    if (doc === top) continue;
+    post(reply);
+  } catch (error) {
     try {
-      const child = await execute(s, run, tab, doc, mode, {}, epoch);
-      scopes.set(doc.documentId, child.shadowScope ?? "");
-      if (child.shadowRootsOmitted === true) shadowRootsOmitted = true;
-    } catch (error) {
-      if (!screenshot && error instanceof ChromeObservationError && error.reason === "unsupported_frame")
-        return { docs: [top], topOnly: true, shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
-      throw error;
-    }
+      post({ jsonrpc: "2.0", id: r.id, generation, error: { code: -32000, message: errorMessage(error) } });
+    } catch {}
   }
-  return { docs: shadowRootsOmitted ? [top] : docs, topOnly: shadowRootsOmitted,
-    shadowRootsOmitted, shadowScope: JSON.stringify([...scopes]) };
 }
-async function script(s, run, tab, op, args) {
-  const tree = await documentGuard(s, run, tab, op === "screenshot"), epoch = s.epoch;
-  const scope = await exposure(s, run, tab, tree, epoch, op === "screenshot");
-  const { docs, topOnly } = scope;
-  const signature = tree.signature;
-  const referenceScope = signature + (topOnly ? ":main-only" : ":all") + scope.shadowScope;
-  const exact = ["click", "fill", "select", "key"].includes(op);
-  if (exact && tab.document !== referenceScope) unavailable();
-  let result;
-  if (op === "snapshot") {
-    tab.refs.clear();
-    const frames = [];
-    for (const doc of docs) {
-      const observed = await execute(s, run, tab, doc, op,
-        topOnly ? { topDocumentOnly: true } : {}, epoch);
-      for (const el of observed.elements) tab.refs.set(el.ref, doc.documentId);
-      frames.push({ frame: doc.frameId, ...observed });
+
+// ---- Tabs ----
+async function tabInfo(tab) {
+  const t = await chrome.tabs.get(tab.id);
+  return {
+    id: tab.id,
+    title: t.title ?? "",
+    url: t.url || t.pendingUrl || "",
+    ...(t.pendingUrl && t.pendingUrl !== t.url ? { pendingUrl: t.pendingUrl } : {}),
+    windowId: t.windowId,
+    active: !!t.active,
+    origin: tab.origin,
+    mark: tab.mark,
+  };
+}
+function groupTab(s, tabId, windowId) {
+  const work = s.grouping.then(async () => {
+    let groupId = s.groups.get(windowId);
+    if (groupId !== undefined) {
+      try {
+        await chrome.tabs.group({ groupId, tabIds: [tabId] });
+        return;
+      } catch {
+        s.groups.delete(windowId);
+      }
     }
-    result = {
-      ready: frames.every((f) => f.ready),
-      text: frames
-        .map((f) => `[Frame ${f.frame}] ${f.text}`)
-        .join("\n")
-        .slice(0, 24000),
-      elements: frames.flatMap((f) => f.elements).slice(0, 300),
-      frames: frames.map((f) => ({ frame: f.frame, viewport: f.viewport })),
-      ...(topOnly ? { framesOmitted: true, frameNotice: "Only the main document is included; all child frames are omitted because the frame tree is not fully observable." } : {}),
-      ...(scope.shadowRootsOmitted ? { shadowRootsOmitted: true, shadowNotice: "Author shadow hosts and their subtrees are omitted; only light-DOM content outside them is included. Child frames are omitted too. Absence of text cannot be established for the whole page." } : {}),
-      truncated:
-        frames.some((f) => f.truncated) ||
-        frames.reduce((n, f) => n + f.text.length, 0) > 24000,
-    };
-    tab.document = referenceScope;
-  } else if (op === "screenshot") result = { ok: true };
-  else {
-    const doc = exact
-      ? docs.find((d) => d.documentId === tab.refs.get(args.ref))
-      : docs.find((d) => d.frameId === 0);
-    if (!doc) unavailable();
-    result = await execute(s, run, tab, doc, op,
-      topOnly ? { ...args, topDocumentOnly: true } : args, epoch);
-    if (exact) tab.refs.clear();
+    groupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+    s.groups.set(windowId, groupId);
+    await chrome.tabGroups.update(groupId, { title: s.name, color: s.color });
+  });
+  s.grouping = work.catch(() => {});
+  return work;
+}
+async function preferredWindow(s) {
+  for (const id of [...s.tabs.keys()].reverse()) {
+    try {
+      const t = await chrome.tabs.get(id);
+      const w = await chrome.windows.get(t.windowId);
+      if (w.type === "normal") return w.id;
+    } catch {}
   }
-  const after = await documentGuard(s, run, tab, op === "screenshot");
-  if (s.epoch !== epoch || after.signature !== signature) unavailable();
-  // Discard observations if frame visibility changes while collecting them.
-  // Actions are never replayed when a post-check fails.
-  const afterScope = await exposure(s, run, tab, after, epoch, op === "screenshot");
-  if (afterScope.topOnly !== topOnly || afterScope.shadowScope !== scope.shadowScope ||
-      afterScope.shadowRootsOmitted !== scope.shadowRootsOmitted) unavailable();
-  return result;
+  try {
+    const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    if (w?.id !== undefined && w.type === "normal") return w.id;
+  } catch {}
+  const all = await chrome.windows.getAll({ windowTypes: ["normal"] });
+  return all.find((w) => w.focused)?.id ?? all[0]?.id ?? null;
+}
+function lease(s, tabId, origin) {
+  const tab = { id: tabId, origin, mark: null, pauseRetained: false };
+  leases.set(tabId, s.id);
+  s.tabs.set(tabId, tab);
+  return tab;
+}
+function unlease(s, tabId) {
+  s.tabs.delete(tabId);
+  if (leases.get(tabId) === s.id) leases.delete(tabId);
+}
+async function createTab(s, run, url) {
+  check(s, run);
+  const windowId = await preferredWindow(s);
+  check(s, run);
+  let created;
+  if (windowId === null) {
+    // Never steal focus: the new window opens unfocused.
+    const win = await chrome.windows.create({ focused: false, type: "normal", url: "about:blank" });
+    created = win.tabs?.[0] ?? (await chrome.tabs.query({ windowId: win.id }))[0];
+  } else created = await chrome.tabs.create({ active: false, url: "about:blank", windowId });
+  if (created?.id === undefined) fail("Chrome did not return the created tab.");
+  const tab = lease(s, created.id, "agent");
+  try {
+    check(s, run);
+    await groupTab(s, tab.id, created.windowId);
+    check(s, run);
+    if (url) await chrome.tabs.update(tab.id, { url });
+    check(s, run);
+    return { tab: await tabInfo(tab) };
+  } catch (error) {
+    unlease(s, tab.id);
+    await chrome.tabs.remove(tab.id).catch(() => {});
+    throw error;
+  }
+}
+async function claimTab(s, run, tabId) {
+  check(s, run);
+  const owner = leases.get(tabId);
+  if (owner === s.id) return { tab: await tabInfo(sessionTab(s, tabId)) };
+  if (owner !== undefined) fail(`Tab ${tabId} is part of another browser session.`);
+  await chrome.tabs.get(tabId);
+  check(s, run);
+  if (leases.has(tabId)) fail(`Tab ${tabId} is part of another browser session.`);
+  // User tabs are leased in place: never moved into the agent group.
+  return { tab: await tabInfo(lease(s, tabId, "user")) };
+}
+async function closeTab(s, tabId) {
+  sessionTab(s, tabId);
+  await detachTab(tabId).catch(() => {});
+  unlease(s, tabId);
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (error) {
+    if (!/No tab with id/i.test(errorMessage(error))) throw error;
+  }
+  return { ok: true };
+}
+async function userTabs(s) {
+  const all = await chrome.tabs.query({ windowType: "normal" });
+  return {
+    tabs: all
+      .filter((t) => t.id !== undefined && (!leases.has(t.id) || leases.get(t.id) === s.id))
+      .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))
+      .map((t) => ({
+        id: t.id,
+        title: t.title ?? "",
+        url: t.url || t.pendingUrl || "",
+        windowId: t.windowId,
+        active: !!t.active,
+        lastAccessed: t.lastAccessed ?? null,
+        groupId: t.groupId ?? -1,
+        pinned: !!t.pinned,
+      })),
+  };
+}
+
+// ---- Debugger relay ----
+function attachTab(s, run, tabId) {
+  return withTabLock(tabId, async () => {
+    check(s, run);
+    sessionTab(s, tabId);
+    if (attached.has(tabId)) return;
+    const ours = debuggerCleanup.has(tabId);
+    if (!ours) {
+      // Persist before attaching: worker loss at any later point leaves a
+      // cleanup obligation, including an indeterminate attach result.
+      debuggerCleanup.add(tabId);
+      await persistCleanup();
+    }
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+    } catch (error) {
+      // Our own earlier attachment (e.g. a lost onDetach) is still usable.
+      if (!(ours && /Another debugger/i.test(errorMessage(error)))) {
+        if (!ours && debuggerCleanup.delete(tabId)) await persistCleanup().catch(() => {});
+        throw error;
+      }
+    }
+    attached.add(tabId);
+    if (!usable(s, run) || leases.get(tabId) !== s.id) {
+      await releaseDebugger(tabId).catch(() => {});
+      check(s, run);
+      sessionTab(s, tabId);
+    }
+  });
+}
+async function withTimeout(promise, ms, message, onTimeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          onTimeout?.();
+          reject(new Error(message()));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function cdpSend(s, run, tabId, sessionId, method, params) {
+  sessionTab(s, tabId);
+  if (!attached.has(tabId)) await attachTab(s, run, tabId);
+  const target = sessionId ? { tabId, sessionId } : { tabId };
+  try {
+    return await chrome.debugger.sendCommand(target, method, params ?? {});
+  } catch (error) {
+    // A detach we did not observe yet: re-attach once (top-level session only).
+    if (sessionId || !/not attached/i.test(errorMessage(error)) || !usable(s, run) || leases.get(tabId) !== s.id)
+      throw error;
+    attached.delete(tabId);
+    await attachTab(s, run, tabId);
+    return await chrome.debugger.sendCommand(target, method, params ?? {});
+  }
+}
+async function cdp(s, run, p) {
+  const ms = p.timeoutMs ?? CHROME_CDP_TIMEOUT;
+  const result = await withTimeout(
+    cdpSend(s, run, p.tabId, p.sessionId, p.method, p.params),
+    ms,
+    () => `Timed out running CDP command "${p.method}" after ${ms}ms.`,
+  );
+  return result === undefined ? null : result;
+}
+async function cdpBatch(s, run, p) {
+  const ms = p.timeoutMs ?? CHROME_CDP_BATCH_TIMEOUT;
+  let index = 0,
+    cancelled = false;
+  const results = [];
+  const work = (async () => {
+    for (; index < p.commands.length && !cancelled; index++) {
+      const command = p.commands[index];
+      try {
+        const result = await cdpSend(s, run, p.tabId, p.sessionId, command.method, command.params);
+        results.push(result === undefined ? null : result);
+      } catch (error) {
+        fail(`Command ${index} "${command.method}" failed: ${errorMessage(error)}`);
+      }
+    }
+    return { results };
+  })();
+  return withTimeout(
+    work,
+    ms,
+    () => `Timed out running CDP batch at command ${index} "${p.commands[index]?.method}" after ${ms}ms.`,
+    () => {
+      cancelled = true;
+    },
+  );
+}
+async function passthrough(p) {
+  const api = chrome[p.namespace];
+  const fn = api?.[p.method];
+  if (typeof fn !== "function") fail(`chrome.${p.namespace}.${p.method} is not available.`);
+  const result = await fn.apply(api, p.args);
+  return result === undefined ? null : result;
+}
+
+// ---- Dispatch ----
+function begin(r) {
+  const p = r.params;
+  let s = sessions.get(r.session);
+  if (!s) {
+    s = {
+      id: r.session,
+      run: r.run,
+      name: groupTitle(p.name),
+      color: GROUP_COLORS[Array.from(p.agent ?? r.session).reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 0) % GROUP_COLORS.length],
+      paused: false,
+      pausing: null,
+      pauseFailed: false,
+      idle: false,
+      tabs: new Map(),
+      groups: new Map(),
+      queue: Promise.resolve(),
+      grouping: Promise.resolve(),
+      pending: new Set(),
+    };
+    sessions.set(s.id, s);
+    return { ok: true, tabs: [], paused: false };
+  }
+  return lifecycle(s, async () => {
+    await s.pausing?.catch(() => {});
+    if (sessions.get(s.id) !== s) fail("Browser session was cleared; call begin again.");
+    if (s.pauseFailed) fail("Debugger cleanup failed for this browser session; end it before beginning again.");
+    s.run = r.run;
+    s.idle = false;
+    // Marks are turn-scoped. Re-lease retained handoff tabs that still exist.
+    for (const tab of [...s.tabs.values()]) {
+      tab.mark = null;
+      try {
+        await chrome.tabs.get(tab.id);
+      } catch {
+        unlease(s, tab.id);
+      }
+    }
+    return { ok: true, tabs: [...s.tabs.keys()], paused: s.paused };
+  });
+}
+async function end(s, run, p) {
+  check(s, run, true);
+  await pause(s, false, "settlement");
+  s.idle = true;
+  const retained = [];
+  const ours = new Set(s.groups.values());
+  for (const tab of [...s.tabs.values()]) {
+    const kind =
+      tab.mark === "handoff" || tab.pauseRetained
+        ? p.discard ? "release" : "handoff"
+        : tab.mark === "deliverable" ? "deliverable"
+        : tab.origin === "agent" ? "close" : "release";
+    if (kind === "handoff") {
+      tab.mark = null;
+      tab.pauseRetained = false;
+      retained.push(tab.id);
+      continue;
+    }
+    unlease(s, tab.id);
+    if (kind === "close") await chrome.tabs.remove(tab.id).catch(() => {});
+    if (kind === "deliverable") {
+      const info = await chrome.tabs.get(tab.id).catch(() => null);
+      if (info && ours.has(info.groupId)) await chrome.tabs.ungroup(tab.id).catch(() => {});
+    }
+  }
+  s.paused = false;
+  if (!s.tabs.size) sessions.delete(s.id);
+  return { ok: true, retained };
 }
 async function dispatch(r) {
   const p = r.params;
   if (r.method === "freeze") {
     desktopFrozen = true;
-    await Promise.all([...sessions.values()].map(s => pause(s, true, "native_handoff")));
+    await Promise.allSettled([...sessions.values()].map((s) => pause(s, true, "native_handoff")));
     await cleanupDebuggers();
     return { frozen: true };
   }
   if (r.method === "unfreeze") {
-    // This only removes the instance latch; individual tasks remain paused.
+    // Only lifts the instance latch; individual sessions stay paused.
     desktopFrozen = false;
     return { ok: true };
   }
-  if (desktopFrozen && !["pause", "end", "focus"].includes(r.method)) unavailable();
-  if (r.method === "begin") {
-    const retained = sessions.get(r.session);
-    if (retained) {
-      if (
-        !retained.idle ||
-        !retained.paused ||
-        retained.pauseFailed ||
-        JSON.stringify(retained.protected) !== JSON.stringify(p.protected)
-      )
-        unavailable();
-      retained.run = r.run;
-      retained.idle = false;
-      retained.epoch = crypto.randomUUID();
-      return { ok: true, paused: true, tabs: [...retained.tabs.keys()] };
-    }
-    if (
-      sessions.size >= 8 ||
-      !Array.isArray(p.protected) ||
-      typeof p.name !== "string"
-    )
-      unavailable();
-    sessions.set(r.session, {
-      id: r.session,
-      run: r.run,
-      paused: false,
-      pauseFailed: false,
-      idle: false,
-      pending: new Set(),
-      epoch: crypto.randomUUID(),
-      tabs: new Map(),
-      groups: new Map(),
-      protected: p.protected,
-      agentName: p.name.slice(0, 55),
-      name: `🔎 Jelly · ${p.name.slice(0, 55)} · Browse`,
-      color: [
-        "blue",
-        "red",
-        "yellow",
-        "green",
-        "pink",
-        "purple",
-        "cyan",
-        "orange",
-      ][
-        Array.from(p.agent ?? r.session).reduce(
-          (n, c) => (n * 31 + c.charCodeAt(0)) >>> 0,
-          0,
-        ) % 8
-      ],
-    });
-    return { ok: true };
-  }
+  if (desktopFrozen && !["pause", "end", "listTabs", "showTab"].includes(r.method))
+    fail("Chrome automation is frozen for a native desktop handoff.");
+  if (r.method === "begin") return begin(r);
   const s = sessions.get(r.session);
-  if (!s) unavailable();
-  current(s, r.run, ["end", "pause", "resume", "focus"].includes(r.method));
-  if (r.method === "name") {
-    s.name = `🔎 Jelly · ${s.agentName} · ${p.name}`;
-    for (const groupId of s.groups.values()) {
-      current(s, r.run);
-      await chrome.tabGroups
-        .update(groupId, { title: s.name, color: s.color })
-        .catch(() => {});
-    }
-    return { ok: true };
+  if (r.method === "end") {
+    if (!s) return { ok: true, retained: [] };
+    return lifecycle(s, () => end(s, r.run, p));
   }
   if (r.method === "pause") {
-    await pause(s, true);
-    return { ok: true };
-  }
-  if (r.method === "resume") {
-    await s.pausing;
-    current(s, r.run, true);
-    if (desktopFrozen || s.idle || s.pauseFailed) unavailable();
-    s.epoch = crypto.randomUUID();
-    for (const tab of s.tabs.values()) tab.pauseRetained = false;
-    s.paused = false;
-    return { ok: true };
-  }
-  if (r.method === "end") {
-    await pause(s, false, "settlement");
-    s.idle = true;
-    for (const tab of [...s.tabs.values()]) {
-      if (
-        !p.discard &&
-        (tab.mark === "handoff" || tab.pauseRetained) &&
-        tab.origin === "agent"
-      )
-        continue;
-      s.tabs.delete(tab.cap);
-      leases.delete(tab.id);
-      if (
-        tab.mark === "temporary" &&
-        tab.origin === "agent" &&
-        !tab.pauseRetained
-      )
-        await chrome.tabs.remove(tab.id).catch(() => {});
-      // User tabs are always released, never closed or regrouped.
-      await chrome.declarativeNetRequest
-        .updateSessionRules({ removeRuleIds: tab.rules })
-        .catch(() => {});
-    }
-    if (!s.tabs.size) sessions.delete(s.id);
-    return { ok: true, retained: [...s.tabs.keys()] };
-  }
-  if (r.method === "tabs") {
-    if (p.operation === "list")
-      return { tabs: [...s.tabs.keys()].map((pageId) => ({ pageId })) };
-    if (p.operation === "new") {
-      const tab = await tracked(s, create(s, r.run, p.url));
-      return { pageId: tab.cap };
-    }
-    const tab = owned(s, p.pageId);
-    if (p.operation === "select") {
-      s.epoch = crypto.randomUUID();
-      tab.document = null;
-      return { pageId: tab.cap };
-    }
-    if (p.operation === "close") {
-      s.epoch = crypto.randomUUID();
-      await pauseTab(tab);
-      current(s, r.run);
-      s.tabs.delete(tab.cap);
-      leases.delete(tab.id);
-      if (tab.origin === "agent") await tracked(s, chrome.tabs.remove(tab.id));
-      await chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: tab.rules,
-      });
+    if (!s) return { ok: true };
+    check(s, r.run, true);
+    return lifecycle(s, async () => {
+      await pause(s, true, "requested");
       return { ok: true };
-    }
-    unavailable();
-  }
-  if (r.method === "open" && !p.tab) {
-    const tab = await tracked(s, create(s, r.run, p.url));
-    return { pageId: tab.cap };
-  }
-  const tab = owned(s, p.tab);
-  if (r.method === "focus") {
-    await chrome.tabs.update(tab.id, { active: true });
-    await chrome.windows.update((await chrome.tabs.get(tab.id)).windowId, {
-      focused: true,
     });
-    return { ok: true };
   }
-  if (r.method === "mark") {
-    if (
-      !["temporary", "deliverable", "handoff"].includes(p.mark) ||
-      (tab.origin === "user" && p.mark === "handoff")
-    )
-      unavailable();
-    tab.mark = p.mark;
-    return { ok: true };
-  }
-  if (r.method === "open") {
-    checkURL(s, p.url);
-    s.epoch = crypto.randomUUID();
-    tab.document = null;
-    await tracked(s, chrome.tabs.update(tab.id, { url: p.url }));
-    current(s, r.run);
-    return { pageId: tab.cap };
-  }
-  if (r.method === "screenshot") {
-    await script(s, r.run, tab, "screenshot", {});
-    current(s, r.run);
-    if (!tab.attached) {
-      if (debuggerCleanup.size >= 256) unavailable();
-      confirmedDetached.delete(tab.id);
-      debuggerCleanup.add(tab.id);
-      // Persist before attach: worker loss at any later point leaves a cleanup
-      // obligation, including an indeterminate attach result.
-      await persistCleanup();
-      current(s, r.run);
-      tab.attaching = chrome.debugger
-        .attach({ tabId: tab.id }, "1.3")
-        .then(() => {
-          tab.attached = true;
-        });
-      try {
-        await tab.attaching;
-      } catch {
-        await pause(s, true, "debugger_attach_failed");
-        unavailable();
-      } finally {
-        tab.attaching = null;
-      }
-    }
-    current(s, r.run);
-    const doc = await documentGuard(s, r.run, tab, true),
-      epoch = s.epoch;
-    const image = await tracked(
-      s,
-      chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", {
-        format: "png",
-        captureBeyondViewport: false,
-      }),
-    );
-    current(s, r.run);
-    const after = await documentGuard(s, r.run, tab, true);
-    await script(s, r.run, tab, "screenshot", {});
-    if (
-      doc.signature !== after.signature ||
-      epoch !== s.epoch ||
-      typeof image.data !== "string" ||
-      image.data.length > 650000
-    )
-      unavailable();
-    return { image: image.data };
-  }
-  if (r.method === "snapshot") {
-    s.epoch = crypto.randomUUID();
-    return script(s, r.run, tab, "snapshot", {});
-  }
-  if (r.method === "wait_for") {
-    const deadline = Date.now() + (p.timeoutMs ?? 5000);
-    do {
-      current(s, r.run);
-      const result = await script(s, r.run, tab, "snapshot", {});
-      if (
-        (p.condition === "ready" && result.ready) ||
-        (p.condition === "text" && result.text.includes(p.text)) ||
-        (p.condition === "text_absent" &&
-          !result.text.includes(p.text) &&
-          !result.truncated &&
-          !result.framesOmitted &&
-          !result.shadowRootsOmitted)
-      )
+  check(s, r.run, ["resume", "listTabs", "showTab", "markTab"].includes(r.method));
+  switch (r.method) {
+    case "resume":
+      return lifecycle(s, async () => {
+        await s.pausing?.catch(() => {});
+        check(s, r.run, true);
+        if (desktopFrozen) fail("Chrome automation is frozen for a native desktop handoff.");
+        if (s.idle) fail("Browser session turn has ended; call begin first.");
+        if (s.pauseFailed) fail("Debugger cleanup failed for this browser session; it cannot resume.");
+        for (const tab of s.tabs.values()) tab.pauseRetained = false;
+        s.paused = false;
         return { ok: true };
-      if (Date.now() >= deadline) return { ok: false, timedOut: true };
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } while (true);
+      });
+    case "name":
+      return lifecycle(s, async () => {
+        s.name = groupTitle(p.name);
+        for (const [windowId, groupId] of s.groups)
+          await chrome.tabGroups.update(groupId, { title: s.name, color: s.color }).catch(() => s.groups.delete(windowId));
+        return { ok: true };
+      });
+    case "createTab":
+      return lifecycle(s, () => createTab(s, r.run, p.url));
+    case "claimTab":
+      return lifecycle(s, () => claimTab(s, r.run, p.tabId));
+    case "markTab":
+      sessionTab(s, p.tabId).mark = p.mark;
+      return { ok: true };
   }
-  if (["click", "fill", "select", "key"].includes(r.method)) {
-    if (
-      typeof p.ref !== "string" ||
-      (r.method === "fill" &&
-        (typeof p.text !== "string" || p.text.length > 24000))
-    )
-      unavailable();
-    return script(s, r.run, tab, r.method, {
-      ref: p.ref,
-      ...(r.method === "fill" ? { text: p.text } : {}),
-      ...(r.method === "select" ? { value: p.value } : {}),
-      ...(r.method === "key" ? { key: p.key } : {}),
-    });
-  }
-  if (r.method === "scroll") {
-    if (
-      ![p.x ?? 0, p.y].every(
-        (n) =>
-          typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= 10000,
-      )
-    )
-      unavailable();
-    return script(s, r.run, tab, "scroll", { x: p.x ?? 0, y: p.y });
-  }
-  unavailable();
+  return tracked(
+    s,
+    (async () => {
+      switch (r.method) {
+        case "closeTab":
+          return closeTab(s, p.tabId);
+        case "listTabs": {
+          const tabs = await Promise.allSettled([...s.tabs.values()].map(tabInfo));
+          return { tabs: tabs.filter((t) => t.status === "fulfilled").map((t) => t.value) };
+        }
+        case "userTabs":
+          return userTabs(s);
+        case "showTab": {
+          sessionTab(s, p.tabId);
+          const t = await chrome.tabs.update(p.tabId, { active: true });
+          await chrome.windows.update(t.windowId, { focused: true });
+          return { ok: true };
+        }
+        case "attach":
+          await attachTab(s, r.run, p.tabId);
+          return { ok: true };
+        case "detach":
+          sessionTab(s, p.tabId);
+          await detachTab(p.tabId);
+          return { ok: true };
+        case "cdp":
+          return cdp(s, r.run, p);
+        case "cdpBatch":
+          return cdpBatch(s, r.run, p);
+        case "chrome":
+          return passthrough(p);
+      }
+      fail(`Unsupported Chrome method "${r.method}".`);
+    })(),
+  );
 }
-async function pauseTab(tab) {
-  tab.document = null;
-  tab.refs?.clear();
-  await tab.attaching?.catch(() => {});
-  if (tab.attached || debuggerCleanup.has(tab.id)) {
-    tab.detaching = true;
-    try {
-      // Preserve the attachment flag if detach or cleanup persistence fails.
-      await releaseDebugger(tab.id);
-      tab.attached = false;
-    } finally {
-      tab.detaching = false;
-    }
-  }
-}
-chrome.debugger.onDetach.addListener((source) => {
-  if (debuggerCleanup.has(source.tabId)) confirmedDetached.add(source.tabId);
+
+// ---- Browser events ----
+chrome.debugger.onEvent.addListener((source, method, params) => {
   const s = sessions.get(leases.get(source.tabId));
-  if (s) {
-    const tab = [...s.tabs.values()].find((t) => t.id === source.tabId);
-    if (tab?.attached) {
-      tab.attached = false; // This event confirms this extension was detached.
-      if (!tab.detaching) localPause(s, true, "debugger_detached");
-    }
-  }
-});
-chrome.webNavigation.onCommitted.addListener((details) => {
-  const s = sessions.get(leases.get(details.tabId));
-  if (s) {
-    const tab = [...s.tabs.values()].find((t) => t.id === details.tabId);
-    if (
-      tab?.initializing &&
-      details.frameId === 0 &&
-      details.url === "about:blank"
-    )
-      return;
-    // Even unobserved helper changes revoke refs, not session authority.
-    s.epoch = crypto.randomUUID();
-    if (opaqueChildFrame(s, details.frameId, details.url)) {
-      if (tab) markOpaqueChildren(tab, details.timeStamp);
-      return;
-    }
-    if (inheritedFrame(details.frameId, details.url)) return;
-    if (tab) tab.initializing = false;
-    try {
-      checkURL(s, details.url);
-      if (tab && details.frameId === 0) verifyMainCommit(s, tab, details);
-    } catch {
-      navigationDenied(s, details, "committed");
-    }
-  }
-});
-for (const [event, kind] of [
-  [chrome.webNavigation.onHistoryStateUpdated, "history"],
-  [chrome.webNavigation.onReferenceFragmentUpdated, "fragment"],
-])
-  event.addListener((details) => {
-    const s = sessions.get(leases.get(details.tabId));
-    if (s) {
-      s.epoch = crypto.randomUUID();
-      // Same inherited-child boundary as commits. History/fragment changes in
-      // an unobserved helper are not forbidden top-level destinations.
-      if (opaqueChildFrame(s, details.frameId, details.url)) {
-        const tab = [...s.tabs.values()].find(t => t.id === details.tabId);
-        if (tab) markOpaqueChildren(tab, details.timeStamp);
-        return;
-      }
-      if (inheritedFrame(details.frameId, details.url)) return;
-      try {
-        checkURL(s, details.url);
-      } catch {
-        navigationDenied(s, details, kind);
-      }
-    }
+  if (!s) return;
+  notify(s, "cdpEvent", {
+    tabId: source.tabId,
+    ...(source.sessionId ? { sessionId: source.sessionId } : {}),
+    method,
+    params: params ?? {},
   });
+});
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (!Number.isSafeInteger(source.tabId)) return;
+  attached.delete(source.tabId);
+  if (debuggerCleanup.delete(source.tabId)) void persistCleanup().catch(() => {});
+  // The session is NOT paused; the engine re-attaches lazily on its next call.
+  const s = sessions.get(leases.get(source.tabId));
+  if (s) notify(s, "cdpDetach", { tabId: source.tabId, reason: String(reason ?? "unknown") });
+});
+chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+  // Popups / target=_blank from a leased tab join the session as agent tabs.
+  const s = sessions.get(leases.get(details.sourceTabId));
+  if (!s || leases.has(details.tabId) || !usable(s, s.run)) return;
+  const tab = lease(s, details.tabId, "agent");
+  void (async () => {
+    try {
+      const t = await chrome.tabs.get(tab.id);
+      await groupTab(s, tab.id, t.windowId);
+    } catch {} // Popup windows cannot be grouped; the lease still applies.
+    if (s.tabs.get(tab.id) !== tab) return;
+    try {
+      notify(s, "tabAdded", { tab: await tabInfo(tab) });
+    } catch {}
+  })();
+});
 chrome.tabGroups.onRemoved.addListener((group) => {
   for (const s of sessions.values())
-    for (const [windowId, groupId] of s.groups)
-      if (groupId === group.id) s.groups.delete(windowId);
+    for (const [windowId, groupId] of s.groups) if (groupId === group.id) s.groups.delete(windowId);
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
+  const wasAttached = attached.delete(tabId);
   if (debuggerCleanup.delete(tabId)) void persistCleanup().catch(() => {});
-  confirmedDetached.delete(tabId);
   const s = sessions.get(leases.get(tabId));
-  if (s) {
-    s.epoch = crypto.randomUUID();
-    for (const [cap, tab] of s.tabs)
-      if (tab.id === tabId) {
-        s.tabs.delete(cap);
-        if (port && instance)
-          post({
-            type: "tabRemoved",
-            generation,
-            session: s.id,
-            run: s.run,
-            tab: cap,
-          });
-        void chrome.declarativeNetRequest
-          .updateSessionRules({
-            removeRuleIds: tab.rules,
-          })
-          .catch(() => {});
-      }
-    leases.delete(tabId);
-    if (s.idle && !s.tabs.size) sessions.delete(s.id);
-  }
-});
-chrome.tabs.onReplaced.addListener((_added, removed) => {
-  const s = sessions.get(leases.get(removed));
   if (!s) return;
-  for (const [cap, tab] of s.tabs)
-    if (tab.id === removed) {
-      s.tabs.delete(cap);
-      leases.delete(removed);
-      tabEvent("tabRemoved", s, tab);
-      void chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: tab.rules,
-      });
-    }
+  unlease(s, tabId);
+  // Chrome may report the removal before debugger.onDetach; the lease is gone
+  // by then, so report the detach here.
+  if (wasAttached) notify(s, "cdpDetach", { tabId, reason: "target_closed" });
+  notify(s, "tabRemoved", { tabId });
   if (s.idle && !s.tabs.size) sessions.delete(s.id);
-  else localPause(s, true, "tab_replaced"); // Never transfer authority using a replacement's numeric ID.
 });
-async function adopt(s, run, id, origin) {
-  current(s, run);
-  if (leases.has(id) || debuggerCleanup.has(id) || s.tabs.size >= 12)
-    unavailable();
-  // Reserve before the first await so competing user grants/popups cannot race.
-  leases.set(id, s.id);
-  const tab = {
-    id,
-    cap: crypto.randomUUID(),
-    origin,
-    mark: "temporary",
-    rules: [],
-    refs: new Map(),
-    attached: false,
-    document: null,
-    // Adoption may miss events that preceded leasing. No child exposure until
-    // a later verified main-document commit establishes a new lifetime.
-    opaqueChildren: true,
-    opaqueSince: Date.now(),
-    privacyEvidenceGeneration: 0,
-    mainDocumentId: null,
-  };
-  s.tabs.set(tab.cap, tab); // Count reserved adoptions before asynchronous policy work.
-  try {
-    tab.rules = await protect(id, s);
-    current(s, run);
-    let info = await chrome.tabs.get(id);
-    if (origin === "agent")
-      for (
-        let i = 0;
-        i < 20 && (!info.url || info.url === "about:blank");
-        i++
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        current(s, run);
-        info = await chrome.tabs.get(id);
-      }
-    checkURL(s, info.url);
-    if (info.pendingUrl) checkURL(s, info.pendingUrl);
-    current(s, run);
-    owned(s, tab.cap);
-    // Never change a user tab's group. Popups are agent-created task tabs.
-    if (origin === "agent") {
-      const group = await chrome.tabs.group({
-        tabIds: id,
-        ...(s.groups.has(info.windowId)
-          ? { groupId: s.groups.get(info.windowId) }
-          : {}),
-      });
-      s.groups.set(info.windowId, group);
-      await chrome.tabGroups.update(group, { title: s.name, color: s.color });
-      current(s, run);
-    }
-    tabEvent("tabAdded", s, tab);
-    return tab;
-  } catch (error) {
-    leases.delete(id);
-    s.tabs.delete(tab.cap);
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: tab.rules,
-    });
-    throw error;
-  }
-}
-chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
-  const s = sessions.get(leases.get(details.sourceTabId));
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  // Prerender/instant swaps: the lease follows the visible tab.
+  attached.delete(removedTabId);
+  if (debuggerCleanup.delete(removedTabId)) void persistCleanup().catch(() => {});
+  const s = sessions.get(leases.get(removedTabId));
   if (!s) return;
-  // Chrome may begin popup networking before this event. This is access policy,
-  // not a SOCKS-equivalent egress boundary. Never observe before protect+check.
-  try {
-    current(s, s.run);
-    checkURL(s, details.url);
-  } catch {
-    localPause(s, true, "popup_denied");
-    return;
-  }
-  void tracked(s, adopt(s, s.run, details.tabId, "agent")).catch(() =>
-    localPause(s, true, "popup_denied"),
-  );
+  const old = s.tabs.get(removedTabId);
+  unlease(s, removedTabId);
+  notify(s, "tabRemoved", { tabId: removedTabId });
+  if (!old || leases.has(addedTabId)) return;
+  const tab = lease(s, addedTabId, old.origin);
+  tab.mark = old.mark;
+  tab.pauseRetained = old.pauseRetained;
+  void tabInfo(tab)
+    .then((info) => notify(s, "tabAdded", { tab: info }))
+    .catch(() => {});
 });
+
 // Only packaged popup pages may issue local controls. No content-script RPC.
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (
     sender.id !== chrome.runtime.id ||
-    ![
-      chrome.runtime.getURL("popup.html"),
-      chrome.runtime.getURL("popup.html") + "#connect",
-    ].includes(sender.url)
+    ![chrome.runtime.getURL("popup.html"), chrome.runtime.getURL("popup.html") + "#connect"].includes(sender.url)
   )
     return;
   void (async () => {
@@ -1264,15 +896,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       await chrome.storage.local.set({ connectionOptOut: true });
       await chrome.alarms.clear(RETRY_ALARM);
       await cleanup;
-    } else if (message.action !== "status") unavailable();
+    } else if (message.action !== "status") fail("Unsupported popup action.");
     return {
       profile,
       instance,
       connected: !!instance,
       pending: pendingPair,
-      unresolvedDebuggerCleanup: [...debuggerCleanup].filter(
-        (id) => !leases.has(id),
-      ).length,
+      unresolvedDebuggerCleanup: [...debuggerCleanup].filter((id) => !leases.has(id)).length,
       connecting: !!connecting || (!!port && !instance && !pendingPair),
       optedOut,
       connectionError,
@@ -1282,6 +912,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         paused: s.paused && !s.pausing && !s.pauseFailed,
         pausing: !!s.pausing,
         failed: !!s.pauseFailed,
+        idle: s.idle,
         tabs: s.tabs.size,
       })),
     };
@@ -1290,11 +921,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === RETRY_ALARM) {
-    void automaticConnect();
-  } else if (alarm.name === handshakeAlarm && port && !instance && !pendingPair) {
-    void lostConnection("handshake-timeout");
-  }
+  if (alarm.name === RETRY_ALARM) void automaticConnect();
+  else if (alarm.name === DEADMAN_ALARM) void deadman();
+  else if (alarm.name === handshakeAlarm && port && !instance && !pendingPair) void lostConnection("handshake-timeout");
 });
 chrome.runtime.onStartup.addListener(() => void automaticConnect());
 chrome.runtime.onInstalled.addListener(() => void automaticConnect());

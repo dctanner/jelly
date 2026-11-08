@@ -18,13 +18,21 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   CHROME_PROTOCOL,
   CHROME_METHODS,
+  CHROME_MAX_REQUEST,
   ChromeFrames,
   chromeFrame,
   type ChromeMethod,
   type ChromeProfile,
+  type ChromeTabInfo,
+  type ChromeCdpEvent,
 } from "../shared/chrome-protocol";
 import { ChromeWriter } from "./chrome-writer";
-import { chromeOperationError, chromePauseReason, chromeNavigationDiagnostic, type ChromePauseReason, type ChromeNavigationDiagnostic } from "../shared/chrome-errors";
+import { chromePauseReason, type ChromePauseReason } from "../shared/chrome-errors";
+export const CHROME_REQUEST_TIMEOUT = 30_000;
+export const CHROME_MAX_PENDING = 256;
+const ERROR_MESSAGE_LIMIT = 2000;
+const routing = (v: unknown) => typeof v === "string" && v.length > 0 && v.length <= 128;
+const tabId = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 import { validChromeDesktop, type ChromeDesktop } from "./chrome-desktop";
 interface Peer {
   socket: Socket;
@@ -100,21 +108,38 @@ export class ChromeBridge {
     run: string,
     state: "pausing" | "paused" | "failed",
     reason?: ChromePauseReason,
-    navigationDiagnostic?: ChromeNavigationDiagnostic,
   ) => void = () => {};
+  /** Every chrome.debugger.onEvent for a tab leased by (session, run). */
+  onCdpEvent: (
+    profile: string,
+    generation: string,
+    session: string,
+    run: string,
+    event: ChromeCdpEvent,
+  ) => void = () => {};
+  /** chrome.debugger.onDetach for a leased tab; the session is not paused. */
+  onCdpDetach: (
+    profile: string,
+    generation: string,
+    session: string,
+    run: string,
+    tabId: number,
+    reason: string,
+  ) => void = () => {};
+  /** A popup/target=_blank opened from a leased tab was auto-leased. */
   onTabAdded: (
     profile: string,
     generation: string,
     session: string,
     run: string,
-    tab: string,
+    tab: ChromeTabInfo,
   ) => void = () => {};
   onTabRemoved: (
     profile: string,
     generation: string,
     session: string,
     run: string,
-    tab: string,
+    tabId: number,
   ) => void = () => {};
   constructor(
     dataDir: string,
@@ -220,8 +245,6 @@ export class ChromeBridge {
     }
     this.sockets.add(socket);
     let peer: Peer | undefined;
-    let eventWindow = Date.now(),
-      events = 0;
     const frames = new ChromeFrames();
     const writer = new ChromeWriter(socket, () => socket.destroy());
     const timer = setTimeout(() => socket.destroy(), 5000);
@@ -254,11 +277,6 @@ export class ChromeBridge {
         )) {
           const v = value as Record<string, unknown>;
           if (!v || typeof v !== "object") throw new Error();
-          if (Date.now() - eventWindow > 1000) {
-            eventWindow = Date.now();
-            events = 0;
-          }
-          if (++events > 256) throw new Error("Chrome event flood");
           if (!peer) {
             const configured = join(this.directory, "extension-id");
             this.extensionId = existsSync(configured)
@@ -319,39 +337,42 @@ export class ChromeBridge {
                 generation: peer.generation,
               }),
             );
-          } else if (v.type === "pauseState") {
-            if (
-              v.generation !== peer.generation ||
-              ![v.session, v.run].every(
-                (s) => typeof s === "string" && s.length > 0 && s.length <= 128,
-              ) ||
-              !["pausing", "paused", "failed"].includes(String(v.state))
-            )
+          } else if (typeof v.type === "string") {
+            if (v.generation !== peer.generation || !routing(v.session) || !routing(v.run))
               throw new Error();
-            this.onPauseState(
-              peer.profile,
-              peer.generation,
-              v.session as string,
-              v.run as string,
-              v.state as "pausing" | "paused" | "failed",
-              chromePauseReason(v.reason),
-              v.reason === "navigation_denied" ? chromeNavigationDiagnostic(v.navigationDiagnostic) : undefined,
-            );
-          } else if (v.type === "tabRemoved" || v.type === "tabAdded") {
-            if (
-              v.generation !== peer.generation ||
-              ![v.session, v.run, v.tab].every(
-                (s) => typeof s === "string" && s.length > 0 && s.length <= 128,
-              )
-            )
-              throw new Error();
-            (v.type === "tabAdded" ? this.onTabAdded : this.onTabRemoved)(
-              peer.profile,
-              peer.generation,
-              v.session as string,
-              v.run as string,
-              v.tab as string,
-            );
+            const session = v.session as string, run = v.run as string;
+            if (v.type === "cdpEvent") {
+              if (!tabId(v.tabId) || typeof v.method !== "string" ||
+                  (v.sessionId !== undefined && typeof v.sessionId !== "string"))
+                throw new Error();
+              this.onCdpEvent(peer.profile, peer.generation, session, run, {
+                tabId: v.tabId as number,
+                ...(v.sessionId !== undefined ? { sessionId: v.sessionId as string } : {}),
+                method: v.method,
+                params: v.params ?? {},
+              });
+            } else if (v.type === "cdpDetach") {
+              if (!tabId(v.tabId) || typeof v.reason !== "string") throw new Error();
+              this.onCdpDetach(peer.profile, peer.generation, session, run, v.tabId as number, v.reason);
+            } else if (v.type === "tabAdded") {
+              const tab = v.tab as Record<string, unknown> | null;
+              if (!tab || typeof tab !== "object" || !tabId(tab.id)) throw new Error();
+              this.onTabAdded(peer.profile, peer.generation, session, run, tab as unknown as ChromeTabInfo);
+            } else if (v.type === "tabRemoved") {
+              if (!tabId(v.tabId)) throw new Error();
+              this.onTabRemoved(peer.profile, peer.generation, session, run, v.tabId as number);
+            } else if (v.type === "pauseState") {
+              if (!["pausing", "paused", "failed"].includes(String(v.state))) throw new Error();
+              this.onPauseState(
+                peer.profile,
+                peer.generation,
+                session,
+                run,
+                v.state as "pausing" | "paused" | "failed",
+                chromePauseReason(v.reason),
+              );
+            }
+            // Unknown notification types from newer extensions are ignored.
           } else {
             if (
               v.jsonrpc !== "2.0" ||
@@ -363,17 +384,11 @@ export class ChromeBridge {
             if (!p) continue;
             peer.pending.delete(v.id);
             clearTimeout(p.timer);
-            if (v.error)
-              p.reject(
-                new Error(
-                  chromeOperationError(
-                    typeof v.error === "object" && v.error !== null
-                      ? (v.error as Record<string, unknown>).reason
-                      : undefined,
-                  ),
-                ),
-              );
-            else p.resolve(v.result);
+            if (v.error !== undefined && v.error !== null) {
+              const raw = typeof v.error === "object" ? (v.error as Record<string, unknown>).message : v.error;
+              const message = typeof raw === "string" && raw ? raw : "Chrome extension request failed.";
+              p.reject(new Error(message.length > ERROR_MESSAGE_LIMIT ? `${message.slice(0, ERROR_MESSAGE_LIMIT)}…` : message));
+            } else p.resolve(v.result);
           }
         }
       } catch {
@@ -381,6 +396,9 @@ export class ChromeBridge {
       }
     });
   }
+  /** Send one request. Each request has its own timeout (default 30 s; a
+   * `cdp`/`cdpBatch` timeoutMs param extends it) and abort signal: either
+   * rejects only that request and never tears down the connection. */
   async call(
     profile: string,
     generation: string,
@@ -389,49 +407,46 @@ export class ChromeBridge {
     method: ChromeMethod,
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    timeoutMs?: number,
   ): Promise<unknown> {
     await this.ready;
     signal?.throwIfAborted();
     const peer = this.peers.get(profile);
-    if (!peer || peer.generation !== generation)
+    if (!peer || peer.generation !== generation || peer.socket.destroyed || !peer.socket.writable)
       throw new Error(
         "Selected Chrome profile disconnected. Reconnect and allocate a new session; no fallback.",
       );
-    if (peer.pending.size >= 32) throw new Error("Chrome is busy.");
+    if (peer.pending.size >= CHROME_MAX_PENDING)
+      throw new Error(`Chrome is busy (${CHROME_MAX_PENDING} requests in flight).`);
     const id = crypto.randomUUID();
+    const frame = chromeFrame(
+      { jsonrpc: "2.0", id, method, instance: this.instance, generation, session, run, params },
+      CHROME_MAX_REQUEST,
+    );
+    const inner = typeof params.timeoutMs === "number" && (method === "cdp" || method === "cdpBatch")
+      ? params.timeoutMs + 5000 : 0;
+    const limit = timeoutMs ?? Math.max(CHROME_REQUEST_TIMEOUT, inner);
     return new Promise((resolve, reject) => {
-      const abort = () => {
-        peer.socket.destroy();
-      };
-      const finish = (value: unknown, error = false) => {
+      const settle = () => {
+        clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        error ? reject(value) : resolve(value);
+        peer.pending.delete(id);
+      };
+      const abort = () => {
+        settle();
+        reject(signal?.reason instanceof Error ? signal.reason : new Error(`Chrome request "${method}" was aborted.`));
       };
       const timer = setTimeout(() => {
-        peer.socket.destroy();
-      }, 20000);
+        settle();
+        reject(new Error(`Chrome request "${method}" timed out after ${limit}ms`));
+      }, limit);
       peer.pending.set(id, {
-        resolve: (v) => finish(v),
-        reject: (e) => finish(e, true),
+        resolve: (v) => { settle(); resolve(v); },
+        reject: (e) => { settle(); reject(e); },
         timer,
       });
       signal?.addEventListener("abort", abort, { once: true });
-      try {
-        peer.writer.write(
-          chromeFrame({
-            jsonrpc: "2.0",
-            id,
-            method,
-            instance: this.instance,
-            generation,
-            session,
-            run,
-            params,
-          }),
-        );
-      } catch {
-        peer.socket.destroy();
-      }
+      peer.writer.write(frame);
     });
   }
   disconnect(profile: string) {
