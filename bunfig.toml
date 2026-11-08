@@ -2,3 +2,6 @@
 # React's act() exists only in development builds, including when the caller's
 # shell runs Jelly with NODE_ENV=production. This preload affects tests only.
 preload = ["./tests/fixtures/test-env.ts"]
+
+[install]
+backend = "hardlink"
