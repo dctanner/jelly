@@ -1,3 +1,4 @@
+import { closeBrowserRepl } from "./agent-tools";
 import type { ClaudeStatusCheck } from "./claude-code";
 import "./runtime-network";
 import { COMPUTER_CLIPBOARD_BODY_BYTES } from "../shared/computer-clipboard";
@@ -391,9 +392,15 @@ export async function startApp(options: AppOptions) {
               } else {
                 if (!["close", "disconnect"].includes(operation)) throw new HttpError(400, "Unsupported Chrome control.");
                 await service.chrome.control(agentId, operation);
-                if (operation === "close") service.browsers.releasePin(agentId);
+                if (operation === "close") { service.browsers.releasePin(agentId); closeBrowserRepl(agentId); }
               }
               return json(service.chromeStatus(agentId));
+            }
+            const recovery = url.pathname.match(/^\/api\/interventions\/([^/]+)\/confirm-browser-recovery$/);
+            if (req.method === "POST" && recovery) {
+              controls.require(req);
+              const input = await body(req);
+              return json(await service.interventions.confirmBrowserRecovery(recovery[1]!, input.binding));
             }
             const intervention = url.pathname.match(
               /^\/api\/interventions\/([^/]+)\/(approve|deny)$/,

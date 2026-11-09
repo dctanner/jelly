@@ -111,7 +111,7 @@ export interface Intervention {
   id: string;
   agentId: string;
   runId: string;
-  kind: "sudo" | "browser_login" | "desktop_handoff";
+  kind: "sudo" | "browser_login" | "desktop_handoff" | "browser_recovery";
   status:
     | "pending"
     | "executing"

@@ -7,6 +7,8 @@ import {
   type SudoExecutor,
 } from "./sudo";
 import type { Intervention } from "../shared/types";
+import type { BrowserPort, BrowserRecovery } from "./browser-sessions";
+import type { BrowserRecoveryResult } from "../shared/browser-recovery";
 interface Waiter {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -16,6 +18,7 @@ interface Waiter {
 export class Interventions {
   private waiting = new Map<string, Waiter>();
   private executions = new Set<Promise<unknown>>();
+  private recoveries = new Map<string, BrowserRecovery>();
   constructor(
     private store: Store,
     private notify: (
@@ -83,6 +86,84 @@ export class Interventions {
     });
     this.notify(agentId, runId, "intervention_requested", { request: item });
     return { request: item, promise };
+  }
+  async recoverBrowser(
+    agentId: string,
+    runId: string,
+    browser: BrowserPort,
+    signal?: AbortSignal,
+    progress: (value: BrowserRecoveryResult) => void = () => {},
+  ): Promise<BrowserRecoveryResult> {
+    if (signal?.aborted) return { status: "cancelled", message: "Recovery request cancelled." };
+    let recovery: BrowserRecovery;
+    try {
+      if (!browser.prepareRecovery) throw new Error("Recovery requests are unavailable.");
+      recovery = browser.prepareRecovery();
+    } catch (error) {
+      return { status: "rejected", message: (error as Error).message };
+    }
+    if (recovery.binding.agent !== agentId || recovery.binding.run !== runId) {
+      recovery.release();
+      return { status: "rejected", message: "Recovery must belong to this agent's current run." };
+    }
+    let pending: ReturnType<Interventions["request"]>;
+    try { pending = this.request("browser_recovery", agentId, runId, { binding: recovery.binding }, signal); }
+    catch (error) { recovery.release(); throw error; }
+    this.recoveries.set(pending.request.id, recovery);
+    // The request waiter is deliberately outside the browser operation chain.
+    // No request or confirmation continuation survives server restart.
+    const timer = setInterval(() => {
+      if (this.store.intervention(pending.request.id)?.status !== "pending") return;
+      try { recovery.check(); }
+      catch { this.finishRecovery(pending.request.id, { status: "stale", message: "Browser authority changed. This request cannot close a session; request again only after the relevant operator handoff/repair." }); }
+    }, 250);
+    timer.unref();
+    try {
+      progress({ status: "requested", message: "Recovery requested; no session has been closed." });
+      progress({ status: "awaiting_human", message: "Awaiting explicit human confirmation in Jelly. A notification is not approval." });
+      return await pending.promise as BrowserRecoveryResult;
+    } finally {
+      if (this.waiting.has(pending.request.id)) this.cancel(pending.request.id);
+      clearInterval(timer);
+      this.recoveries.delete(pending.request.id);
+      recovery.release();
+    }
+  }
+  private finishRecovery(id: string, result: BrowserRecoveryResult) {
+    const status = result.status === "approved_closed" ? "completed"
+      : result.status === "cancelled" ? "cancelled"
+      : result.status === "rejected" ? "denied" : "failed";
+    const updated = this.update(id, status, { ...result });
+    this.settle(id, null, result);
+    return updated;
+  }
+  /** Only the private operator route calls this; no tool receives this continuation. */
+  confirmBrowserRecovery(id: string, displayed: unknown) {
+    const item = this.pending(id);
+    const recovery = this.recoveries.get(id);
+    if (item.kind !== "browser_recovery" || !recovery || item.agentId !== recovery.binding.agent || item.runId !== recovery.binding.run)
+      throw new HttpError(409, "This recovery request is no longer current.");
+    if (!displayed || typeof displayed !== "object" || Array.isArray(displayed) ||
+        Object.keys(displayed).length !== Object.keys(recovery.binding).length ||
+        Object.entries(recovery.binding).some(([key, value]) => (displayed as Record<string, unknown>)[key] !== value))
+      throw new HttpError(409, "Confirm only the exact browser session displayed on this request.");
+    try { recovery.check(); }
+    catch { return Promise.resolve(this.finishRecovery(id, { status: "stale", message: "Browser authority changed; no recovery was performed." })); }
+    this.update(id, "executing"); // Synchronous single-use consumption before any await.
+    const waiter = this.waiting.get(id)!;
+    const job = (async () => {
+      let result: BrowserRecoveryResult;
+      try { result = await recovery.close(waiter.controller.signal); }
+      catch {
+        result = waiter.controller.signal.aborted
+          ? { status: "cancelled", message: "Recovery cancelled or expired. Closure may have been dispatched; authority remains blocked. Nothing was replayed." }
+          : { status: "failed", message: "Recovery could not confirm safe retirement. Authority remains blocked; use existing operator repair. Nothing was replayed." };
+      }
+      return this.finishRecovery(id, result);
+    })();
+    this.executions.add(job);
+    void job.finally(() => this.executions.delete(job)).catch(() => {});
+    return job;
   }
   async sudo(
     agentId: string,
@@ -189,6 +270,10 @@ export class Interventions {
   }
   deny(id: string) {
     const item = this.pending(id);
+    if (item.kind === "browser_recovery") {
+      this.finishRecovery(id, { status: "rejected", message: "The human rejected browser recovery. No session was closed." });
+      return item;
+    }
     this.update(id, "denied");
     this.settle(id, null, {
       denied: true,
@@ -215,6 +300,10 @@ export class Interventions {
     const executing = current === "executing";
     waiter.controller.abort();
     this.update(id, status);
+    if (!executing && this.store.intervention(id)?.kind === "browser_recovery") {
+      this.finishRecovery(id, { status: status === "expired" ? "stale" : "cancelled", message: status === "expired" ? "Recovery request expired without human confirmation." : "Recovery request cancelled. No session was closed." });
+      return;
+    }
     if (!executing)
       this.settle(
         id,

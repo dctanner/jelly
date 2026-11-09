@@ -176,11 +176,9 @@ try {
   const selection = { chromeProfile: profile.id };
   // Native extension navigation only after handback; normal root cookies survive.
   const browser = app.service.chrome.allocate(agent.id, "fixture-run", selection, "Existing profile");
-  await browser.action("name", { name: "Existing profile" });
-  const task = (app.service.chrome as any).tasks.get(agent.id);
-  // Like the existing headed extension fixture, only this direct test call
-  // reaches the local synthetic site; production model URL guards stay intact.
-  await app.service.chrome.bridge.call(profile.id, profile.generation, task.id, task.run, "open", { url: new URL("/check", site.url).href });
+  await browser.engine.execute("nameSession", { name: "Existing profile" });
+  // v9 has no URL policy: the agent engine opens the local synthetic site directly.
+  await browser.engine.execute("tabs.new", { url: new URL("/check", site.url).href });
   await until(() => cookieSeen);
   await app.service.chrome.settle(agent.id, "fixture-run");
   await page.goto("about:blank");

@@ -36,6 +36,11 @@ async function waitFor(check: () => boolean) {
     await Bun.sleep(5);
   }
 }
+/** A v9 engine op that reaches the extension, then the advisory human-use state. */
+async function humanUsingAfter(chrome: ChromeSessions, port: { engine: { execute(op: string, args: Record<string, unknown>): Promise<unknown> } }) {
+  await port.engine.execute("tabs.list", {});
+  return chrome.humanState();
+}
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-share-test-"));
   symlinkSync(resolve(".jelly/runtime"), join(dir, "runtime"));
@@ -58,13 +63,14 @@ async function fixture() {
     sockets.push(socket);
     const requests: any[] = [],
       frames = new ChromeFrames();
-    let frozen = false;
+    let frozen = false, nextTab = 1;
     let onCall = async (r: any): Promise<unknown> =>
-      r.method === "freeze"
-        ? { frozen: true }
-        : r.method === "open"
-          ? { pageId: crypto.randomUUID() }
-          : { ok: true };
+      r.method === "freeze" ? { frozen: true }
+      : r.method === "begin" ? { ok: true, tabs: [] }
+      : r.method === "end" ? { ok: true, retained: [] }
+      : r.method === "createTab" ? { tab: { id: nextTab++, title: "", url: "about:blank", windowId: 1, active: true, origin: "agent", mark: null } }
+      : r.method === "listTabs" ? { tabs: [] }
+      : { ok: true };
     socket.on("error", () => {});
     socket.on("data", (b) => {
       for (const r of frames.push(Buffer.from(b)) as any[]) {
@@ -175,17 +181,18 @@ test("human-use status never revokes in-flight results or blocks cached and newl
   const f = await fixture(), ack = gate();
   try {
     const a = await f.peer(), b = await f.peer();
-    a.onCall(async r => { if (r.method === "snapshot") await ack.promise; return { ok: true }; });
+    a.onCall(async r => { if (r.method === "listTabs") { await ack.promise; return { tabs: [] }; } return { ok: true }; });
     const browser = f.chrome.allocate("a", "run", f.selection(a.profile), "A");
-    const delayed = browser.action("snapshot");
-    await waitFor(() => a.requests.some(r => r.method === "snapshot"));
+    const delayed = browser.engine.execute("tabs.list", {});
+    await waitFor(() => a.requests.some(r => r.method === "listTabs"));
     f.chrome.setHumanDesktop(true);
     const fresh = f.chrome.allocate("b", "run-b", f.selection(b.profile), "B");
-    expect(await fresh.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await humanUsingAfter(f.chrome, fresh)).toBe(true);
     const peer = await f.peer(); expect(peer.requests[0].type).toBe("paired");
-    ack.resolve(); expect(await delayed).toMatchObject({ humanUsing: true });
+    ack.resolve(); expect(await delayed).toEqual([]);
+    expect(f.chrome.humanState()).toBe(true);
     f.chrome.setHumanDesktop(false);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(false);
   } finally { ack.resolve(); await f.close(); }
 });
 
@@ -194,19 +201,19 @@ test("taking computer control is advisory during delayed capture; owner and stal
   try {
     const p = await f.peer();
     const browser = f.chrome.allocate("a", "run", f.selection(p.profile), "A");
-    await browser.action("open", { url: "https://example.com" });
+    await browser.engine.execute("tabs.new", {});
     Object.assign(f.share, { startCapture: async () => { await ready.promise; (f.share as any).status = "sharing"; } });
     const taking = f.share.take("owner", "a", p.profile, p.generation);
     expect(f.chrome.humanState()).toBe(true);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(true);
     expect(() => f.share.ticket("owner", 0)).toThrow();
     await expect(f.share.take("other", "a", p.profile, p.generation)).rejects.toThrow();
     await expect(f.share.release("other", f.share.state().generation)).rejects.toThrow("private");
     await expect(f.share.release("owner", -1)).rejects.toThrow("Stale");
     ready.resolve(); await taking;
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(true);
     await f.share.release("owner", f.share.state().generation);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(false);
     expect(p.requests.some(r => ["freeze", "unfreeze", "pause", "resume"].includes(r.method))).toBe(false);
   } finally { ready.resolve(); await f.close(); }
 });
@@ -292,7 +299,7 @@ test("target connection loss revokes viewer tickets without blocking other brows
     await waitFor(() => f.share.state().status === "failed");
     expect(() => f.share.consume(ticket.ticket, "owner")).toThrow();
     const browser = f.chrome.allocate("b", "run", f.selection(other.profile), "B");
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(true);
     expect(f.chrome.humanState()).toBe(true);
   } finally { await f.close(); }
 });
@@ -417,7 +424,7 @@ test("owner expiry during delayed viewer cleanup retains cleanup obligation, nev
     expect(await release).toBe(409);
     expect(f.share.state().status).toBe("orphaned");
     expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
-    expect(await f.chrome.allocate("fresh", "run", f.selection(p.profile), "Fresh").action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, f.chrome.allocate("fresh", "run", f.selection(p.profile), "Fresh"))).toBe(false);
   } finally { ack.resolve(); await f.close(); }
 });
 
@@ -498,16 +505,16 @@ test("cleanup after target disconnect never revives lost tabs or waits for unrel
   try {
     const a = await f.peer(), b = await f.peer();
     const old = f.chrome.allocate("a", "run-a", f.selection(a.profile), "A");
-    await old.action("open", { url: "https://example.com" });
+    await old.engine.execute("tabs.new", {});
     await f.share.take("owner", "a", a.profile, a.generation).catch(() => {});
     a.socket.destroy();
     await waitFor(() => f.chrome.state("a").task?.connected === false);
     const browser = f.chrome.allocate("b", "run-b", f.selection(b.profile), "B");
     Object.assign(f.share, { stopCapture: () => cleanup.promise });
     const handback = f.share.release("owner", f.share.state().generation, true);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(false);
     cleanup.resolve(); await handback;
-    await expect(old.action("snapshot")).rejects.toThrow("expired");
+    await expect(old.engine.execute("tabs.list", {})).rejects.toThrow("expired");
     expect(b.requests.some(r => ["freeze", "unfreeze"].includes(r.method))).toBe(false);
   } finally { cleanup.resolve(); await f.close(); }
 });
@@ -526,7 +533,7 @@ test("failed viewer cleanup clears advisory status and notifies bound handoffs o
     Object.assign(f.share, { stopCapture: async () => { throw new Error("cleanup failed"); } });
     await expect(f.share.release("owner", f.share.state().generation)).rejects.toThrow();
     expect(done).toEqual([{ agent: "a", id: "login" }]);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(false);
     expect(existsSync(join(f.chrome.bridge.directory, "desktop-share.json"))).toBe(true);
     expect(() => f.share.ticket("owner", f.share.state().generation)).toThrow();
     Object.assign(f.share, { stopCapture: stop });
@@ -540,14 +547,14 @@ test("orphaned human-use status does not block current or newly allocated browse
   try {
     const p = await f.peer();
     const browser = f.chrome.allocate("a", "run", f.selection(p.profile), "A");
-    await browser.action("open", { url: "https://example.com" });
+    await browser.engine.execute("tabs.new", {});
     await f.share.take("expired", "a", p.profile, p.generation).catch(() => {});
     f.share.ownerValid = s => s === "new";
     expect(f.share.state("new").status).toBe("orphaned");
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: true });
-    expect(await f.chrome.allocate("b", "run-b", f.selection(p.profile), "B").action("snapshot")).toMatchObject({ humanUsing: true });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(true);
+    expect(await humanUsingAfter(f.chrome, f.chrome.allocate("b", "run-b", f.selection(p.profile), "B"))).toBe(true);
     await f.share.release("new", f.share.state().generation, true);
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(await humanUsingAfter(f.chrome, browser)).toBe(false);
     expect(p.requests.some(r => r.method === "freeze")).toBe(false);
   } finally { await f.close(); }
 });

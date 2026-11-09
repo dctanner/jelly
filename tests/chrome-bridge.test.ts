@@ -13,24 +13,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChromeBridge } from "../src/server/chrome-bridge";
-import { ChromeSessions } from "../src/server/chrome-sessions";
-import { BrowserSessions } from "../src/server/browser-sessions";
 import {
   ChromeFrames,
   chromeFrame,
-  chromeOrigin,
   chromeRequest,
+  chromeParamsError,
   CHROME_MAX_FRAME,
+  CHROME_MAX_REQUEST,
   CHROME_PROTOCOL,
   CHROME_METHODS,
-  defaultChromeSelection,
 } from "../src/shared/chrome-protocol";
-import { Store } from "../src/server/store";
-import {
-  chromeInternetDenyRegexes,
-} from "../src/shared/chrome-policy";
-import { interventionTools } from "../src/server/agent-tools";
-import type { Interventions } from "../src/server/interventions";
+
 async function waitFor(ready: () => boolean) {
   const deadline = Date.now() + 5000;
   while (!ready()) {
@@ -88,61 +81,59 @@ async function fixture() {
     },
   };
 }
-test("Chrome framing is incremental, bounded and rejects invalid JSON/methods", () => {
+
+const reply = (p: { socket: Socket }, generation: string, id: string, body: Record<string, unknown>) =>
+  p.socket.write(chromeFrame({ jsonrpc: "2.0", id, generation, ...body }));
+
+test("Chrome framing is incremental, linear for large chunked frames, and bounded", () => {
   const parser = new ChromeFrames(),
     frame = chromeFrame({ ok: true });
   expect(parser.push(frame.subarray(0, 2))).toEqual([]);
   expect(parser.push(frame.subarray(2))).toEqual([{ ok: true }]);
   expect(parser.push(Buffer.concat([frame, frame]))).toHaveLength(2);
+  // Thousands of small notifications in one chunk are not a "flood".
+  expect(parser.push(Buffer.concat(Array.from({ length: 5000 }, () => frame)))).toHaveLength(5000);
+  // A 20 MiB extension->host result arriving in 64 KiB pieces.
+  const big = chromeFrame({ data: "x".repeat(20 * 1024 * 1024) });
+  const values: unknown[] = [];
+  const started = performance.now();
+  for (let i = 0; i < big.length; i += 65536) values.push(...parser.push(big.subarray(i, i + 65536)));
+  expect(values).toHaveLength(1);
+  expect((values[0] as { data: string }).data.length).toBe(20 * 1024 * 1024);
+  expect(performance.now() - started).toBeLessThan(5000);
   const large = Buffer.alloc(4);
   large.writeUInt32LE(CHROME_MAX_FRAME + 1);
-  expect(() => parser.push(large)).toThrow();
+  expect(() => new ChromeFrames().push(large)).toThrow();
+  expect(CHROME_MAX_FRAME).toBe(32 * 1024 * 1024);
   expect(() => chromeFrame("x".repeat(CHROME_MAX_FRAME))).toThrow();
-  expect(
-    chromeRequest({
-      jsonrpc: "2.0",
-      id: "id",
-      instance: "i",
-      generation: "g",
-      session: "s",
-      run: "r",
-      method: "Runtime.evaluate",
-      params: {},
-    }),
-  ).toBe(false);
+  expect(() => chromeFrame("x".repeat(CHROME_MAX_REQUEST), CHROME_MAX_REQUEST)).toThrow("too large");
 });
-test("Chrome production policy allows local/private web endpoints but protects exact control endpoints", () => {
-  const protectedOrigins = ["http://127.0.0.1:5173", "https://JELLY.example.:443", "http://[::1]:5173", "http://control.local"];
-  const rules = chromeInternetDenyRegexes(protectedOrigins).map(p => new RegExp(p, "i"));
-  const blocked = (url: string) => rules.some(r => r.test(new URL(url).href));
-  for (const url of [
-    "http://localhost:8080", "https://localhost./", "http://machine/",
-    "https://box.home.arpa/", "https://127.0.0.1.nip.io/", "https://box.tailnet.ts.net/",
-    "http://127.0.0.1:8080/", "http://2130706433:8080/", "http://10.0.0.1/",
-    "http://172.31.1.1/", "http://192.168.1.1/", "http://169.254.169.254/",
-    "http://100.91.31.77/", "http://[::1]:8080/", "http://[fc00::1]/",
-    "http://[::ffff:127.0.0.1]/", "https://example.com/", "https://1.1.1.1/",
-    "https://jelly.example:444/", "http://jelly.example/", "https://jelly.example.evil/",
-  ]) {
-    expect(chromeOrigin(url, protectedOrigins)).toMatch(/^https?:/);
-    expect(blocked(url)).toBe(false);
-    expect(blocked(url.replace(/^http/, "ws"))).toBe(false);
-  }
-  for (const url of [
-    "http://127.0.0.1:5173/", "http://2130706433:5173/", "http://0x7f000001:5173/",
-    "http://[0:0:0:0:0:0:0:1]:5173/", "https://JELLY.EXAMPLE.:443/path",
-    "https://jelly.example/", "http://control.local.:80/",
-  ]) {
-    expect(() => chromeOrigin(url, protectedOrigins)).toThrow("Jelly/control");
-    expect(blocked(url)).toBe(true);
-    expect(blocked(url.replace(/^http/, "ws"))).toBe(true);
-  }
-  for (const url of ["file:///tmp/file", "chrome://settings/", "https://user:pass@example.com/", "http://evil@127.0.0.1:5173/", "http://127.0.0.1:5173@evil/"]) {
-    expect(() => chromeOrigin(url, protectedOrigins)).toThrow();
-    expect(blocked(url)).toBe(true);
-  }
-  expect(() => chromeOrigin("ws://localhost/")).toThrow(); // navigation is HTTP(S) only
-  expect(chromeOrigin("HTTP://LOCALHOST.:80/path")).toBe("http://localhost");
+
+test("protocol v9 validates envelopes and params with specific errors", () => {
+  const base = { jsonrpc: "2.0", id: "i", instance: "i", generation: "g", session: "s", run: "r" };
+  const ok = (method: string, params: Record<string, unknown>) => chromeRequest({ ...base, method, params });
+  expect(CHROME_PROTOCOL).toBe(9);
+  expect(ok("Runtime.evaluate", {})).toBe(false);
+  expect(ok("begin", { name: "Task", agent: "a" })).toBe(true);
+  expect(ok("begin", { name: "Task", protected: [] })).toBe(false);
+  expect(ok("createTab", {})).toBe(true);
+  expect(ok("createTab", { url: "chrome://settings/" })).toBe(true); // no URL policy
+  expect(ok("claimTab", { tabId: 7 })).toBe(true);
+  expect(ok("claimTab", { tabId: "7" })).toBe(false);
+  expect(ok("markTab", { tabId: 7, mark: null })).toBe(true);
+  expect(ok("markTab", { tabId: 7, mark: "temporary" })).toBe(false);
+  expect(ok("cdp", { tabId: 1, method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: "Control" } })).toBe(true);
+  expect(ok("cdp", { tabId: 1, sessionId: "child", method: "Runtime.evaluate", timeoutMs: 60000 })).toBe(true);
+  expect(ok("cdp", { tabId: 1, method: "evaluate" })).toBe(false);
+  expect(ok("cdp", { tabId: 1, method: "Runtime.evaluate", params: [] })).toBe(false);
+  expect(ok("cdpBatch", { tabId: 1, commands: [{ method: "Input.insertText", params: { text: "a" } }] })).toBe(true);
+  expect(ok("cdpBatch", { tabId: 1, commands: [] })).toBe(false);
+  expect(ok("cdpBatch", { tabId: 1, commands: Array.from({ length: 2001 }, () => ({ method: "Page.enable" })) })).toBe(false);
+  expect(chromeParamsError("cdpBatch", { tabId: 1, commands: [{ method: "Page.enable" }, { method: "bad" }] })).toContain("command 1");
+  expect(ok("chrome", { namespace: "cookies", method: "getAll", args: [{}] })).toBe(true);
+  expect(ok("chrome", { namespace: "debugger", method: "attach", args: [] })).toBe(false);
+  expect(chromeParamsError("closeTab", { tabId: 1, extra: true })).toContain("unexpected parameter(s) extra");
+  for (const method of CHROME_METHODS) expect(typeof method).toBe("string");
 });
 
 test("Chrome bridge authenticates profile/generation, isolates requests and rejects stale connections", async () => {
@@ -150,13 +141,7 @@ test("Chrome bridge authenticates profile/generation, isolates requests and reje
   try {
     expect(statSync(f.bridge.directory).mode & 0o777).toBe(0o700);
     expect(statSync(f.config.socket).mode & 0o777).toBe(0o600);
-    for (const bad of [
-      { grant: "wrong" },
-      { instance: "wrong" },
-      { extensionId: "b".repeat(32) },
-      { version: 99 },
-      { capabilities: [] },
-    ]) {
+    for (const bad of [{ grant: "wrong" }, { instance: "wrong" }, { extensionId: "b".repeat(32) }, { version: 8 }, { capabilities: [] }]) {
       const p = await f.peer(bad);
       expect(p.socket.destroyed).toBe(true);
     }
@@ -164,39 +149,17 @@ test("Chrome bridge authenticates profile/generation, isolates requests and reje
       generation = crypto.randomUUID();
     const p = await f.peer({ profile, generation });
     expect(p.messages[0].type).toBe("paired");
+    expect(p.messages[0].version).toBe(9);
     const other = await f.peer();
-    const pending = f.bridge.call(
-      profile,
-      generation,
-      "session",
-      "run",
-      "snapshot",
-      { tab: "cap" },
-    );
+    const pending = f.bridge.call(profile, generation, "session", "run", "cdp", { tabId: 1, method: "Runtime.evaluate" });
     await waitFor(() => p.messages.length >= 2);
     const req = p.messages[1];
-    expect(req.session).toBe("session");
+    expect(req).toMatchObject({ session: "session", run: "run", method: "cdp", params: { tabId: 1, method: "Runtime.evaluate" } });
     expect(other.messages).toHaveLength(1);
-    p.socket.write(
-      chromeFrame({
-        jsonrpc: "2.0",
-        id: req.id,
-        generation,
-        result: { text: "fixture" },
-      }),
-    );
-    expect(await pending).toEqual({ text: "fixture" });
-    await expect(
-      f.bridge.call(profile, crypto.randomUUID(), "s", "r", "click", {}),
-    ).rejects.toThrow("disconnected");
-    const indeterminate = f.bridge.call(
-      profile,
-      generation,
-      "s",
-      "r",
-      "click",
-      {},
-    );
+    reply(p, generation, req.id, { result: { result: { type: "number", value: 2 } } });
+    expect(await pending).toEqual({ result: { type: "number", value: 2 } });
+    await expect(f.bridge.call(profile, crypto.randomUUID(), "s", "r", "listTabs", {})).rejects.toThrow("disconnected");
+    const indeterminate = f.bridge.call(profile, generation, "s", "r", "listTabs", {});
     void indeterminate.catch(() => {});
     await waitFor(() => p.messages.length >= 3);
     p.socket.destroy();
@@ -205,46 +168,160 @@ test("Chrome bridge authenticates profile/generation, isolates requests and reje
     await f.close();
   }
 });
-test("bridge reports only allowlisted observation categories, never raw extension errors", async () => {
+
+test("bridge rejects with the extension's real error message, truncated to 2000 chars", async () => {
   const f = await fixture();
   try {
     const profile = crypto.randomUUID(), generation = crypto.randomUUID();
     const p = await f.peer({ profile, generation });
-    for (const reason of ["unsupported_frame", "secret_field", "PRIVATE", "__proto__", undefined]) {
-      const count = p.messages.length;
-      const pending = f.bridge.call(profile, generation, "s", "r", "snapshot", {});
-      const outcome = pending.catch((error: Error) => error.message);
-      await waitFor(() => p.messages.length > count);
-      p.socket.write(chromeFrame({ jsonrpc: "2.0", id: p.messages.at(-1).id, generation,
-        error: { code: -32000, reason, message: "PRIVATE raw error", data: "PRIVATE content" } }));
-      const message = await outcome;
-      expect(message).not.toContain("PRIVATE");
-      if (reason === "unsupported_frame" || reason === "secret_field") expect(message).toContain(`[${reason}]`);
-      else expect(message).toContain("unavailable or revoked");
-      expect(p.messages.length).toBe(count + 1); // no retry
-    }
+    const call = () => f.bridge.call(profile, generation, "s", "r", "cdp", { tabId: 1, method: "DOM.getDocument" });
+    let pending = call().catch((e: Error) => e);
+    await waitFor(() => p.messages.length === 2);
+    reply(p, generation, p.messages[1].id, { error: { code: -32000, message: 'Timed out running CDP command "DOM.getDocument" after 10000ms.' } });
+    let error = await pending;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('Timed out running CDP command "DOM.getDocument" after 10000ms.');
+    pending = call().catch((e: Error) => e);
+    await waitFor(() => p.messages.length === 3);
+    reply(p, generation, p.messages[2].id, { error: { code: -32000, message: "y".repeat(5000) } });
+    error = await pending;
+    expect((error as Error).message.length).toBe(2001);
+    pending = call().catch((e: Error) => e);
+    await waitFor(() => p.messages.length === 4);
+    reply(p, generation, p.messages[3].id, { error: { code: -32000 } });
+    expect(((await pending) as Error).message).toBe("Chrome extension request failed.");
+    expect(p.socket.destroyed).toBe(false);
   } finally { await f.close(); }
 });
 
-test("Chrome selection persists and disconnected profiles never fall back to a managed browser", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-store-"));
-  const store = new Store(join(dir, "test.sqlite"));
-  const chrome = new ChromeSessions(dir, "instance");
+test("per-request timeout and abort reject only that request; the connection survives", async () => {
+  const f = await fixture();
   try {
-    expect(store.browserSelection()).toEqual(defaultChromeSelection());
-    const selected = { chromeProfile: crypto.randomUUID() };
-    store.setBrowserSelection(selected);
-    expect(store.browserSelection()).toEqual(selected);
-    const router = new BrowserSessions(chrome);
-    const first = router.forRun("a", "r1", selected, "Agent");
-    expect(() => first.get("a")).toThrow("disconnected");
-    expect(() => router.forRun("b", "r2", selected, "Agent").get("b")).toThrow("disconnected");
-    expect(() => first.get("child")).toThrow("Child/foreign");
-  } finally {
-    await chrome.close();
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    const slow = f.bridge.call(profile, generation, "s", "r", "cdp", { tabId: 1, method: "Page.navigate" }, undefined, 50);
+    await expect(slow).rejects.toThrow('Chrome request "cdp" timed out after 50ms');
+    const controller = new AbortController();
+    const aborted = f.bridge.call(profile, generation, "s", "r", "listTabs", {}, controller.signal);
+    await waitFor(() => p.messages.length === 3);
+    controller.abort(new Error("caller gave up"));
+    await expect(aborted).rejects.toThrow("caller gave up");
+    // Late replies to settled requests are ignored; the socket is intact.
+    reply(p, generation, p.messages[1].id, { result: { late: true } });
+    reply(p, generation, p.messages[2].id, { result: { late: true } });
+    const next = f.bridge.call(profile, generation, "s", "r", "listTabs", {});
+    await waitFor(() => p.messages.length === 4);
+    reply(p, generation, p.messages[3].id, { result: { tabs: [] } });
+    expect(await next).toEqual({ tabs: [] });
+    expect(p.socket.destroyed).toBe(false);
+    expect(f.bridge.profiles()).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test("bridge allows 256 concurrent requests and refuses oversized requests without disconnecting", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    const calls = Array.from({ length: 256 }, (_, i) =>
+      f.bridge.call(profile, generation, "s", "r", "cdp", { tabId: 1, method: "Runtime.evaluate", params: { expression: String(i) } }));
+    await expect(f.bridge.call(profile, generation, "s", "r", "listTabs", {})).rejects.toThrow("busy");
+    await waitFor(() => p.messages.length === 257);
+    // Responses may arrive in any order.
+    for (const m of p.messages.slice(1).reverse()) reply(p, generation, m.id, { result: m.params.params.expression });
+    expect(await Promise.all(calls)).toEqual(Array.from({ length: 256 }, (_, i) => String(i)));
+    await expect(f.bridge.call(profile, generation, "s", "r", "cdp",
+      { tabId: 1, method: "Runtime.evaluate", params: { expression: "x".repeat(CHROME_MAX_REQUEST) } })).rejects.toThrow("too large");
+    expect(p.socket.destroyed).toBe(false);
+  } finally { await f.close(); }
+});
+
+test("Chrome bridge retains large requests until socket drain", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    const payload = "x".repeat(900000);
+    const pending = f.bridge.call(profile, generation, "session", "run", "cdp", { tabId: 1, method: "Input.insertText", params: { text: payload } });
+    await waitFor(() => p.messages.length >= 2);
+    expect(p.messages[1]?.params.params.text).toBe(payload);
+    reply(p, generation, p.messages[1].id, { result: {} });
+    expect(await pending).toEqual({});
+  } finally { await f.close(); }
+});
+
+test("Chrome bridge fails stalled socket writes after a bounded drain wait", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    p.socket.pause();
+    const pending = f.bridge.call(profile, generation, "session", "run", "cdp",
+      { tabId: 1, method: "Input.insertText", params: { text: "x".repeat(900000) } });
+    await expect(pending).rejects.toThrow("indeterminate");
+    expect(f.bridge.profiles()).toEqual([]);
+  } finally { await f.close(); }
+}, 12000);
+
+test("bridge forwards authenticated cdpEvent, cdpDetach, tabAdded, tabRemoved and pauseState notifications", async () => {
+  const f = await fixture();
+  try {
+    const profile = crypto.randomUUID(), generation = crypto.randomUUID();
+    const p = await f.peer({ profile, generation });
+    const seen: unknown[][] = [];
+    f.bridge.onCdpEvent = (...args) => seen.push(["cdpEvent", ...args]);
+    f.bridge.onCdpDetach = (...args) => seen.push(["cdpDetach", ...args]);
+    f.bridge.onTabAdded = (...args) => seen.push(["tabAdded", ...args]);
+    f.bridge.onTabRemoved = (...args) => seen.push(["tabRemoved", ...args]);
+    f.bridge.onPauseState = (...args) => seen.push(["pauseState", ...args]);
+    const route = { generation, session: "s", run: "r" };
+    const tab = { id: 9, title: "Popup", url: "https://example.com/", windowId: 1, active: false, origin: "agent", mark: null };
+    // Event bursts well beyond the old 256/s limit are fine.
+    const burst = Array.from({ length: 2000 }, (_, i) =>
+      chromeFrame({ type: "cdpEvent", ...route, tabId: 3, method: "Network.dataReceived", params: { i } }));
+    p.socket.write(Buffer.concat([
+      ...burst,
+      chromeFrame({ type: "cdpEvent", ...route, tabId: 3, sessionId: "child", method: "Page.loadEventFired", params: { timestamp: 1 } }),
+      chromeFrame({ type: "cdpDetach", ...route, tabId: 3, reason: "canceled_by_user" }),
+      chromeFrame({ type: "tabAdded", ...route, tab }),
+      chromeFrame({ type: "tabRemoved", ...route, tabId: 9 }),
+      chromeFrame({ type: "pauseState", ...route, state: "paused", reason: "native_handoff" }),
+      chromeFrame({ type: "pauseState", ...route, state: "failed", reason: "PRIVATE raw" }),
+      chromeFrame({ type: "someFutureNotification", ...route }),
+    ]));
+    await waitFor(() => seen.length === 2006);
+    const head = [profile, generation, "s", "r"];
+    expect(seen[1999]).toEqual(["cdpEvent", ...head, { tabId: 3, method: "Network.dataReceived", params: { i: 1999 } }]);
+    expect(seen.slice(2000)).toEqual([
+      ["cdpEvent", ...head, { tabId: 3, sessionId: "child", method: "Page.loadEventFired", params: { timestamp: 1 } }],
+      ["cdpDetach", ...head, 3, "canceled_by_user"],
+      ["tabAdded", ...head, tab],
+      ["tabRemoved", ...head, 9],
+      ["pauseState", ...head, "paused", "native_handoff"],
+      ["pauseState", ...head, "failed", undefined],
+    ]);
+    p.socket.write(chromeFrame({ type: "tabRemoved", ...route, generation: "stale", tabId: 9 }));
+    await waitFor(() => p.socket.destroyed);
+    expect(seen).toHaveLength(2006);
+  } finally { await f.close(); }
+});
+
+test("malformed notifications are rejected", async () => {
+  const f = await fixture();
+  try {
+    for (const bad of [
+      { type: "cdpEvent", tabId: "3", method: "Page.loadEventFired" },
+      { type: "cdpEvent", tabId: 3 },
+      { type: "cdpDetach", tabId: 3 },
+      { type: "tabAdded", tab: "cap" },
+      { type: "tabRemoved", tab: "cap" },
+      { type: "pauseState", state: "PRIVATE" },
+    ]) {
+      const p = await f.peer({ generation: crypto.randomUUID() });
+      p.socket.write(chromeFrame({ ...bad, generation: p.messages[0].generation, session: "s", run: "r" }));
+      await waitFor(() => p.socket.destroyed);
+    }
+  } finally { await f.close(); }
 });
 
 test("Jelly native installer/uninstaller preserves unrelated hosts and rejects another instance", async () => {
@@ -300,803 +377,6 @@ test("Jelly native installer/uninstaller preserves unrelated hosts and rejects a
   }
 });
 
-test("Chrome DNR permits every website and port without configuration", () => {
-  const rules = chromeInternetDenyRegexes([]).map((r) => new RegExp(r));
-  const denied = (url: string) => rules.some((r) => r.test(url));
-  for (const url of [
-    "https://example.com/",
-    "https://example.com/path?x=1",
-    "https://example.org:8443/",
-    "http://example.com/",
-    "https://example.com:8443/",
-    "https://example.com.evil.test/",
-    "https://example.org/",
-    "https://other.test/",
-    "http://127.0.0.1:5173/",
-  ])
-    expect(denied(url)).toBe(false);
-  for (const url of ["file:///etc/passwd", "chrome://settings/", "data:text/html,test", "ftp://example.com/", "about:blank", "blob:https://example.com/id"])
-    expect(denied(url)).toBe(true);
-});
-
-test("Chrome DNR permits dotted origins and arbitrary ports but protects control endpoints", () => {
-  const protectedOrigins = ["http://control.local:5173", "https://control.local"];
-  const rules = chromeInternetDenyRegexes(protectedOrigins).map(r => new RegExp(r, "i"));
-  // Like DNR, match the browser's parsed URL: host case/default ports normalize,
-  // but DNS trailing dots remain in the serialized URL.
-  const denied = (url: string) => rules.some(r => r.test(new URL(url).href));
-  for (const url of ["http://LOCALHOST.:8080/app", "http://localhost...:8080/", "https://EXAMPLE.COM.:443/", "https://example.com.child./", "https://example.com.child.:8443/"])
-    expect(denied(url)).toBe(false);
-  for (const url of ["http://localhost.:8081/", "https://example.com.evil/", "https://example.com..child/", "https://example.com.child.:9443/", "https://example.com.:444/"])
-    expect(denied(url)).toBe(false);
-  for (const url of ["http://user@localhost.:8080/", "http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
-    expect(denied(url)).toBe(true);
-  for (const url of ["http://CONTROL.LOCAL.:5173/", "https://CONTROL.LOCAL.:443/"])
-    expect(() => chromeOrigin(url, protectedOrigins)).toThrow("Jelly/control");
-});
-
-test("ChromeSessions defaults to all websites and sends no site restrictions to the extension", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-internet-"));
-  const chrome = new ChromeSessions(dir, "instance");
-  const profile = crypto.randomUUID();
-  const calls: { method: string; params: Record<string, unknown> }[] = [];
-  chrome.bridge.profiles = () => [
-    { id: profile, generation: crypto.randomUUID(), connected: true },
-  ];
-  chrome.bridge.call = async (
-    _profile,
-    _generation,
-    _session,
-    _run,
-    method,
-    params,
-  ) => {
-    calls.push({ method, params });
-    return method === "open" ? { pageId: crypto.randomUUID() } : { ok: true };
-  };
-  chrome.protectOrigins(["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"]);
-  const selection = {
-    chromeProfile: profile,
-  };
-  try {
-    const browser = chrome.allocate("agent", "run", selection, "Agent");
-    await browser.action("open", { url: "http://unlisted.example/path" });
-    await browser.action("open", { url: "https://another.example/path" });
-    expect(calls[0]?.params).toEqual({
-      name: "Agent", agent: "agent",
-      protected: ["http://jelly.example.com:3100", "http://127.0.0.1:5173", "https://[::1]"],
-    });
-    expect(chrome.state("agent").task).not.toHaveProperty("siteScope");
-    expect(chrome.state("agent").task).not.toHaveProperty("origins");
-    await browser.action("open", { url: "http://localhost/" });
-    await browser.action("open", { url: "http://127.0.0.1:8080/" });
-    await browser.action("open", { url: "https://[::1]:8080/" });
-    for (const url of ["http://2130706433:5173/", "https://[0:0:0:0:0:0:0:1]:443/", "ws://127.0.0.1:5173/", "https://user:pass@localhost/", "file:///tmp/test"])
-      await expect(browser.action("open", { url })).rejects.toThrow();
-    await browser.action("open", { url: "https://jelly.example.com:444/" });
-    await expect(
-      browser.action("open", { url: "http://jelly.example.com:3100/" }),
-    ).rejects.toThrow();
-    await chrome.settle("agent", "run");
-    const next = chrome.allocate(
-      "agent",
-      "next",
-      selection,
-      "Agent",
-    );
-    await next.action("open", { url: "https://still-unlisted.example/" });
-    expect(calls.filter((c) => c.method === "begin").at(-1)?.params).not.toHaveProperty("siteScope");
-    await chrome.settle("agent", "next");
-  } finally {
-    await chrome.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("ChromeSessions pins profile and exact caps; pause, unsupported tools and loss fail closed", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-sessions-"));
-  const chrome = new ChromeSessions(dir, "instance");
-  const calls: {
-    method: string;
-    run: string;
-    profile: string;
-    params: Record<string, unknown>;
-  }[] = [];
-  const profile = crypto.randomUUID(),
-    generation = crypto.randomUUID();
-  chrome.bridge.profiles = () => [{ id: profile, generation, connected: true }];
-  chrome.bridge.call = async (
-    profile,
-    _generation,
-    _session,
-    run,
-    method,
-    params,
-  ) => {
-    calls.push({ method, run, profile, params });
-    return method === "open"
-      ? { pageId: crypto.randomUUID() }
-      : method === "screenshot"
-        ? { image: "aW1hZ2U=" }
-        : { ok: true };
-  };
-  const selection = {
-    chromeProfile: profile,
-  };
-  try {
-    const browser = chrome.allocate("a", "run1", selection, "Agent");
-    await browser.action("open", { url: "https://example.com/" });
-    await browser.action("open", { url: "https://outside.example/" });
-    await expect(
-      browser.action("tabs", { operation: "select", pageId: "foreign" }),
-    ).rejects.toThrow("foreign");
-    for (const operation of [
-      "upload",
-      "type",
-      "key",
-      "wait_for",
-      "diagnostics",
-    ])
-      await expect(browser.action(operation, {})).rejects.toThrow(
-        "Unavailable",
-      );
-    await expect(browser.action("click", { x: 1, y: 2 })).rejects.toThrow(
-      "exact",
-    );
-    await browser.reserveLogin("handoff", "https://example.com/login");
-    expect(await browser.action("snapshot", {})).toMatchObject({ humanUsing: true });
-    expect(chrome.state("a").task?.handoff).toBe("handoff");
-    expect(chrome.done("a", "handoff")).toBe("handoff");
-    const tools = interventionTools(
-      { get: () => browser },
-      {} as Interventions,
-      "a",
-      "run1",
-      dir,
-    );
-    const shot = await tools
-      .find((t) => t.name === "browser_screenshot")!
-      .execute("id", {}, undefined, undefined, {} as never);
-    expect(shot.content).toEqual([
-      { type: "image", mimeType: "image/png", data: "aW1hZ2U=" },
-      { type: "text", text: '{"humanUsing":false}' },
-    ]);
-    await browser.keepTab();
-    await chrome.settle("a", "run1");
-    expect(calls.at(-1)?.method).toBe("end");
-    const next = chrome.allocate(
-      "a",
-      "run2",
-      {
-        ...selection,
-        chromeProfile: "different",
-      },
-      "Agent",
-    );
-    await next.action("open", { url: "https://example.com/followup" });
-    expect(calls.at(-1)?.profile).toBe(profile);
-    expect(calls.at(-1)?.run).toBe("run2");
-    chrome.bridge.onLoss(profile);
-    await expect(next.action("snapshot", {})).rejects.toThrow("expired");
-  } finally {
-    await chrome.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("Chrome bridge retains large requests until socket drain and authenticates tab-removal events", async () => {
-  const f = await fixture();
-  try {
-    const profile = crypto.randomUUID(),
-      generation = crypto.randomUUID();
-    const p = await f.peer({ profile, generation });
-    const removals: unknown[][] = [];
-    f.bridge.onTabRemoved = (...args) => removals.push(args);
-    const payload = "x".repeat(700000);
-    const pending = f.bridge.call(
-      profile,
-      generation,
-      "session",
-      "run",
-      "fill",
-      { text: payload },
-    );
-    await waitFor(() => p.messages.length >= 2);
-    expect(p.messages[1]?.params.text).toBe(payload);
-    p.socket.write(
-      chromeFrame({
-        jsonrpc: "2.0",
-        id: p.messages[1].id,
-        generation,
-        result: { ok: true },
-      }),
-    );
-    expect(await pending).toEqual({ ok: true });
-    p.socket.write(
-      chromeFrame({
-        type: "tabRemoved",
-        generation,
-        session: "session",
-        run: "run",
-        tab: "cap",
-      }),
-    );
-    await waitFor(() => removals.length > 0);
-    expect(removals).toEqual([[profile, generation, "session", "run", "cap"]]);
-    p.socket.write(
-      chromeFrame({
-        type: "tabRemoved",
-        generation: "stale",
-        session: "session",
-        run: "run",
-        tab: "cap",
-      }),
-    );
-    await waitFor(() => p.socket.destroyed);
-    expect(removals).toHaveLength(1);
-    expect(p.socket.destroyed).toBe(true);
-  } finally {
-    await f.close();
-  }
-});
-
-test("ChromeSessions forgets human-closed tabs, rejects foreign removal and opens a replacement", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-removal-"));
-  const chrome = new ChromeSessions(dir, "instance");
-  const profile = crypto.randomUUID(),
-    generation = crypto.randomUUID();
-  chrome.bridge.profiles = () => [{ id: profile, generation, connected: true }];
-  let session = "",
-    lastTab: unknown,
-    closeDuringOpen = false;
-  const owned = new Set<string>();
-  chrome.bridge.call = async (
-    _profile,
-    _generation,
-    sid,
-    run,
-    method,
-    params,
-  ) => {
-    session = sid;
-    if (
-      method === "open" ||
-      (method === "tabs" && params.operation === "new")
-    ) {
-      lastTab = params.tab;
-      if (method === "open" && params.tab && !owned.has(String(params.tab)))
-        throw new Error("stale");
-      const pageId = crypto.randomUUID();
-      if (closeDuringOpen)
-        chrome.bridge.onTabRemoved(profile, generation, sid, run, pageId);
-      else owned.add(pageId);
-      return { pageId };
-    }
-    if (method === "tabs")
-      return { tabs: [...owned].map((pageId) => ({ pageId })) };
-    return { ok: true };
-  };
-  try {
-    const browser = chrome.allocate(
-      "a",
-      "run",
-      {
-        chromeProfile: profile,
-      },
-      "Agent",
-    );
-    const opened = await browser.action("open", { url: "https://example.com" });
-    const cap = String(opened.pageId);
-    for (const args of [
-      ["foreign", generation, session, "run", cap],
-      [profile, "stale", session, "run", cap],
-      [profile, generation, "foreign", "run", cap],
-      [profile, generation, session, "old-run", cap],
-    ])
-      chrome.bridge.onTabRemoved(
-        ...(args as [string, string, string, string, string]),
-      );
-    expect(chrome.state("a").task?.active).toBe(cap);
-    owned.delete(cap);
-    chrome.bridge.onTabRemoved(profile, generation, session, "run", cap);
-    expect(chrome.state("a").task).toMatchObject({ active: null, tabs: [] });
-    expect(await browser.action("tabs", { operation: "list" })).toEqual({
-      tabs: [], humanUsing: false,
-    });
-    await browser.action("open", { url: "https://example.com" });
-    expect(lastTab).toBeNull();
-    expect(chrome.state("a").task?.tabs).toHaveLength(1);
-    closeDuringOpen = true;
-    await expect(
-      browser.action("tabs", { operation: "new", url: "https://example.com" }),
-    ).rejects.toThrow("closed during");
-    expect(chrome.state("a").task?.tabs).toHaveLength(1);
-  } finally {
-    await chrome.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("Chrome bridge fails stalled socket writes after a bounded drain wait", async () => {
-  const f = await fixture();
-  try {
-    const profile = crypto.randomUUID(),
-      generation = crypto.randomUUID();
-    const p = await f.peer({ profile, generation });
-    p.socket.pause();
-    const pending = f.bridge.call(
-      profile,
-      generation,
-      "session",
-      "run",
-      "fill",
-      { text: "x".repeat(700000) },
-    );
-    await expect(pending).rejects.toThrow("indeterminate");
-    expect(f.bridge.profiles()).toEqual([]);
-  } finally {
-    await f.close();
-  }
-}, 12000);
-
-test("ChromeSessions retains handoffs across runs and reuses them without explicit resume or retargeting", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-handoff-"));
-  const chrome = new ChromeSessions(dir, "handoff-instance");
-  const profile = crypto.randomUUID(),
-    generation = crypto.randomUUID(),
-    cap = crypto.randomUUID();
-  chrome.bridge.profiles = () => [{ id: profile, generation, connected: true }];
-  const calls: any[] = [];
-  chrome.bridge.call = async (p, g, s, r, method, params) => {
-    calls.push({ p, g, s, r, method, params });
-    if (method === "open") return { pageId: cap };
-    if (method === "end") return { retained: params.discard ? [] : [cap] };
-    if (method === "begin" && r === "second") return { paused: true, tabs: [cap] };
-    return { ok: true };
-  };
-  const selection = {
-    chromeProfile: profile,
-  };
-  try {
-    const first = chrome.allocate("agent", "first", selection, "Researcher");
-    await first.action("open", { url: "https://example.com" });
-    await first.keepTab("handoff");
-    await chrome.settle("agent", "first");
-    expect(chrome.state("agent").task).toMatchObject({
-      paused: false,
-      tabs: [cap],
-    });
-    await expect(chrome.control("agent", "resume")).rejects.toThrow(
-      "active native",
-    );
-    chrome.allocate("agent", "no-browser-run", selection, "Researcher");
-    await chrome.settle("agent", "no-browser-run");
-    expect(chrome.state("agent").task).toMatchObject({
-      paused: false,
-      tabs: [cap],
-    });
-    const second = chrome.allocate(
-      "agent",
-      "second",
-      { ...selection, chromeProfile: "foreign" },
-      "Researcher",
-    );
-    await second.action("snapshot", {});
-    await expect(first.action("snapshot", {})).rejects.toThrow("expired");
-    await second.action("snapshot", {});
-    expect(calls.at(-1)).toMatchObject({
-      p: profile,
-      r: "second",
-      params: { tab: cap },
-    });
-    await chrome.settle("agent", "second");
-    await chrome.control("agent", "close");
-    expect(calls.at(-1)).toMatchObject({
-      method: "end",
-      params: { discard: true },
-    });
-    expect(chrome.state("agent").task).toBeNull();
-    const third = chrome.allocate("agent", "third", selection, "Researcher");
-    await third.action("open", { url: "https://example.com" });
-    await third.keepTab("handoff");
-    await chrome.settle("agent", "third");
-    chrome.bridge.onTabRemoved(
-      profile,
-      generation,
-      calls.at(-1).s,
-      "third",
-      cap,
-    );
-    expect(chrome.state("agent").task?.tabs).toEqual([]);
-  } finally {
-    await chrome.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("Chrome protocol bounds exact input, rejects browser shortcuts, and authenticates added-tab events", async () => {
-  const base = {
-    jsonrpc: "2.0",
-    id: "i",
-    instance: "i",
-    generation: "g",
-    session: "s",
-    run: "r",
-  };
-  expect(
-    chromeRequest({
-      ...base,
-      method: "key",
-      params: { tab: "cap", ref: "node", key: "Enter" },
-    }),
-  ).toBe(true);
-  for (const params of [
-    { tab: "cap", key: "Enter" },
-    { tab: "cap", ref: "node", key: "Control+l" },
-  ])
-    expect(chromeRequest({ ...base, method: "key", params })).toBe(false);
-  expect(
-    chromeRequest({
-      ...base,
-      method: "wait_for",
-      params: { tab: "cap", condition: "ready", timeoutMs: 10001 },
-    }),
-  ).toBe(false);
-  const f = await fixture();
-  try {
-    const profile = crypto.randomUUID(),
-      generation = crypto.randomUUID();
-    const p = await f.peer({ profile, generation });
-    const added: unknown[][] = [];
-    f.bridge.onTabAdded = (...args) => added.push(args);
-    p.socket.write(
-      chromeFrame({
-        type: "tabAdded",
-        generation,
-        session: "session",
-        run: "run",
-        tab: "cap",
-      }),
-    );
-    await waitFor(() => added.length > 0);
-    expect(added).toEqual([[profile, generation, "session", "run", "cap"]]);
-    p.socket.write(
-      chromeFrame({
-        type: "tabAdded",
-        generation: "stale",
-        session: "session",
-        run: "run",
-        tab: "cap",
-      }),
-    );
-    await waitFor(() => p.socket.destroyed);
-    expect(added).toHaveLength(1);
-    expect(p.socket.destroyed).toBe(true);
-  } finally {
-    await f.close();
-  }
-});
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  return { promise, resolve, reject };
-}
-async function pauseFixture() {
-  const dir = mkdtempSync(join(tmpdir(), "jelly-chrome-pause-"));
-  const chrome = new ChromeSessions(dir, "pause-instance");
-  await chrome.bridge.ready;
-  const profile = crypto.randomUUID(),
-    generation = crypto.randomUUID();
-  chrome.bridge.profiles = () => [{ id: profile, generation, connected: true }];
-  const browser = chrome.allocate(
-    "agent",
-    "run",
-    {
-      chromeProfile: profile,
-    },
-    "Agent",
-  );
-  return {
-    chrome,
-    browser,
-    profile,
-    generation,
-    close: async () => {
-      await chrome.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-test("ChromeSessions pause revokes authority but never reports human-safe before delayed drain acknowledgement", async () => {
-  for (const operation of ["screenshot", "fill"]) {
-    const f = await pauseFixture();
-    const admitted = deferred<unknown>(),
-      ack = deferred<unknown>();
-    const calls: string[] = [];
-    let session = "";
-    f.chrome.bridge.call = async (_p, _g, s, _r, method) => {
-      session = s;
-      calls.push(method);
-      if (method === "open") return { pageId: "owned-tab" };
-      if (method === operation) return admitted.promise;
-      if (method === "pause") return ack.promise;
-      return { ok: true };
-    };
-    try {
-      await f.browser.action("open", { url: "https://example.com" });
-      await expect(f.chrome.control("agent", "focus")).rejects.toThrow(
-        "not acknowledged",
-      );
-      const pending = f.browser.action(
-        operation,
-        operation === "fill" ? { ref: "ref", text: "fixture" } : {},
-      );
-      const outcome = pending.catch(() => "revoked");
-      await waitFor(() => calls.at(-1) === operation);
-      expect(calls.at(-1)).toBe(operation);
-      const pausing = f.chrome.control("agent", "pause");
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: "pausing",
-        connected: true,
-      });
-      await expect(f.chrome.control("agent", "focus")).rejects.toThrow(
-        "not acknowledged",
-      );
-      await expect(f.chrome.control("agent", "resume")).rejects.toThrow(
-        "not acknowledged",
-      );
-      // Even the earlier extension event cannot finish a still-pending server RPC.
-      f.chrome.bridge.onPauseState(
-        f.profile,
-        f.chrome.state().profiles[0]!.generation,
-        session,
-        "run",
-        "paused",
-      );
-      expect(f.chrome.state("agent").task?.paused).toBe(false);
-      admitted.reject(new Error("revoked"));
-      expect(await outcome).toBe("revoked");
-      await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
-      ack.resolve({ ok: true });
-      await pausing;
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: true,
-        pauseState: "paused",
-      });
-      await f.chrome.control("agent", "focus");
-      await f.chrome.control("agent", "resume");
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: "active",
-      });
-    } finally {
-      await f.close();
-    }
-  }
-});
-
-test("ChromeSessions login status is advisory; Done/cancel during delayed preparation never resurrects a request", async () => {
-  const f = await pauseFixture(), opened = deferred<unknown>();
-  const calls: string[] = [];
-  f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
-    calls.push(method);
-    if (method === "open") return opened.promise;
-    return { ok: true };
-  };
-  try {
-    const login = f.browser.reserveLogin("request", "https://example.com/login");
-    await waitFor(() => calls.includes("open"));
-    expect(f.chrome.state("agent").task).toMatchObject({ paused: false, humanUsing: true, handoff: "request" });
-    expect(() => f.chrome.done("agent", "other")).toThrow("no longer current");
-    expect(f.chrome.done("agent", "request")).toBe("request");
-    opened.resolve({ pageId: "login-tab" });
-    await login;
-    expect(f.chrome.state("agent").task).toMatchObject({ humanUsing: false, handoff: null });
-    expect(calls).not.toContain("pause");
-    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: false });
-    await f.browser.reserveLogin("new", "https://example.com/login");
-    f.browser.cancelLogin("request");
-    expect(f.chrome.state("agent").task?.handoff).toBe("new");
-    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: true });
-    f.chrome.bridge.onLoss(f.profile);
-    expect(f.chrome.done("agent", "new")).toBe("new");
-    await expect(f.browser.action("snapshot")).rejects.toThrow("expired");
-  } finally { opened.resolve({ pageId: "login-tab" }); await f.close(); }
-});
-
-test("ChromeSessions failed and disconnected pauses never advertise private-safe state", async () => {
-  for (const disconnected of [false, true]) {
-    const f = await pauseFixture();
-    const ack = deferred<unknown>();
-    f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
-      if (method === "pause") return ack.promise;
-      return method === "open" ? { pageId: "owned-tab" } : { ok: true };
-    };
-    try {
-      await f.browser.action("open", { url: "https://example.com" });
-      const pausing = f.chrome.control("agent", "pause");
-      const failed = pausing.then(
-        () => "unexpected success",
-        () => "rejected",
-      );
-      if (disconnected) {
-        f.chrome.bridge.onLoss(f.profile);
-        ack.resolve({ ok: true });
-      } else ack.reject(new Error("detach failed"));
-      expect(await failed).toBe("rejected");
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: disconnected ? "disconnected" : "failed",
-        connected: !disconnected,
-      });
-      await expect(f.chrome.control("agent", "focus")).rejects.toThrow();
-      await expect(f.chrome.control("agent", "resume")).rejects.toThrow();
-    } finally {
-      await f.close();
-    }
-  }
-});
-
-test("ChromeSessions invalidates human-safe state before Resume dispatch and keeps failed ACKs unsafe", async () => {
-  for (const fail of [false, true]) {
-    const f = await pauseFixture();
-    const ack = deferred<unknown>();
-    let extensionActive = false;
-    f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
-      if (method === "resume") {
-        extensionActive = true;
-        return ack.promise;
-      }
-      return method === "open" ? { pageId: "login-tab" } : { ok: true };
-    };
-    try {
-      await f.browser.reserveLogin("handoff", "https://example.com/login");
-      await f.chrome.control("agent", "pause"); // A real native/security pause, not human-use status.
-      const resume = f.chrome.control("agent", "resume");
-      const outcome = resume.then(
-        (value) => value,
-        () => "rejected",
-      );
-      expect(extensionActive).toBe(true);
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: "resuming",
-        handoff: "handoff",
-      });
-      await expect(f.chrome.control("agent", "focus")).rejects.toThrow();
-      await expect(f.chrome.control("agent", "resume")).rejects.toThrow();
-      await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
-      if (fail) ack.reject(new Error("uncertain resume"));
-      else ack.resolve({ ok: true });
-      expect(await outcome).toBe(fail ? "rejected" : null);
-      expect(f.chrome.state("agent").task).toMatchObject({
-        paused: false,
-        pauseState: fail ? "failed" : "active",
-      });
-    } finally {
-      ack.resolve({ ok: true });
-      await f.close();
-    }
-  }
-});
-
-test("ChromeSessions cannot restore active authority from a late Resume ACK after a new pause", async () => {
-  const f = await pauseFixture();
-  const ack = deferred<unknown>();
-  let session = "";
-  f.chrome.bridge.call = async (_p, _g, s, _r, method) => {
-    session = s;
-    if (method === "resume") return ack.promise;
-    return method === "open" ? { pageId: "owned-tab" } : { ok: true };
-  };
-  try {
-    await f.browser.action("open", { url: "https://example.com" });
-    await f.chrome.control("agent", "pause");
-    const resumed = f.chrome.control("agent", "resume").catch(() => "revoked");
-    // Acknowledgement from a different run/profile cannot affect this task.
-    for (const [p, g, s, run] of [
-      ["foreign", f.generation, session, "run"],
-      [f.profile, "stale", session, "run"],
-      [f.profile, f.generation, "foreign", "run"],
-      [f.profile, f.generation, session, "old-run"],
-    ])
-      f.chrome.bridge.onPauseState(p!, g!, s!, run!, "paused");
-    expect(f.chrome.state("agent").task?.pauseState).toBe("resuming");
-    f.chrome.bridge.onPauseState(
-      f.profile,
-      f.generation,
-      session,
-      "run",
-      "paused",
-    );
-    expect(f.chrome.state("agent").task).toMatchObject({
-      paused: false,
-      pauseState: "failed",
-    });
-    await f.chrome.control("agent", "pause");
-    ack.resolve({ ok: true });
-    expect(await resumed).toBe("revoked");
-    expect(f.chrome.state("agent").task).toMatchObject({
-      paused: true,
-      pauseState: "paused",
-    });
-    await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
-  } finally {
-    ack.resolve({ ok: true });
-    await f.close();
-  }
-});
-
-test("Chrome bridge binds all pause states to an authenticated generation and run", async () => {
-  const f = await fixture();
-  try {
-    const profile = crypto.randomUUID(),
-      generation = crypto.randomUUID();
-    const p = await f.peer({ profile, generation });
-    const states: unknown[][] = [];
-    f.bridge.onPauseState = (...args) => states.push(args);
-    for (const state of ["pausing", "failed", "paused"])
-      p.socket.write(
-        chromeFrame({
-          type: "pauseState",
-          generation,
-          session: "session",
-          run: "run",
-          state,
-          reason: state === "pausing" ? "navigation_denied" : state === "failed" ? "PRIVATE raw error" : undefined,
-          navigationDiagnostic: { event: "history", frame: "child", destination: "protected_origin", url: "PRIVATE raw URL" },
-        }),
-      );
-    await waitFor(() => states.length === 3);
-    expect(states).toEqual(
-      ["pausing", "failed", "paused"].map((state) => [
-        profile,
-        generation,
-        "session",
-        "run",
-        state,
-        state === "pausing" ? "navigation_denied" : undefined,
-        state === "pausing" ? { event: "history", frame: "child", destination: "protected_origin" } : undefined,
-      ]),
-    );
-    p.socket.write(chromeFrame({
-      type: "pauseState", generation, session: "session", run: "run", state: "paused", reason: "navigation_denied",
-      navigationDiagnostic: { event: "PRIVATE", frame: "child", destination: "protected_origin" },
-    }));
-    await waitFor(() => states.length === 4);
-    expect(states[3]![6]).toBeUndefined();
-    p.socket.write(chromeFrame({
-      type: "pauseState", generation, session: "session", run: "run", state: "paused", reason: "navigation_denied",
-      navigationDiagnostic: { event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2", url: "PRIVATE raw URL" },
-    }));
-    await waitFor(() => states.length === 5);
-    expect(states[4]![6]).toEqual({ event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2" });
-    expect(JSON.stringify(states)).not.toContain("PRIVATE");
-    p.socket.write(
-      chromeFrame({
-        type: "pauseState",
-        generation: "stale",
-        session: "session",
-        run: "run",
-        state: "paused",
-        reason: "navigation_denied",
-        navigationDiagnostic: { event: "committed", frame: "child", destination: "extension_self", revision: "internal_v2" },
-      }),
-    );
-    await waitFor(() => p.socket.destroyed);
-    expect(p.socket.destroyed).toBe(true);
-    expect(states).toHaveLength(5);
-  } finally {
-    await f.close();
-  }
-});
 
 test("intentional disconnect survives dropped final frames and bridge restart; only authenticated explicit reconnect clears", async () => {
   const f = await fixture();
@@ -1156,18 +436,6 @@ test("failed durable replacement revokes current socket and closes all future ad
   } finally { await f.close(); }
 });
 
-test("failed task settlement uses the same durable reconnect-required policy as explicit disconnect", async () => {
-  const f = await pauseFixture();
-  try {
-    f.chrome.bridge.call = async (_p, _g, _s, _r, method) => {
-      if (method === "end") throw new Error("fixture lost cleanup acknowledgement");
-      return method === "open" ? { pageId: "owned-tab" } : { ok: true };
-    };
-    await f.browser.action("open", { url: "https://example.com" });
-    await f.chrome.settle("agent", "run");
-    expect(JSON.parse(readFileSync(join(f.chrome.bridge.directory, "disconnected-profiles.json"), "utf8"))).toEqual([f.profile]);
-  } finally { await f.close(); }
-});
 
 test("v6 client cannot pair or clear v7 durable disconnect intent", async () => {
   const f = await fixture();
@@ -1272,45 +540,5 @@ test("total intent-write failure still revokes live authority and refuses runnin
     expect(retry.messages).toEqual([]);
     // No claim of restart durability when the filesystem accepted no evidence.
     expect(fs.readdirSync(f.bridge.directory).some(name => name.startsWith("disconnected-profiles.json"))).toBe(false);
-  } finally { await f.close(); }
-});
-
-test("native Mac handback releases only its own pauses, never independent security faults", async () => {
-  const f = await pauseFixture();
-  f.chrome.bridge.call = async (_p, _g, _s, _r, method) => method === "open" ? { pageId: "owned" } : { ok: true };
-  try {
-    await f.browser.action("open", { url: "https://example.com" });
-    await f.chrome.pauseForNativeHandoff();
-    await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
-    await f.chrome.finishNativeHandoff();
-    expect(await f.browser.action("snapshot")).toMatchObject({ humanUsing: false });
-    await f.chrome.control("agent", "pause"); // Independent security pause.
-    await f.chrome.pauseForNativeHandoff();
-    await f.chrome.finishNativeHandoff();
-    await expect(f.browser.action("snapshot")).rejects.toThrow("paused");
-  } finally { await f.close(); }
-});
-
-test("settlement preserves human-used tabs and sign-in identity even when no tab survives", async () => {
-  const f = await pauseFixture();
-  const calls: { method: string; params: Record<string, unknown> }[] = [];
-  f.chrome.bridge.call = async (_p, _g, _s, _r, method, params) => {
-    calls.push({ method, params });
-    if (method === "open") return { pageId: "human-tab" };
-    if (method === "end") return { retained: [] }; // Human closed it during settlement.
-    return { ok: true };
-  };
-  try {
-    await f.browser.reserveLogin("login", "https://example.com");
-    await f.browser.keepTab("deliverable");
-    const marked = calls.length;
-    await f.chrome.settle("agent", "run");
-    expect(calls.slice(marked)).toEqual([
-      { method: "pause", params: {} },
-      { method: "end", params: {} },
-    ]);
-    expect(f.chrome.state("agent").task).toMatchObject({ handoff: "login", humanUsing: true, tabs: [], paused: false });
-    expect(f.chrome.done("agent", "login")).toBe("login");
-    expect(f.chrome.humanState()).toBe(false);
   } finally { await f.close(); }
 });

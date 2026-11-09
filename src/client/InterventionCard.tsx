@@ -34,6 +34,18 @@ export function InterventionCard({
   const status =
     item.status === "pending" ? (submitted ?? item.status) : item.status;
   const pending = status === "pending";
+  async function confirmRecovery() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await control<Intervention>(`/interventions/${item.id}/confirm-browser-recovery`, { binding: item.payload.binding });
+      setSubmitted(response.status);
+      setSubmittedResult(response.result);
+      onChange();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
   async function chromeDone() {
     if (busy) return;
     setBusy(true);
@@ -72,7 +84,7 @@ export function InterventionCard({
     // Only add a fallback row when that event is outside the loaded history.
     if (hasInlineTool) return null;
     const executing = status === "executing";
-    const label = item.kind === "sudo" ? "Sudo" : item.kind === "desktop_handoff" ? "Desktop handoff" : "Browser login";
+    const label = item.kind === "sudo" ? "Sudo" : item.kind === "desktop_handoff" ? "Desktop handoff" : item.kind === "browser_recovery" ? "Browser recovery" : "Browser login";
     return (
       <details className="tool-event">
         <summary>
@@ -89,7 +101,7 @@ export function InterventionCard({
               : `${label} ${status}`}
           </span>
           <code>
-            {item.kind === "sudo" ? "request_sudo" : item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"}
+            {item.kind === "sudo" ? "request_sudo" : item.kind === "desktop_handoff" ? "request_desktop_handoff" : item.kind === "browser_recovery" ? "request_browser_recovery" : "request_browser_login"}
           </code>
           <ChevronDown size={14} />
         </summary>
@@ -102,6 +114,25 @@ export function InterventionCard({
         </pre>
       </details>
     );
+  }
+  if (item.kind === "browser_recovery") {
+    const binding = item.payload.binding as Record<string, unknown>;
+    return <ChatFormCard label="Browser recovery" title="Confirm this agent’s browser recovery"
+      icon={<ShieldCheck size={22} />} status="Awaiting your confirmation" error={error}>
+      <p>This request alone does not authorize recovery. Confirming retires only the session below and invalidates its tabs and references. Unsaved task work may be lost. Personal tabs and other agents’ sessions are not reset.</p>
+      <p>{binding.lost
+        ? "This session is lost. Only its backend identity will be retired; old tabs may remain and cannot be reused."
+        : "Chrome must acknowledge cleanup before this connected session can be retired. Temporary task tabs may close; released tabs may remain."} No interrupted action will be replayed. A later browser action can create a fresh empty session on the same profile.</p>
+      <details><summary>Affected browser session</summary><dl>
+        {Object.entries(binding).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}
+      </dl></details>
+      <ChatFormActions>
+        <button disabled={busy} onClick={() => void act(false)}>Reject recovery</button>
+        <button disabled={busy} onClick={() => setShareOpen(true)}>Computer control</button>
+        <button className="primary" disabled={busy} onClick={() => void confirmRecovery()}>{busy ? "Awaiting cleanup…" : "Confirm session retirement"}</button>
+      </ChatFormActions>
+      {shareOpen && <ComputerControlPanel agentId={item.agentId} onClose={() => setShareOpen(false)} onChange={onChange} />}
+    </ChatFormCard>;
   }
   return (
     <ChatFormCard

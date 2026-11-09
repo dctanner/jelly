@@ -8,13 +8,14 @@ const selection = (profile: string): ChromeSelection => ({
 });
 const port: BrowserPort = {
   target: "chrome",
-  action: async () => ({}),
+  engine: {} as BrowserPort["engine"],
   reserveLogin: async () => {},
   cancelLogin: () => {},
 };
 function fixture(fail = false) {
   const calls: { agent: string; run: string; selection: ChromeSelection; name: string }[] = [];
   const chrome = {
+    recoveryRetired: () => false,
     allocate(agent: string, run: string, selection: ChromeSelection, name: string) {
       if (fail) throw new Error("Chrome is disconnected");
       calls.push({ agent, run, selection: structuredClone(selection), name });

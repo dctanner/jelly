@@ -60,6 +60,7 @@ export function activityPreview(
     instance_info: "Checking the workspace…",
     request_sudo: "Waiting for administrator access…",
     request_browser_login: "Waiting for browser sign-in…",
+    request_browser_recovery: "Waiting for human browser-recovery confirmation…",
   };
   return (
     labels[tool] ??

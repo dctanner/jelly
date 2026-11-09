@@ -297,7 +297,9 @@ export function HumanTodos({
                     ? "Sudo authentication"
                     : item.kind === "browser_login"
                       ? "Browser sign-in"
-                      : "Desktop handback"}
+                      : item.kind === "browser_recovery"
+                        ? "Browser recovery"
+                        : "Desktop handback"}
                 </strong>
                 <p>
                   {page.agents.find((agent) => agent.id === item.agentId)?.name}{" "}

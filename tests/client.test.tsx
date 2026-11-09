@@ -1641,7 +1641,7 @@ test("settled sudo requests render compact tool rows, not password cards", async
   }
 });
 
-test.each(["sudo", "browser_login", "desktop_handoff"] as const)(
+test.each(["sudo", "browser_login", "desktop_handoff", "browser_recovery"] as const)(
   "completed %s confirmations keep their original conversation position",
   async (kind) => {
     const server = await setup();
@@ -1651,6 +1651,7 @@ test.each(["sudo", "browser_login", "desktop_handoff"] as const)(
     const request = server.store.createIntervention(kind, agent.id, run.id, {
       executable: "/usr/bin/id", args: [], cwd: "/tmp", url: "https://example.com",
       reason: "Original confirmation context",
+      binding: { sessionId: "test-session", lost: true },
     }, new Date(Date.now() + 60000).toISOString());
     server.service.emit(agent.id, run.id, "intervention_requested", { request });
     server.service.emit(agent.id, run.id, "message", { role: "assistant", text: "After confirmation" });
@@ -1672,7 +1673,7 @@ test.each(["sudo", "browser_login", "desktop_handoff"] as const)(
       server.store.finishRun(run.id, "completed", null);
       server.service.emit(agent.id, run.id, "run_completed", {});
     });
-    const label = kind === "sudo" ? "Sudo" : kind === "browser_login" ? "Browser login" : "Desktop handoff";
+    const label = kind === "sudo" ? "Sudo" : kind === "browser_login" ? "Browser login" : kind === "browser_recovery" ? "Browser recovery" : "Desktop handoff";
     await chat.findByText(`${label} completed`);
     expect(document.querySelector(selector)).toBe(card);
     expect(isBefore(card, chat.getByText("After confirmation"))).toBe(true);

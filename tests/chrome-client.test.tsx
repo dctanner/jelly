@@ -285,3 +285,62 @@ test("packaged popup has no human pause control and ignores stale reads during e
     root.remove();
   }
 });
+
+const recovery: Intervention = {
+  ...login, id: "recovery", kind: "browser_recovery",
+  payload: { binding: {
+    agent: "agent", run: "run", authorityRun: "run", session: "exact-session",
+    profile: "exact-profile", generation: "old-generation", pairedGeneration: "new-generation",
+    revision: 4, pauseState: "paused", lost: true,
+  } },
+};
+
+test("recovery card makes no approval on render; only explicit confirmation sends the displayed binding", async () => {
+  const calls: { path: string; body: any }[] = [];
+  let acknowledge!: () => void;
+  globalThis.fetch = (async (path: string, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ path, body });
+    if (path.includes("control-session")) return Response.json({ csrf: "fixture" });
+    await new Promise<void>(resolve => { acknowledge = resolve; });
+    return Response.json({ ...recovery, status: "completed", result: { status: "approved_closed", disposition: "retired_lost_session" } });
+  }) as typeof fetch;
+  render(<InterventionCard item={recovery} onChange={() => {}} />);
+  expect(calls).toHaveLength(0);
+  expect(screen.getByText(/old tabs may remain and cannot be reused/)).toBeTruthy();
+  expect(screen.getByText("exact-session")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  const confirm = screen.getByRole("button", { name: "Confirm session retirement" });
+  fireEvent.click(confirm);
+  await waitFor(() => expect(calls.some(c => c.path.endsWith("confirm-browser-recovery"))).toBe(true));
+  expect(screen.getByRole("button", { name: "Awaiting cleanup…" }).hasAttribute("disabled")).toBe(true);
+  expect(screen.queryByText("Browser recovery completed")).toBeNull();
+  expect(calls.find(c => c.path.endsWith("confirm-browser-recovery"))?.body).toEqual({ binding: recovery.payload.binding });
+  acknowledge();
+  await screen.findByText("Browser recovery completed");
+  expect(calls.filter(c => c.path.endsWith("confirm-browser-recovery"))).toHaveLength(1);
+});
+
+test("recovery rejection and stale confirmation do not claim completed closure", async () => {
+  for (const reject of [true, false]) {
+    const calls: string[] = [];
+    globalThis.fetch = (async (path: string) => {
+      calls.push(path);
+      if (path.includes("control-session")) return Response.json({ csrf: "fixture" });
+      return reject ? Response.json({ ok: true }) : Response.json({ error: "This request is stale." }, { status: 409 });
+    }) as typeof fetch;
+    render(<InterventionCard item={{ ...recovery, payload: { binding: { ...(recovery.payload.binding as object), lost: false } } }} onChange={() => {}} />);
+    expect(screen.getByText(/Chrome must acknowledge cleanup/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: reject ? "Reject recovery" : "Confirm session retirement" }));
+    if (reject) {
+      await screen.findByText("Browser recovery denied");
+      expect(calls.some(c => c.endsWith("/deny"))).toBe(true);
+      expect(calls.some(c => c.endsWith("confirm-browser-recovery"))).toBe(false);
+    } else {
+      await screen.findByText("This request is stale.");
+      expect(screen.getByRole("button", { name: "Confirm session retirement" }).hasAttribute("disabled")).toBe(false);
+    }
+    expect(screen.queryByText("Browser recovery completed")).toBeNull();
+    cleanup();
+  }
+});

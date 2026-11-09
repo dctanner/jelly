@@ -23,8 +23,15 @@ async function fixture(guard?: () => void) {
   const selection = { chromeProfile: profile };
   chrome.bridge.profiles = () => connected ? [{ id: profile, generation, connected: true }] : [];
   chrome.bridge.canReconnect = (p, g) => connected && p === profile && g === generation;
-  let handle = async (method: string, _params: Record<string, unknown>): Promise<unknown> =>
-    method === "open" ? { pageId: crypto.randomUUID() } : method === "tabs" ? { tabs: [] } : { ok: true };
+  let nextTab = 1;
+  // Minimal v9 extension: begin/end/createTab/listTabs, everything else acknowledged.
+  const v9 = (method: string): unknown =>
+    method === "begin" ? { ok: true, tabs: [] }
+    : method === "end" ? { ok: true, retained: [] }
+    : method === "createTab" ? { tab: { id: nextTab++, title: "", url: "about:blank", windowId: 1, active: true, origin: "agent", mark: null } }
+    : method === "listTabs" ? { tabs: [] }
+    : { ok: true };
+  let handle = async (method: string, _params: Record<string, unknown>): Promise<unknown> => v9(method);
   chrome.bridge.call = async (p, g, session, run, method, params) => {
     calls.push({ profile: p, generation: g, session, run, method, params });
     return handle(method, params);
@@ -33,7 +40,7 @@ async function fixture(guard?: () => void) {
   const scoped = router.forRun("agent", "run", selection, "Agent", guard);
   const browser = scoped.get("agent");
   return {
-    chrome, router, scoped, browser, profile, selection, calls,
+    chrome, router, scoped, browser, profile, selection, calls, v9,
     get generation() { return generation; },
     set connected(value: boolean) { connected = value; },
     handle: (next: typeof handle) => { handle = next; },
@@ -45,87 +52,74 @@ async function fixture(guard?: () => void) {
 test("browser_reconnect is the explicit path: fresh identity, same pinned profile, no RPC/replay or old tabs", async () => {
   const f = await fixture();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
+    await f.browser.engine.execute("tabs.new", {});
     const oldSession = f.calls[0]!.session;
     const oldTab = f.chrome.state("agent").task!.active!;
+    expect(oldTab).toBe("1");
     f.lose();
-    await expect(f.browser.action("snapshot")).rejects.toThrow("browser_reconnect");
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("browser_reconnect");
     const before = f.calls.length;
     expect(await f.browser.reconnect!()).toMatchObject({ status: "reconnected" });
     expect(f.calls.length).toBe(before); // No browser operation, even begin, is replayed.
     expect(f.scoped.get("agent")).toBe(f.browser); // Cached tool port now uses the fresh identity.
     expect(f.chrome.state("agent").task).toMatchObject({ connected: true, active: null, tabs: [], profile: f.profile });
-    await expect(f.browser.action("tabs", { operation: "select", pageId: oldTab })).rejects.toThrow("Stale or foreign");
-    await f.browser.action("open", { url: "https://any-website.example" });
-    await f.browser.action("open", { url: "https://example.com/fresh" });
-    const begin = f.calls.filter(c => c.method === "begin").at(-1)!;
+    // Old tab handles are forgotten by the engine and never reach Chrome.
+    await expect(f.browser.engine.execute("tab.show", { tab: Number(oldTab) })).rejects.toThrow("not part of this browser session");
+    expect(f.calls.length).toBe(before);
+    await f.browser.engine.execute("tabs.new", {});
+    await f.browser.engine.execute("tabs.new", {});
+    const begins = f.calls.filter(c => c.method === "begin");
+    expect(begins).toHaveLength(2);
+    const begin = begins.at(-1)!;
     expect(begin.session).not.toBe(oldSession);
-    expect(begin).toMatchObject({ profile: f.profile, generation: f.generation, run: "run", params: { name: "Agent", protected: [] } });
-    expect(begin.params).not.toHaveProperty("siteScope");
-    expect(begin.params).not.toHaveProperty("origins");
+    expect(begin).toMatchObject({ profile: f.profile, generation: f.generation, run: "run", params: { name: "Agent", agent: "agent" } });
+    expect(Object.keys(begin.params).sort()).toEqual(["agent", "name"]);
   } finally { await f.close(); }
 });
 
-test("recoverable observations do not poison session authority; a reported security pause does", async () => {
+test("extension errors do not poison session authority; a reported pause does", async () => {
   const f = await fixture();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
+    await f.browser.engine.execute("tabs.new", {});
     const identity = f.calls[0]!;
-    for (const reason of ["shadow_root", "unsupported_frame", "secret_field"]) {
-      f.handle(async () => { throw new Error(`Chrome observation blocked [${reason}]`); });
-      await expect(f.browser.action("snapshot")).rejects.toThrow(reason);
+    for (const message of ["Debugger is not attached", "No tab with id: 7", "Cannot access a chrome:// URL"]) {
+      f.handle(async () => { throw new Error(message); });
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow(message);
       expect(f.chrome.state("agent").task?.pauseState).toBe("active");
       expect(await f.browser.reconnect!()).toMatchObject({ status: "already_connected" });
     }
-    f.handle(async () => ({ text: "Ordinary page", elements: [] }));
-    expect(await f.browser.action("snapshot")).toMatchObject({ text: "Ordinary page" });
+    f.handle(async method => f.v9(method));
+    expect(await f.browser.engine.execute("tabs.list", {})).toEqual([]);
     expect(f.calls.at(-1)!.session).toBe(identity.session);
-    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "r-other", "paused", "navigation_denied");
+    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "r-other", "paused", "cleanup_failed");
     expect(f.chrome.state("agent").task?.pauseState).toBe("active");
-    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "paused", "navigation_denied");
-    await expect(f.browser.action("snapshot")).rejects.toThrow("[navigation_denied]");
+    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "paused", "cleanup_failed");
+    const count = f.calls.length;
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("[cleanup_failed]");
+    expect(f.calls).toHaveLength(count); // A paused session never reaches the extension.
     await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
     f.lose();
     await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
   } finally { await f.close(); }
 });
 
-test("navigation diagnostics survive scoped pause delivery but never relax authority or retain raw fields", async () => {
-  for (const destination of ["protected_origin", "chromium_error_document"] as const) for (const valid of [true, false]) {
-    const f = await fixture();
-    try {
-      await f.browser.action("open", { url: "https://example.com" });
-      const diagnostic = { event: valid ? "history" : "PRIVATE", frame: "child", destination, url: "PRIVATE URL" };
-      f.chrome.bridge.onPauseState(f.profile, f.generation, f.calls[0]!.session, "run", "paused", "navigation_denied", diagnostic as any);
-      const state = f.chrome.state("agent");
-      expect(state.task?.navigationDiagnostic).toEqual(valid ? { event: "history", frame: "child", destination } : undefined);
-      expect(JSON.stringify(state)).not.toContain("PRIVATE");
-      await expect(f.browser.action("snapshot")).rejects.toThrow(valid ? `event=history, frame=child, destination=${destination}` : "[navigation_denied]");
-      await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
-    } finally { await f.close(); }
-  }
-});
-
-test("worker revision provenance requires the exact profile, generation, session and run", async () => {
+test("pause notifications require the exact profile, generation, session and run", async () => {
   const f = await fixture();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
+    await f.browser.engine.execute("tabs.new", {});
     const identity = [f.profile, f.generation, f.calls[0]!.session, "run"] as const;
-    const diagnostic = { event: "committed", frame: "child", destination: "extension_other", revision: "internal_v2" } as const;
     for (let i = 0; i < identity.length; i++) {
       const stale = [...identity];
       stale[i] = "foreign-or-stale";
-      f.chrome.bridge.onPauseState(stale[0]!, stale[1]!, stale[2]!, stale[3]!, "paused", "navigation_denied", diagnostic);
-      expect(f.chrome.state("agent").task?.pauseState).toBe("active");
-      expect(f.chrome.state("agent").task?.navigationDiagnostic).toBeUndefined();
+      f.chrome.bridge.onPauseState(stale[0]!, stale[1]!, stale[2]!, stale[3]!, "paused", "cleanup_failed");
+      expect(f.chrome.state("agent").task).toMatchObject({ pauseState: "active", paused: false });
+      expect(f.chrome.state("agent").task?.pauseReason).toBeUndefined();
     }
-    f.chrome.bridge.onPauseState(...identity, "paused", "navigation_denied", diagnostic);
-    expect(f.chrome.state("agent").task?.navigationDiagnostic).toEqual(diagnostic);
-    await expect(f.browser.action("snapshot")).rejects.toThrow("backend=internal_v2, worker=internal_v2");
+    expect(await f.browser.engine.execute("tabs.list", {})).toEqual([]);
+    f.chrome.bridge.onPauseState(...identity, "paused", "cleanup_failed");
+    expect(f.chrome.state("agent").task).toMatchObject({ pauseState: "paused", pauseReason: "cleanup_failed" });
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("[cleanup_failed]");
     await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
-    f.chrome.bridge.onPauseState(...identity, "paused", "navigation_denied", { ...diagnostic, revision: "PRIVATE" } as any);
-    await expect(f.browser.action("snapshot")).rejects.toThrow("backend=internal_v2, worker=unreported");
-    expect(JSON.stringify(f.chrome.state("agent"))).not.toContain("PRIVATE");
   } finally { await f.close(); }
 });
 
@@ -133,25 +127,25 @@ test("server-known native pauses and older-peer unknown pauses remain distinguis
   for (const native of [true, false]) {
     const f = await fixture();
     try {
-      await f.browser.action("open", { url: "https://example.com" });
+      await f.browser.engine.execute("tabs.new", {});
       if (native) await f.chrome.pauseForNativeHandoff();
       else f.chrome.bridge.onPauseState(f.profile, f.generation, f.calls[0]!.session, "run", "paused");
-      await expect(f.browser.action("snapshot")).rejects.toThrow(native ? "[native_handoff]" : "[unknown]");
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow(native ? "[native_handoff]" : "[unknown]");
       await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
     } finally { await f.close(); }
   }
 });
 
 test("legacy reasonless native pause ACKs retain provenance but independent failures replace it", async () => {
-  for (const independent of [undefined, "debugger_detached", "cleanup_failed"] as const) {
+  for (const independent of [undefined, "cleanup_failed"] as const) {
     const f = await fixture();
     const entered = gate<void>(), ack = gate<unknown>();
     try {
-      await f.browser.action("open", { url: "https://example.com" });
+      await f.browser.engine.execute("tabs.new", {});
       const session = f.calls[0]!.session;
       f.handle(async method => {
         if (method === "pause") { entered.resolve(); return ack.promise; }
-        return { ok: true };
+        return f.v9(method);
       });
       const pending = f.chrome.pauseForNativeHandoff();
       await entered.promise;
@@ -161,12 +155,12 @@ test("legacy reasonless native pause ACKs retain provenance but independent fail
       }
       ack.resolve({ ok: true });
       await pending;
-      await expect(f.browser.action("snapshot")).rejects.toThrow("[native_handoff]");
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("[native_handoff]");
       await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
       // Even a reasonless failed event must not retain an asserted native cause.
-      f.chrome.bridge.onPauseState(f.profile, f.generation, session, "run", independent === "debugger_detached" ? "paused" : "failed", independent);
+      f.chrome.bridge.onPauseState(f.profile, f.generation, session, "run", "failed", independent);
       expect(f.chrome.state("agent").task?.pauseReason).toBe(independent);
-      await expect(f.browser.action("snapshot")).rejects.toThrow(`[${independent ?? "unknown"}]`);
+      await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow(`[${independent ?? "unknown"}]`);
       await f.chrome.finishNativeHandoff();
       await expect(f.browser.reconnect!()).rejects.toThrow("cannot clear");
     } finally { ack.resolve({ ok: true }); await f.close(); }
@@ -176,15 +170,15 @@ test("legacy reasonless native pause ACKs retain provenance but independent fail
 test("new runs do not auto-renew stale sessions or adopt a newly configured profile", async () => {
   const f = await fixture();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
+    await f.browser.engine.execute("tabs.new", {});
     f.lose();
     await f.chrome.settle("agent", "run");
     const next = f.router.forRun("agent", "next", { chromeProfile: crypto.randomUUID() }, "Agent").get("agent");
-    await expect(next.action("snapshot")).rejects.toThrow("browser_reconnect");
+    await expect(next.engine.execute("tabs.list", {})).rejects.toThrow("browser_reconnect");
     await expect(f.browser.reconnect!()).rejects.toThrow("run authority expired");
     expect(await next.reconnect!()).toMatchObject({ status: "reconnected" });
-    await next.action("open", { url: "https://example.com" });
-    expect(f.calls.at(-1)).toMatchObject({ profile: f.profile, run: "next" });
+    await next.engine.execute("tabs.new", {});
+    expect(f.calls.at(-1)).toMatchObject({ profile: f.profile, run: "next", method: "createTab" });
     expect(f.chrome.state("agent").task).toMatchObject({ profile: f.profile });
   } finally { await f.close(); }
 });
@@ -193,8 +187,8 @@ test("healthy reconnect is a no-op and another agent's lost session is untouched
   const f = await fixture();
   try {
     const other = f.router.forRun("other", "other-run", f.selection, "Other").get("other");
-    await f.browser.action("open", { url: "https://example.com" });
-    await other.action("open", { url: "https://example.com" });
+    await f.browser.engine.execute("tabs.new", {});
+    await other.engine.execute("tabs.new", {});
     const before = f.chrome.state("agent");
     const count = f.calls.length;
     expect(await f.browser.reconnect!()).toMatchObject({ status: "already_connected" });
@@ -203,7 +197,7 @@ test("healthy reconnect is a no-op and another agent's lost session is untouched
     f.lose();
     await f.browser.reconnect!();
     expect(f.chrome.state("other").task?.connected).toBe(false);
-    await expect(other.action("snapshot")).rejects.toThrow("browser_reconnect");
+    await expect(other.engine.execute("tabs.list", {})).rejects.toThrow("browser_reconnect");
     expect(() => f.scoped.get("other")).toThrow("foreign");
   } finally { await f.close(); }
 });
@@ -226,7 +220,7 @@ test("native/security pauses and pending sign-in are not cleared by reconnect, i
   for (const boundary of ["security", "native", "login"] as const) {
     const f = await fixture();
     try {
-      await f.browser.action("open", { url: "https://example.com" });
+      await f.browser.engine.execute("tabs.new", {});
       if (boundary === "security") await f.chrome.control("agent", "pause");
       if (boundary === "native") await f.chrome.pauseForNativeHandoff();
       if (boundary === "login") await f.browser.reserveLogin("pending", "https://example.com/login");
@@ -259,23 +253,24 @@ test("human computer-control status alone does not block browser_reconnect", asy
   } finally { await f.close(); }
 });
 
-test("reconnect drains a failed operation, rejects already-queued old work and never replays it", async () => {
+test("reconnect never replays an in-flight operation and rejects work admitted before the fresh session", async () => {
   const f = await fixture();
   const entered = gate<void>(), ack = gate<unknown>();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
-    f.handle(async method => { if (method === "click") { entered.resolve(); return ack.promise; } return { ok: true }; });
-    const mutation = f.browser.action("click", { ref: "old-ref" }).catch(e => e.message);
+    await f.browser.engine.execute("tabs.new", {});
+    f.handle(async method => { if (method === "createTab") { entered.resolve(); return ack.promise; } return f.v9(method); });
+    const mutation = f.browser.engine.execute("tabs.new", {}).catch(e => e.message);
     await entered.promise;
     f.lose();
     const recovery = f.browser.reconnect!();
-    const queued = f.browser.action("open", { url: "https://example.com/must-not-run" }).catch(e => e.message);
+    const queued = f.browser.engine.execute("tabs.new", {}).catch(e => e.message);
     ack.reject(new Error("Outcome unknown"));
     expect(await mutation).toBe("Outcome unknown");
     expect(await recovery).toMatchObject({ status: "reconnected" });
-    expect(await queued).toContain("Nothing was replayed");
-    expect(f.calls.filter(c => c.method === "click")).toHaveLength(1);
-    expect(f.calls.filter(c => c.method === "open")).toHaveLength(1);
+    expect(await queued).toContain("browser_reconnect");
+    expect(f.calls.filter(c => c.method === "createTab")).toHaveLength(2);
+    expect(f.calls.filter(c => c.method === "begin")).toHaveLength(1);
+    expect(f.chrome.state("agent").task).toMatchObject({ connected: true, tabs: [], active: null });
   } finally { ack.resolve({}); await f.close(); }
 });
 
@@ -285,9 +280,10 @@ test("cancellation and newly revoked service authority are rechecked after queue
     const f = await fixture(() => { if (!allowed) throw new Error("Run revoked"); });
     const entered = gate<void>(), ack = gate<unknown>();
     try {
-      await f.browser.action("open", { url: "https://example.com" });
-      f.handle(async method => { if (method === "snapshot") { entered.resolve(); return ack.promise; } return {}; });
-      const pending = f.browser.action("snapshot").catch(() => {});
+      await f.browser.engine.execute("tabs.new", {});
+      // Sign-in reservation is serialized ahead of reconnect on the session queue.
+      f.handle(async method => { if (method === "createTab") { entered.resolve(); return ack.promise; } return f.v9(method); });
+      const pending = f.browser.reserveLogin("login", "https://example.com/login").catch(() => {});
       await entered.promise;
       f.lose();
       const controller = new AbortController();
@@ -297,7 +293,7 @@ test("cancellation and newly revoked service authority are rechecked after queue
       ack.reject(new Error("disconnected"));
       await pending;
       expect(await recovery).toBe(cause === "abort" ? "Cancelled reconnect" : "Run revoked");
-      expect(f.chrome.state("agent").task?.connected).toBe(false);
+      expect(f.chrome.state("agent").task).toMatchObject({ connected: false, handoff: null });
     } finally { ack.resolve({}); await f.close(); }
   }
 });
@@ -306,18 +302,22 @@ test("settlement closes reconnect admission before waiting for in-flight work", 
   const f = await fixture();
   const entered = gate<void>(), ack = gate<unknown>();
   try {
-    await f.browser.action("open", { url: "https://example.com" });
-    f.handle(async method => { if (method === "snapshot") { entered.resolve(); return ack.promise; } return {}; });
-    const pending = f.browser.action("snapshot").catch(() => {});
+    await f.browser.engine.execute("tabs.new", {});
+    f.handle(async method => { if (method === "listTabs") { entered.resolve(); return ack.promise; } return f.v9(method); });
+    const pending = f.browser.engine.execute("tabs.list", {}).catch(() => {});
     await entered.promise;
     f.lose();
     const recovery = f.browser.reconnect!().catch(e => e.message);
-    const settled = f.chrome.settle("agent", "run");
+    let done = false;
+    const settled = f.chrome.settle("agent", "run").then(() => { done = true; });
+    expect(await recovery).toContain("run authority expired");
+    await Bun.sleep(5);
+    expect(done).toBe(false); // Settlement drains accepted engine work.
     ack.reject(new Error("disconnected"));
     await pending;
-    expect(await recovery).toContain("run authority expired");
     await settled;
     await expect(f.browser.reconnect!()).rejects.toThrow("run authority expired");
+    await expect(f.browser.engine.execute("tabs.list", {})).rejects.toThrow("run authority expired");
     expect(() => f.browser.reserveLogin("old-run", "https://example.com")).toThrow("run authority expired");
     expect(f.chrome.state("agent").task?.handoff).toBeNull();
   } finally { ack.resolve({}); await f.close(); }

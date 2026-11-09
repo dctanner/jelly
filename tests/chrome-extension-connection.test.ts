@@ -1,630 +1,351 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
-import { CHROME_PROTOCOL, CHROME_METHODS, chromeParams } from "../src/shared/chrome-protocol";
+import { CHROME_PROTOCOL, CHROME_METHODS } from "../src/shared/chrome-protocol";
 const built = await Bun.build({ entrypoints: ["extensions/chrome/worker.js"], target: "browser", format: "iife" });
 const source = await built.outputs[0]!.text();
 // Drain the worker's asynchronous startup chain instead of assuming a fixed
 // number of microtasks across Bun versions and bundle shapes.
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 function event() {
   const listeners: Function[] = [];
   return { addListener: (fn: Function) => listeners.push(fn), fire: (...args: any[]) => listeners.forEach(fn => fn(...args)) };
 }
+interface FakeTab { id: number; windowId: number; url: string; title: string; active: boolean; groupId: number; lastAccessed: number; pinned: boolean }
+/** Minimal in-memory Chrome: windows, tabs, groups and a debugger. */
+function fakeBrowser() {
+  let nextTab = 100, nextGroup = 1;
+  const tabs = new Map<number, FakeTab>();
+  const windows = new Map<number, { id: number; type: string; focused: boolean }>([[1, { id: 1, type: "normal", focused: true }]]);
+  const groups = new Map<number, { title?: string; color?: string }>();
+  const attachedTabs = new Set<number>();
+  const commands: { target: any; method: string; params: any }[] = [];
+  const handlers = new Map<string, (target: any, params: any) => any>();
+  const calls: string[] = [];
+  const add = (props: Partial<FakeTab> = {}) => {
+    const tab: FakeTab = { id: nextTab++, windowId: 1, url: "about:blank", title: "", active: false, groupId: -1, lastAccessed: Date.now(), pinned: false, ...props };
+    tabs.set(tab.id, tab);
+    return tab;
+  };
+  const get = (id: number) => { const t = tabs.get(id); if (!t) throw new Error(`No tab with id: ${id}.`); return { ...t }; };
+  const debuggerApi = {
+    onDetach: event(), onEvent: event(),
+    attach: async ({ tabId }: any) => {
+      calls.push(`attach:${tabId}`);
+      get(tabId);
+      await sleep(5);
+      if (attachedTabs.has(tabId)) throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`);
+      attachedTabs.add(tabId);
+    },
+    detach: async ({ tabId }: any) => {
+      calls.push(`detach:${tabId}`);
+      if (!attachedTabs.delete(tabId)) throw new Error(`Debugger is not attached to the tab with id: ${tabId}.`);
+    },
+    getTargets: async () => [...tabs.values()].map(t => ({ tabId: t.id, attached: attachedTabs.has(t.id) })),
+    sendCommand: async (target: any, method: string, params: any) => {
+      if (!attachedTabs.has(target.tabId)) throw new Error(`Debugger is not attached to the tab with id: ${target.tabId}.`);
+      commands.push({ target, method, params });
+      const handler = handlers.get(method);
+      return handler ? handler(target, params) : {};
+    },
+  };
+  const chrome: any = {
+    debugger: debuggerApi,
+    tabs: {
+      onRemoved: event(), onReplaced: event(),
+      create: async ({ windowId, url, active }: any) => add({ windowId, url, active }),
+      get: async (id: number) => get(id),
+      update: async (id: number, props: any) => { const t = get(id); Object.assign(tabs.get(id)!, props.url ? { url: props.url } : {}, props.active ? { active: true } : {}); return { ...t, ...props }; },
+      remove: async (id: number) => { get(id); tabs.delete(id); attachedTabs.delete(id); chrome.tabs.onRemoved.fire(id, {}); },
+      query: async () => [...tabs.values()].map(t => ({ ...t })),
+      group: async ({ groupId, tabIds, createProperties }: any) => {
+        const id = groupId ?? nextGroup++;
+        if (groupId !== undefined && !groups.has(groupId)) throw new Error("No group with id");
+        if (groupId === undefined) groups.set(id, {});
+        void createProperties;
+        for (const tabId of [tabIds].flat()) tabs.get(tabId)!.groupId = id;
+        return id;
+      },
+      ungroup: async (id: number) => { tabs.get(id)!.groupId = -1; },
+    },
+    tabGroups: { onRemoved: event(), update: async (id: number, props: any) => Object.assign(groups.get(id)!, props) },
+    windows: {
+      get: async (id: number) => windows.get(id),
+      getLastFocused: async () => [...windows.values()].find(w => w.focused),
+      getAll: async () => [...windows.values()],
+      create: async () => { const w = { id: windows.size + 1, type: "normal", focused: false }; windows.set(w.id, w); return { ...w, tabs: [add({ windowId: w.id })] }; },
+      update: async (id: number, props: any) => Object.assign(windows.get(id)!, props),
+    },
+    webNavigation: { onCreatedNavigationTarget: event() },
+    cookies: { getAll: async (filter: any) => [{ name: "sid", value: "v", domain: filter.domain }] },
+    bookmarks: {}, history: {}, downloads: {}, sessions: {}, topSites: {},
+  };
+  return { chrome, tabs, groups, windows, attachedTabs, commands, handlers, calls, add };
+}
 async function fixture(local: Record<string, any> = {}, session: Record<string, any> = {}, initialization?: Promise<void>) {
   const ports: any[] = [], alarms = new Map<string, any>();
   const storage = (data: any) => ({ get: async () => { if (data === local) await initialization; return { ...data }; }, set: async (value: any) => { Object.assign(data, value); } });
+  const browser = fakeBrowser();
   const chrome: any = {
+    ...browser.chrome,
     storage: { local: storage(local), session: storage(session) },
-    alarms: { onAlarm: event(), create: async (name: string, options: any) => { alarms.set(name, { name, scheduledTime: Date.now() + options.delayInMinutes * 60000 }); }, get: async (name: string) => alarms.get(name), clear: async (name: string) => alarms.delete(name) },
+    alarms: { onAlarm: event(), create: async (name: string, options: any) => { alarms.set(name, { name, scheduledTime: Date.now() + (options.delayInMinutes ?? options.periodInMinutes) * 60000, periodInMinutes: options.periodInMinutes }); }, get: async (name: string) => alarms.get(name), clear: async (name: string) => alarms.delete(name) },
     runtime: { id: "fixture", getURL: (path: string) => `chrome-extension://fixture/${path}`, onMessage: event(), onStartup: event(), onInstalled: event(), connectNative: () => {
-      const port = { onMessage: event(), onDisconnect: event(), messages: [] as any[], postMessage(value: any) { this.messages.push(value); }, disconnect() {} };
+      const port = { onMessage: event(), onDisconnect: event(), messages: [] as any[], postMessage(value: any) { this.messages.push(JSON.parse(JSON.stringify(value))); }, disconnect() {} };
       ports.push(port); return port;
     } },
-    debugger: { onDetach: event(), detach: async () => {}, getTargets: async () => [] },
-    declarativeNetRequest: { getSessionRules: async () => [], updateSessionRules: async () => {} },
-    tabs: { onUpdated: event(), onRemoved: event(), onReplaced: event(), query: () => { throw new Error("Candidates must not be enumerated"); } },
-    tabGroups: { onRemoved: event() },
-    webNavigation: { onHistoryStateUpdated: event(), onReferenceFragmentUpdated: event(), onCommitted: event(), onCreatedNavigationTarget: event() },
   };
-  let frozenTime: number | undefined;
-  class FixtureDate extends Date { static now() { return frozenTime ?? Date.now(); } }
-  runInNewContext(source, { chrome, crypto, TextEncoder, URL, setTimeout, clearTimeout, console, Date: FixtureDate });
+  runInNewContext(source, { chrome, crypto, TextEncoder, URL, setTimeout, clearTimeout, console, Date });
   await tick();
-  const rpc = (action: string, sender = "chrome-extension://fixture/popup.html") => new Promise<any>(resolve => chrome.runtime.onMessage.fire({ action, session: "anything", tab: 1 }, { id: "fixture", url: sender }, resolve));
-  const paired = (port = ports.at(-1), type = "paired") => port.onMessage.fire({ type, version: CHROME_PROTOCOL, capabilities: CHROME_METHODS, generation: port.messages[0].generation, instance: "fixture" });
-  const alarm = async (name: string) => { alarms.delete(name); chrome.alarms.onAlarm.fire({ name }); await tick(); };
-  return { chrome, ports, alarms, local, rpc, paired, alarm, freezeClock: (now: number) => { frozenTime = now; } };
+  const rpc = (action: string, sender = "chrome-extension://fixture/popup.html") => new Promise<any>(resolve => chrome.runtime.onMessage.fire({ action }, { id: "fixture", url: sender }, resolve));
+  const paired = (port = ports.at(-1), type = "paired", version = CHROME_PROTOCOL) => port.onMessage.fire({ type, version, capabilities: CHROME_METHODS, generation: port.messages[0].generation, instance: "fixture" });
+  const alarm = async (name: string) => { if (!alarms.get(name)?.periodInMinutes) alarms.delete(name); chrome.alarms.onAlarm.fire({ name }); await tick(); };
+  return { chrome, browser, ports, alarms, local, session, rpc, paired, alarm };
 }
-test("observation refusal envelopes become safe RPC errors, not successful guards", async () => {
+/** A paired fixture with request/response helpers. */
+async function relay() {
   const f = await fixture();
   f.paired();
-  const url = "https://fixture.example/";
-  Object.assign(f.chrome.tabs, {
-    create: async () => ({ id: 1, windowId: 1 }), group: async () => 1,
-    update: async () => ({}), get: async () => ({ id: 1, url }),
-  });
-  f.chrome.tabGroups.update = async () => ({});
-  f.chrome.webNavigation.getAllFrames = async () => [{ frameId: 0, parentFrameId: -1, documentId: "doc", url }];
-  let calls = 0, blocked: unknown = "unsupported_frame";
-  f.chrome.scripting = { executeScript: async () => {
-    calls++;
-    if (blocked === "throw") throw new Error("PRIVATE underlying exception");
-    if (blocked === null) return [{ documentId: "doc", result: { ok: true, ready: true, text: "Safe", elements: [], viewport: {}, truncated: false } }];
-    return [{ documentId: "doc", result: { observationBlocked: blocked, text: "PRIVATE page text" } }];
-  } };
   const port = f.ports[0];
-  const call = async (method: string, params: object) => {
+  const send = (method: string, params: object = {}, routing: { session?: string; run?: string } = {}) => {
     const id = crypto.randomUUID();
-    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: "s", run: "r", method, params });
-    for (let i = 0; i < 100; i++) {
-      const response = port.messages.find((m: any) => m.id === id);
-      if (response) return response;
-      await tick();
+    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: routing.session ?? "s", run: routing.run ?? "r", method, params });
+    return id;
+  };
+  const response = async (id: string, timeout = 3000) => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const found = port.messages.find((m: any) => m.id === id);
+      if (found) return found;
+      await sleep(1);
     }
     throw new Error("No fixture response");
   };
-  expect((await call("begin", { name: "Fixture", protected: [] })).result).toEqual({ ok: true });
-  const tab = (await call("open", { url })).result.pageId;
-  for (const reason of ["unsupported_frame", "shadow_root", "secret_field", "PRIVATE", "throw"]) {
-    blocked = reason;
-    const before = calls;
-    const response = await call("snapshot", { tab });
-    expect(response.result).toBeUndefined();
-    expect(response.error).toBeDefined();
-    expect(JSON.stringify(response)).not.toContain("PRIVATE");
-    if (["unsupported_frame", "shadow_root", "secret_field"].includes(reason)) expect(response.error.reason).toBe(reason);
-    else expect(response.error.reason).toBeUndefined();
-    expect(calls).toBe(before + 1); // refusal stops before any content observation/retry
-    expect(port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
-  }
-  blocked = null;
-  expect((await call("snapshot", { tab })).result.text).toContain("Safe");
-  // A distinct real policy event still revokes authority, with a fixed cause.
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, url: "chrome://settings/PRIVATE" });
-  await tick();
-  expect(port.messages.filter((m: any) => m.type === "pauseState").map((m: any) => m.reason)).toContain("navigation_denied");
-  expect((await call("snapshot", { tab })).error).toBeDefined();
-  expect(JSON.stringify(port.messages)).not.toContain("PRIVATE");
-});
-
-test("unobservable frame trees restrict text and exact actions to main document without inspecting hidden children", async () => {
-  expect(chromeParams("snapshot", { tab: "cap", topDocumentOnly: true })).toBe(false);
-  const f = await fixture();
-  f.paired();
-  const url = "https://fixture.example/";
-  Object.assign(f.chrome.tabs, {
-    create: async () => ({ id: 1, windowId: 1 }), group: async () => 1,
-    update: async () => ({}), get: async () => ({ id: 1, url }),
-  });
-  f.chrome.tabGroups.update = async () => ({});
-  // Deliberately put the child first: the guard must start at the main document.
-  f.chrome.webNavigation.getAllFrames = async () => [
-    { frameId: 1, parentFrameId: 0, documentId: "child", url }, { frameId: 0, parentFrameId: -1, documentId: "main", url },
-  ];
-  let hidden = true, nested = false, secret = false, hideDuringSnapshot = false;
-  const calls: { doc: string; op: string }[] = [];
-  f.chrome.scripting = { executeScript: async ({ target, args }: any) => {
-    const doc = target.documentIds[0], [op, options] = args;
-    calls.push({ doc, op });
-    let result: any;
-    if (secret) result = { observationBlocked: "secret_field" };
-    else if ((hidden && doc === "main") || (nested && doc === "child")) {
-      if (op === "screenshot" || !options.topDocumentOnly) result = { observationBlocked: "unsupported_frame" };
-      else result = { ok: true, framesOmitted: true };
-    } else result = { ok: true, framesOmitted: false };
-    if (op === "snapshot" && !result.observationBlocked) {
-      result = { ready: true, text: doc === "main" ? "Main inbox" : "CHILD_SENTINEL", elements: [{ ref: `${doc}-ref`, tag: "button", type: "", label: doc }], viewport: {}, truncated: false };
-      if (hideDuringSnapshot) hidden = true;
-    }
-    return [{ documentId: doc, result }];
-  } };
-  const port = f.ports[0];
-  const call = async (method: string, params: object) => {
-    const id = crypto.randomUUID();
-    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: "s", run: "r", method, params });
-    for (let i = 0; i < 100; i++) {
-      const response = port.messages.find((m: any) => m.id === id);
-      if (response) return response;
-      await tick();
-    }
-    throw new Error("No fixture response");
+  const call = async (method: string, params: object = {}, routing?: { session?: string; run?: string }) => response(send(method, params, routing));
+  const ok = async (method: string, params: object = {}, routing?: { session?: string; run?: string }) => {
+    const r = await call(method, params, routing);
+    if (r.error) throw new Error(`${method}: ${r.error.message}`);
+    return r.result;
   };
-  await call("begin", { name: "Fixture", protected: [] });
-  const tab = (await call("open", { url })).result.pageId;
-  const mainOnly = await call("snapshot", { tab });
-  expect(mainOnly.result.framesOmitted).toBe(true);
-  expect(mainOnly.result.frames.map((x: any) => x.frame)).toEqual([0]);
-  expect(JSON.stringify(mainOnly)).not.toContain("CHILD_SENTINEL");
-  expect(calls.every(c => c.doc === "main")).toBe(true);
-  expect((await call("click", { tab, ref: "main-ref" })).result).toEqual({ ok: true, framesOmitted: true });
-  expect((await call("screenshot", { tab })).error.reason).toBe("unsupported_frame");
-  expect((await call("wait_for", { tab, condition: "text_absent", text: "CHILD_SENTINEL", timeoutMs: 0 })).result).toEqual({ ok: false, timedOut: true });
-
-  hidden = false;
-  const full = await call("snapshot", { tab });
-  expect(full.result.frames).toHaveLength(2);
-  expect(full.result.text).toContain("CHILD_SENTINEL");
-  calls.length = 0;
-  hidden = true;
-  expect((await call("click", { tab, ref: "child-ref" })).error).toBeDefined();
-  expect(calls.some(c => c.op === "click")).toBe(false);
-  expect(calls.every(c => c.doc === "main")).toBe(true);
-
-  hidden = false; nested = true;
-  calls.length = 0;
-  const nestedResult = await call("snapshot", { tab });
-  expect(nestedResult.result.framesOmitted).toBe(true);
-  expect(calls.some(c => c.doc === "child" && c.op === "snapshot")).toBe(false);
-
-  nested = false; hideDuringSnapshot = true;
-  expect((await call("snapshot", { tab })).error).toBeDefined(); // discard changing exposure
-  hideDuringSnapshot = false; secret = true;
-  expect((await call("snapshot", { tab })).error.reason).toBe("secret_field");
-});
-
-async function navigationFixture() {
-  const f = await fixture();
-  f.paired();
-  const url = "https://auth.fixture.example/login";
-  Object.assign(f.chrome.tabs, {
-    create: async () => ({ id: 1, windowId: 1 }), group: async () => 1,
-    update: async () => ({}), get: async () => ({ id: 1, url }),
-  });
-  f.chrome.tabGroups.update = async () => ({});
-  f.chrome.webNavigation.getAllFrames = async () => [
-    { frameId: 0, parentFrameId: -1, documentId: "main", url },
-    { frameId: 1, parentFrameId: 0, documentId: "helper", url: "about:blank" },
-  ];
-  let observedEpoch: unknown;
-  const injected: string[] = [];
-  f.chrome.scripting = { executeScript: async ({ target, args }: any) => {
-    const [op, , , epoch] = args;
-    injected.push(target.documentIds[0]);
-    let result: any = { ok: true, framesOmitted: true };
-    if (op === "snapshot") {
-      observedEpoch = epoch;
-      result = { ready: true, text: "Auth fixture", elements: [{ ref: "outside-ref", tag: "button", label: "Continue" }], viewport: {}, truncated: false };
-    }
-    if (op === "click" && observedEpoch !== epoch) result = { observationBlocked: "stale_reference" };
-    return [{ documentId: "main", result }];
-  } };
-  const port = f.ports[0];
-  const call = async (method: string, params: object = {}) => {
-    const id = crypto.randomUUID();
-    port.onMessage.fire({ jsonrpc: "2.0", id, instance: "fixture", generation: port.messages[0].generation, session: "s", run: "r", method, params });
-    for (let i = 0; i < 100; i++) {
-      const response = port.messages.find((m: any) => m.id === id);
-      if (response) return response;
-      await tick();
-    }
-    throw new Error("No fixture response");
-  };
-  await call("begin", { name: "Auth fixture", protected: ["http://localhost:3100"] });
-  const tab = (await call("open", { url })).result.pageId;
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, url });
-  return { ...f, port, call, tab, injected };
+  const notifications = (type: string) => port.messages.filter((m: any) => m.type === type);
+  return { ...f, port, send, response, call, ok, notifications };
 }
 
-test("late inherited auth child commits/history/fragments remain unobservable without pausing", async () => {
-  for (const event of ["onHistoryStateUpdated", "onReferenceFragmentUpdated", "onCommitted"]) {
-    for (const url of ["about:blank#PRIVATE", "about:srcdoc#PRIVATE"]) {
-      const f = await navigationFixture();
-      expect((await f.call("snapshot", { tab: f.tab })).result.text).toContain("Auth fixture");
-      f.chrome.webNavigation[event].fire({ tabId: 1, frameId: 1, url });
-      await tick();
-      expect(f.port.messages.filter((m: any) => m.type === "pauseState")).toEqual([]);
-      expect((await f.call("click", { tab: f.tab, ref: "outside-ref" })).error.reason).toBe("stale_reference");
-      expect((await f.call("snapshot", { tab: f.tab })).result).toMatchObject({ framesOmitted: true });
-      expect(f.injected.every(doc => doc === "main")).toBe(true);
-      expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
-      expect(JSON.stringify(f.port.messages)).not.toContain("PRIVATE");
-    }
-  }
+test("begin, createTab, attach and cdp relay results as-is; tabs are grouped in the background", async () => {
+  const f = await relay();
+  expect(await f.ok("begin", { name: "Research", agent: "agent-a" })).toEqual({ ok: true, tabs: [], paused: false });
+  f.browser.handlers.set("Runtime.evaluate", (_t, p) => ({ result: { type: "number", value: p.expression === "1+1" ? 2 : 0 } }));
+  const { tab } = await f.ok("createTab", { url: "https://example.com/" });
+  expect(tab).toMatchObject({ windowId: 1, active: false, origin: "agent", mark: null, url: "https://example.com/" });
+  const groupId = f.browser.tabs.get(tab.id)!.groupId;
+  expect(f.browser.groups.get(groupId)).toMatchObject({ title: "🔎 Research" });
+  await f.ok("name", { name: "Comparing prices" });
+  expect(f.browser.groups.get(groupId)!.title).toBe("🔎 Comparing prices");
+  expect(await f.ok("cdp", { tabId: tab.id, method: "Runtime.evaluate", params: { expression: "1+1" } })).toEqual({ result: { type: "number", value: 2 } });
+  expect(f.browser.attachedTabs.has(tab.id)).toBe(true); // auto-attached
+  expect(await f.ok("attach", { tabId: tab.id })).toEqual({ ok: true }); // idempotent
+  expect(f.browser.calls.filter(c => c === `attach:${tab.id}`)).toHaveLength(1);
+  expect(f.session.debuggerCleanup).toEqual([tab.id]); // persisted before attach
+  expect((await f.ok("listTabs")).tabs.map((t: any) => t.id)).toEqual([tab.id]);
+  await f.ok("detach", { tabId: tab.id });
+  expect(f.browser.attachedTabs.has(tab.id)).toBe(false);
+  expect(f.session.debuggerCleanup).toEqual([]);
+  // A second session's tab lands in its own group.
+  await f.ok("begin", { name: "Other" }, { session: "s2" });
+  const other = (await f.ok("createTab", {}, { session: "s2" })).tab;
+  expect(f.browser.tabs.get(other.id)!.groupId).not.toBe(groupId);
+  expect((await f.call("cdp", { tabId: other.id, method: "Page.enable" })).error.message).toContain("not part of this browser session");
 });
 
-test("navigation exceptions never admit main inherited documents or forbidden child destinations", async () => {
-  const events = [
-    ["onCommitted", "committed"], ["onHistoryStateUpdated", "history"], ["onReferenceFragmentUpdated", "fragment"],
-  ];
-  const destinations = [
-    ["about:blank#PRIVATE", "inherited_blank", [0]],
-    ["about:srcdoc#PRIVATE", "inherited_srcdoc", [0]],
-    ["http://LOCALHOST.:3100/control?token=PRIVATE", "protected_origin", [0, 1]],
-    ["https://user:PRIVATE@auth.fixture.example/", "credentials", [0, 1]],
-    ["data:text/html,PRIVATE", "data", [0, 1]],
-    ["blob:https://auth.fixture.example/PRIVATE", "blob", [0, 1]],
-    ["chrome://settings/PRIVATE", "chrome_internal", [0, 1]],
-    ["about:blank-not-inherited#PRIVATE", "about_other", [0, 1]],
-    ["https://auth.fixture.example/?PRIVATE=" + "x".repeat(2048), "url_too_long", [0, 1]],
-    ["PRIVATE invalid URL", "invalid_url", [0, 1]],
-  ] as const;
-  for (const [event, kind] of events) {
-    for (const [url, destination, frameIds] of destinations) {
-      for (const frameId of frameIds) {
-        const f = await navigationFixture();
-        f.chrome.webNavigation[event!].fire({ tabId: 1, frameId, url });
-        await tick();
-        const pauses = f.port.messages.filter((m: any) => m.type === "pauseState");
-        expect(pauses.length).toBeGreaterThan(0);
-        for (const pause of pauses) expect(pause).toMatchObject({
-          reason: "navigation_denied",
-          navigationDiagnostic: { event: kind, frame: frameId === 0 ? "main" : "child", destination },
-        });
-        expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-        expect(JSON.stringify(f.port.messages)).not.toContain("PRIVATE");
-      }
-    }
-  }
+test("requests run concurrently: a slow CDP command does not block others; per-tab attach is serialised", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const a = (await f.ok("createTab")).tab.id, b = (await f.ok("createTab")).tab.id;
+  let release!: () => void;
+  f.browser.handlers.set("Runtime.awaitPromise", () => new Promise(resolve => { release = () => resolve({ slow: true }); }));
+  const slow = f.send("cdp", { tabId: a, method: "Runtime.awaitPromise", timeoutMs: 5000 });
+  // Concurrent first calls on one tab attach once.
+  const results = await Promise.all([1, 2, 3].map(() => f.ok("cdp", { tabId: b, method: "Page.enable" })));
+  expect(results).toEqual([{}, {}, {}]);
+  expect(f.browser.calls.filter(c => c === `attach:${b}`)).toHaveLength(1);
+  expect(await f.ok("listTabs")).toMatchObject({ tabs: [{ id: a }, { id: b }] });
+  expect(f.port.messages.some((m: any) => m.id === slow)).toBe(false);
+  release();
+  expect((await f.response(slow)).result).toEqual({ slow: true });
 });
 
-test("internal diagnostic subclasses and worker revision never admit main or child documents", async () => {
-  const cases = [
-    ["chrome-error://chromewebdata/", "chromium_error_document"],
-    ["CHROME-ERROR://chromewebdata/", "chromium_error_variant"],
-    ["chrome-error://CHROMEWEBDATA/", "chromium_error_variant"],
-    ["chrome-error://chromewebdata", "chromium_error_variant"],
-    ["chrome-error://chromewebdata//", "chromium_error_variant"],
-    ["chrome-error://chromewebdata/./", "chromium_error_variant"],
-    ["chrome-error://chromewebdata/?PRIVATE", "chromium_error_variant"],
-    ["chrome-error://chromewebdata/#PRIVATE", "chromium_error_variant"],
-    ["chrome-error://chromewebdata.evil/PRIVATE", "chrome_error_other"],
-    ["chrome-error://chromewebdata:123/PRIVATE", "chromium_error_variant"],
-    [" chrome-error://chromewebdata/", "chromium_error_variant"],
-    ["chrome-error://chromewebdata/\n", "chromium_error_variant"],
-    ["chrome-error://user:PRIVATE@chromewebdata/", "credentials"],
-    ["chrome://settings/PRIVATE", "chrome_internal"],
-    ["chrome-extension://fixture/PRIVATE", "extension_self"],
-    ["chrome-extension://other-fixture/PRIVATE", "extension_other"],
-    ["devtools://devtools/PRIVATE", "devtools"],
-    ["chrome://user:PRIVATE@settings/", "credentials"],
-    ["chrome-extension://user:PRIVATE@fixture/", "credentials"],
-    ["chrome-extension://user:PRIVATE@other-fixture/", "credentials"],
-    ["devtools://user:PRIVATE@devtools/", "credentials"],
-    ["chrome-error://[PRIVATE", "invalid_url"],
-    ["chrome://[PRIVATE", "invalid_url"],
-    ["chrome-extension://[PRIVATE", "invalid_url"],
-    ["devtools://[PRIVATE", "invalid_url"],
-    ["http://localhost:3100/PRIVATE", "protected_origin"],
-  ];
-  for (const [url, destination] of cases) {
-    for (const frameId of [0, 1]) {
-      const f = await navigationFixture();
-      f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId, url });
-      await tick();
-      const pauses = f.port.messages.filter((m: any) => m.type === "pauseState");
-      expect(pauses.length).toBeGreaterThan(0);
-      for (const pause of pauses) expect(pause).toMatchObject({
-        reason: "navigation_denied",
-        navigationDiagnostic: { event: "committed", frame: frameId === 0 ? "main" : "child", destination, revision: "internal_v2" },
-      });
-      expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-      expect(f.injected).toEqual([]);
-      expect(JSON.stringify(f.port.messages)).not.toContain("PRIVATE");
-      expect(JSON.stringify(f.port.messages)).not.toContain("chrome-error:");
-      expect(JSON.stringify(f.port.messages)).not.toContain("other-fixture");
-    }
-  }
+test("CDP timeouts reject without detaching; cdpBatch runs in order and stops at the first failure", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const tabId = (await f.ok("createTab")).tab.id;
+  f.browser.handlers.set("Page.navigate", () => new Promise(() => {}));
+  const timedOut = await f.call("cdp", { tabId, method: "Page.navigate", params: { url: "https://slow.example" }, timeoutMs: 30 });
+  expect(timedOut.error).toEqual({ code: -32000, message: 'Timed out running CDP command "Page.navigate" after 30ms.' });
+  expect(f.browser.attachedTabs.has(tabId)).toBe(true);
+  f.browser.handlers.set("Input.dispatchKeyEvent", (_t, p) => ({ key: p.key }));
+  const keys = [..."hello"].map(key => ({ method: "Input.dispatchKeyEvent", params: { type: "keyDown", key } }));
+  expect(await f.ok("cdpBatch", { tabId, commands: keys })).toEqual({ results: [..."hello"].map(key => ({ key })) });
+  expect(f.browser.commands.filter(c => c.method === "Input.dispatchKeyEvent").map(c => c.params.key).join("")).toBe("hello");
+  f.browser.handlers.set("DOM.focus", () => { throw new Error('{"code":-32000,"message":"Element is not focusable"}'); });
+  const before = f.browser.commands.length;
+  const failed = await f.call("cdpBatch", { tabId, commands: [{ method: "Input.dispatchKeyEvent", params: { key: "a" } }, { method: "DOM.focus" }, { method: "Input.dispatchKeyEvent", params: { key: "b" } }] });
+  expect(failed.error.message).toBe('Command 1 "DOM.focus" failed: {"code":-32000,"message":"Element is not focusable"}');
+  expect(f.browser.commands.slice(before).map(c => c.method)).toEqual(["Input.dispatchKeyEvent", "DOM.focus"]);
+  const batchTimeout = await f.call("cdpBatch", { tabId, commands: [{ method: "Page.enable" }, { method: "Page.navigate" }], timeoutMs: 30 });
+  expect(batchTimeout.error.message).toContain('Timed out running CDP batch at command 1 "Page.navigate" after 30ms');
+  // Invalid params get a specific error and the connection survives.
+  expect((await f.call("cdp", { tabId, method: "nope" })).error.message).toContain("CDP method name");
+  expect((await f.call("snapshot", { tab: "cap" })).error.message).toContain('Unknown Chrome method "snapshot"');
+  expect(await f.rpc("status")).toMatchObject({ connected: true });
 });
 
-const opaqueFixtureId = "a".repeat(32);
-const jellyFixtureId = "b".repeat(32);
-const opaqueFixtureURL = `chrome-extension://${opaqueFixtureId}/helper.html`;
-
-async function opaqueFrameFixture() {
-  const f = await navigationFixture();
-  f.chrome.runtime.id = jellyFixtureId;
-  const main = { frameId: 0, parentFrameId: -1, documentId: "main", url: "https://auth.fixture.example/login", errorOccurred: false };
-  const sibling = { frameId: 1, parentFrameId: 0, documentId: "sibling", url: "https://auth.fixture.example/sibling" };
-  let frames = [main, sibling];
-  let secret = false, changeDuringSnapshot = false;
-  const epochs = new Map<string, unknown>();
-  f.chrome.webNavigation.getAllFrames = async () => frames.map(f => ({ ...f }));
-  f.chrome.scripting.executeScript = async ({ target, args }: any) => {
-    const doc = target.documentIds[0], [op, , , epoch] = args;
-    const isMain = frames.some(frame => frame.frameId === 0 && frame.documentId === doc);
-    f.injected.push(`${doc}:${op}`);
-    let result: any = { ok: true, framesOmitted: false };
-    if (secret && isMain) result = { observationBlocked: "secret_field" };
-    else if (op === "snapshot") {
-      epochs.set(doc, epoch);
-      result = { ready: true, text: isMain ? "Main auth page" : "PRIVATE_CHILD_SENTINEL", elements: [{ ref: `${doc}-ref`, tag: "button", label: doc }], viewport: {}, truncated: false };
-      if (changeDuringSnapshot && isMain) frames = frames.map(frame => frame.frameId === 3 ? { ...frame, documentId: "changed-descendant" } : frame);
-    } else if (op === "click" && epochs.get(doc) !== epoch) result = { observationBlocked: "stale_reference" };
-    return [{ documentId: doc, result }];
-  };
-  const opaqueTree = () => [main, sibling,
-    { frameId: 2, parentFrameId: 0, documentId: "opaque", url: opaqueFixtureURL },
-    { frameId: 3, parentFrameId: 2, documentId: "nested", url: "https://auth.fixture.example/nested" },
-    { frameId: 4, parentFrameId: 3, documentId: "deep", url: "https://auth.fixture.example/deep" },
-  ];
-  return { ...f, opaqueTree,
-    frames: (value: typeof frames) => { frames = value; },
-    secret: () => { secret = true; },
-    changeDuringSnapshot: () => { changeDuringSnapshot = true; },
-  };
-}
-
-test("other-extension children are opaque across navigation events; no child or descendant is injected", async () => {
-  for (const event of ["onCommitted", "onHistoryStateUpdated", "onReferenceFragmentUpdated"]) {
-    const f = await opaqueFrameFixture();
-    const before = (await f.call("snapshot", { tab: f.tab })).result;
-    expect(before.elements.some((e: any) => e.ref === "sibling-ref")).toBe(true);
-    f.frames(f.opaqueTree());
-    f.chrome.webNavigation[event].fire({ tabId: 1, frameId: 2, url: opaqueFixtureURL });
-    await tick();
-    expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
-    f.injected.length = 0;
-    expect((await f.call("click", { tab: f.tab, ref: "sibling-ref" })).error).toBeDefined();
-    expect(f.injected.some(doc => doc.endsWith(":click"))).toBe(false);
-    const partial = (await f.call("snapshot", { tab: f.tab })).result;
-    expect(partial.framesOmitted).toBe(true);
-    expect(partial.frames).toHaveLength(1);
-    expect(partial.elements.map((e: any) => e.ref)).toEqual(["main-ref"]);
-    expect(JSON.stringify(partial)).not.toContain("PRIVATE_CHILD_SENTINEL");
-    expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).result.ok).toBe(true);
-    expect((await f.call("wait_for", { tab: f.tab, condition: "text_absent", text: "PRIVATE_CHILD_SENTINEL", timeoutMs: 0 })).result).toEqual({ ok: false, timedOut: true });
-    expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
-    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-    f.secret();
-    expect((await f.call("snapshot", { tab: f.tab })).error.reason).toBe("secret_field");
-  }
+test("a stale own attachment ('Another debugger') is treated as attached; an unseen detach re-attaches once", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const tabId = (await f.ok("createTab")).tab.id;
+  await f.ok("attach", { tabId });
+  // Simulate lost state: our attachment persists, but the worker's set forgets it.
+  f.browser.chrome.debugger.onDetach.fire({ tabId }, "target_closed");
+  expect(f.notifications("cdpDetach").at(-1)).toMatchObject({ tabId, reason: "target_closed", session: "s", run: "r" });
+  f.session.debuggerCleanup = [tabId];
+  // Another debugger error for a tab no longer recorded as ours is a real error.
+  const foreign = await f.call("attach", { tabId });
+  expect(foreign.error.message).toContain("Another debugger");
+  f.browser.attachedTabs.delete(tabId);
+  expect(await f.ok("cdp", { tabId, method: "Page.enable" })).toEqual({});
+  // Debugger dropped without onDetach: re-attach and retry once.
+  f.browser.attachedTabs.delete(tabId);
+  expect(await f.ok("cdp", { tabId, method: "Page.enable" })).toEqual({});
+  expect(f.browser.attachedTabs.has(tabId)).toBe(true);
 });
 
-test("opaque frame exposure binds omitted document identities and parent topology, including postchecks", async () => {
-  for (const change of ["document", "parent", "remove", "postcheck"]) {
-    const f = await opaqueFrameFixture();
-    f.frames(f.opaqueTree());
-    await f.call("snapshot", { tab: f.tab });
-    f.injected.length = 0;
-    if (change === "postcheck") {
-      f.changeDuringSnapshot();
-      expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-    } else {
-      const frames = f.opaqueTree();
-      if (change === "document") frames[3]!.documentId = "new-nested";
-      if (change === "parent") frames[3]!.parentFrameId = 1;
-      if (change === "remove") frames.splice(2);
-      f.frames(frames); // Deliberately no event: metadata changes must suffice.
-      expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).error).toBeDefined();
-      expect(f.injected.some(doc => doc.endsWith(":click"))).toBe(false);
-    }
-    if (change !== "remove") expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-  }
+test("CDP events (including child sessions) are forwarded for leased tabs only", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const tabId = (await f.ok("createTab")).tab.id;
+  const stranger = f.browser.add();
+  f.browser.chrome.debugger.onEvent.fire({ tabId }, "Page.loadEventFired", { timestamp: 1 });
+  f.browser.chrome.debugger.onEvent.fire({ tabId, sessionId: "child-1" }, "Runtime.consoleAPICalled", { type: "log" });
+  f.browser.chrome.debugger.onEvent.fire({ tabId: stranger.id }, "Page.loadEventFired", {});
+  const events = f.notifications("cdpEvent");
+  expect(events).toHaveLength(2);
+  expect(events[0]).toMatchObject({ session: "s", run: "r", tabId, method: "Page.loadEventFired", params: { timestamp: 1 } });
+  expect(events[0]).not.toHaveProperty("sessionId");
+  expect(events[1]).toMatchObject({ tabId, sessionId: "child-1", method: "Runtime.consoleAPICalled" });
 });
 
-test("missing extension ancestors, orphaned, cyclic and malformed metadata never expose child DOM", async () => {
-  for (const shape of ["missing-extension", "orphan", "cycle", "duplicate", "missing-parent", "invalid-parent"]) {
-    const f = await opaqueFrameFixture();
-    const frames = f.opaqueTree().filter(frame => frame.frameId !== 2).map(frame => ({ ...frame }));
-    if (shape !== "missing-extension") frames[2]!.parentFrameId = 1;
-    if (shape === "orphan") frames[1]!.parentFrameId = 99;
-    if (shape === "cycle") { frames[1]!.parentFrameId = 3; frames[2]!.parentFrameId = 1; }
-    if (shape === "duplicate") frames.push({ ...frames[1]! });
-    if (shape === "missing-parent") delete (frames[1] as any).parentFrameId;
-    if (shape === "invalid-parent") (frames[1] as any).parentFrameId = "0";
-    f.frames(frames); // No event/latch available: metadata gaps alone must suffice.
-    const partial = (await f.call("snapshot", { tab: f.tab })).result;
-    expect(partial.framesOmitted).toBe(true);
-    expect(partial.frames).toHaveLength(1);
-    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-    expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
-    // Every uncertain guard records evidence, but must not break main actions.
-    expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).result.ok).toBe(true);
-    f.frames(f.opaqueTree().slice(0, 2)); // No commit; a complete-looking tree proves no removal.
-    for (let i = 0; i < 3; i++) {
-      const retained = (await f.call("snapshot", { tab: f.tab })).result;
-      expect(retained.framesOmitted).toBe(true);
-      expect(retained.elements.map((e: any) => e.ref)).toEqual(["main-ref"]);
-      expect(JSON.stringify(retained)).not.toContain("PRIVATE_CHILD_SENTINEL");
-      expect((await f.call("click", { tab: f.tab, ref: "main-ref" })).result.ok).toBe(true);
-    }
-    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-    expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
-    expect((await f.call("wait_for", { tab: f.tab, condition: "text_absent", text: "PRIVATE_CHILD_SENTINEL", timeoutMs: 0 })).result.ok).toBe(false);
-  }
+test("popups from leased tabs are auto-leased into the group; user tabs can be listed and claimed", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const opener = (await f.ok("createTab")).tab.id;
+  const popup = f.browser.add({ url: "https://popup.example/" });
+  f.browser.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: opener, tabId: popup.id, url: popup.url });
+  for (let i = 0; i < 50 && !f.notifications("tabAdded").length; i++) await sleep(2);
+  expect(f.notifications("tabAdded")[0]).toMatchObject({ session: "s", run: "r", tab: { id: popup.id, origin: "agent", url: "https://popup.example/" } });
+  expect(f.browser.tabs.get(popup.id)!.groupId).toBe(f.browser.tabs.get(opener)!.groupId);
+  const personal = f.browser.add({ url: "https://mail.example/", title: "Mail", lastAccessed: Date.now() + 1000 });
+  await f.ok("begin", { name: "Other" }, { session: "s2" });
+  const theirs = (await f.ok("createTab", {}, { session: "s2" })).tab.id;
+  const { tabs } = await f.ok("userTabs");
+  expect(tabs[0]).toMatchObject({ id: personal.id, title: "Mail", groupId: -1, pinned: false });
+  expect(tabs.map((t: any) => t.id)).not.toContain(theirs);
+  expect(tabs.map((t: any) => t.id)).toContain(opener);
+  expect((await f.call("claimTab", { tabId: theirs })).error.message).toContain("another browser session");
+  expect((await f.ok("claimTab", { tabId: personal.id })).tab).toMatchObject({ id: personal.id, origin: "user", mark: null });
+  expect(f.browser.tabs.get(personal.id)!.groupId).toBe(-1); // never regrouped
+  expect(await f.ok("cdp", { tabId: personal.id, method: "Page.enable" })).toEqual({});
+  // Human closes a tab.
+  await f.browser.chrome.tabs.remove(popup.id);
+  expect(f.notifications("tabRemoved").at(-1)).toMatchObject({ tabId: popup.id, session: "s" });
 });
 
-test("opaque event latch survives metadata absence, removal, history and open until a verified NEW main document", async () => {
-  const f = await opaqueFrameFixture();
-  await f.call("snapshot", { tab: f.tab });
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: opaqueFixtureURL });
-  await tick();
-  // Chrome omits the ancestor, and later removal has no reliable event. Neither
-  // a complete-looking tree nor a repeat main commit can prove a new lifetime.
-  for (const event of ["onCommitted", "onHistoryStateUpdated", "onReferenceFragmentUpdated"]) {
-    f.chrome.webNavigation[event].fire({ tabId: 1, frameId: 0, documentId: "main", url: "https://auth.fixture.example/login" });
-    await tick();
-    expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-  }
-  await f.call("open", { tab: f.tab, url: "https://auth.fixture.example/login" });
-  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-  const frames = f.opaqueTree().slice(0, 2);
-  frames[0]!.documentId = "next-main";
-  f.frames(frames);
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "stale-main", url: frames[0]!.url });
-  await tick();
-  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-  // Even an event matching current metadata cannot clear a later privacy event.
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "next-main", url: frames[0]!.url, timeStamp: 0 });
-  await tick();
-  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-  frames[0]!.documentId = "reset-main";
-  (frames[0] as any).errorOccurred = true;
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "reset-main", url: frames[0]!.url, timeStamp: Date.now() + 10000 });
-  await tick();
-  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-  (frames[0] as any).errorOccurred = false;
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "reset-main", url: frames[0]!.url, timeStamp: Date.now() + 10000 });
-  await tick();
-  const reset = (await f.call("snapshot", { tab: f.tab })).result;
-  expect(reset.framesOmitted).toBeUndefined();
-  expect(reset.frames).toHaveLength(2);
+test("turn end closes unmarked agent tabs, releases user tabs, ungroups deliverables and retains handoffs", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const scratch = (await f.ok("createTab")).tab.id;
+  const deliverable = (await f.ok("createTab")).tab.id;
+  const handoff = (await f.ok("createTab")).tab.id;
+  const user = f.browser.add().id;
+  await f.ok("claimTab", { tabId: user });
+  await f.ok("markTab", { tabId: deliverable, mark: "deliverable" });
+  await f.ok("markTab", { tabId: handoff, mark: "handoff" });
+  for (const tabId of [scratch, deliverable, handoff, user]) await f.ok("attach", { tabId });
+  expect(await f.ok("end")).toEqual({ ok: true, retained: [handoff] });
+  expect(f.browser.tabs.has(scratch)).toBe(false);
+  expect(f.browser.tabs.get(deliverable)!.groupId).toBe(-1);
+  expect(f.browser.tabs.has(user)).toBe(true);
+  expect(f.browser.attachedTabs.size).toBe(0);
+  expect(f.notifications("pauseState").map((m: any) => [m.state, m.reason])).toEqual([["pausing", "settlement"], ["paused", "settlement"]]);
+  expect((await f.call("cdp", { tabId: handoff, method: "Page.enable" })).error.message).toContain("turn has ended");
+  expect(await f.ok("begin", { name: "Task" }, { run: "r2" })).toEqual({ ok: true, tabs: [handoff], paused: false });
+  expect(await f.ok("cdp", { tabId: handoff, method: "Page.enable" }, { run: "r2" })).toEqual({});
+  expect((await f.call("cdp", { tabId: handoff, method: "Page.enable" })).error.message).toContain("stale");
+  // Discard releases handoffs instead of retaining them.
+  await f.ok("markTab", { tabId: handoff, mark: "handoff" }, { run: "r2" });
+  expect(await f.ok("end", { discard: true }, { run: "r2" })).toEqual({ ok: true, retained: [] });
+  expect(f.browser.tabs.has(handoff)).toBe(true);
+  expect(await f.ok("begin", { name: "Task" }, { run: "r3" })).toEqual({ ok: true, tabs: [], paused: false });
 });
 
-test("intervening events fence an asynchronous main-document verification", async () => {
-  const f = await opaqueFrameFixture();
-  await f.call("snapshot", { tab: f.tab });
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: opaqueFixtureURL });
-  const frames = f.opaqueTree().slice(0, 2);
-  frames[0]!.documentId = "next-main";
-  f.frames(frames);
-  const original = f.chrome.webNavigation.getAllFrames;
-  let resolve!: (value: unknown) => void;
-  f.chrome.webNavigation.getAllFrames = () => new Promise(r => { resolve = r; });
-  f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "next-main", url: frames[0]!.url, timeStamp: Date.now() + 10000 });
-  f.chrome.webNavigation.onReferenceFragmentUpdated.fire({ tabId: 1, frameId: 0, url: frames[0]!.url });
-  resolve(frames);
-  f.chrome.webNavigation.getAllFrames = original;
-  await tick();
-  expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
+test("pause detaches debuggers and refuses work until resume; human-paused tabs survive turn end", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const tabId = (await f.ok("createTab")).tab.id;
+  await f.ok("cdp", { tabId, method: "Page.enable" });
+  expect(await f.ok("pause")).toEqual({ ok: true });
+  expect(f.browser.attachedTabs.has(tabId)).toBe(false);
+  expect(f.notifications("pauseState").map((m: any) => m.state)).toEqual(["pausing", "paused"]);
+  expect((await f.call("cdp", { tabId, method: "Page.enable" })).error.message).toBe("Browser session is paused.");
+  expect((await f.ok("listTabs")).tabs).toHaveLength(1);
+  expect(await f.ok("resume")).toEqual({ ok: true });
+  expect(await f.ok("cdp", { tabId, method: "Page.enable" })).toEqual({});
+  await f.ok("pause");
+  expect(await f.ok("end")).toEqual({ ok: true, retained: [tabId] }); // pause-retained
+  expect(f.browser.tabs.has(tabId)).toBe(true);
+  // freeze pauses every session for the native handoff; unfreeze lifts only the latch.
+  await f.ok("begin", { name: "Task" }, { run: "r2" });
+  await f.ok("cdp", { tabId, method: "Page.enable" }, { run: "r2" });
+  expect(await f.ok("freeze")).toEqual({ frozen: true });
+  expect(f.browser.attachedTabs.size).toBe(0);
+  expect(f.notifications("pauseState").at(-1)).toMatchObject({ state: "paused", reason: "native_handoff" });
+  expect((await f.call("createTab", {}, { run: "r2" })).error.message).toContain("frozen");
+  await f.ok("unfreeze");
+  expect((await f.call("cdp", { tabId, method: "Page.enable" }, { run: "r2" })).error.message).toBe("Browser session is paused.");
+  await f.ok("resume", {}, { run: "r2" });
+  expect(await f.ok("cdp", { tabId, method: "Page.enable" }, { run: "r2" })).toEqual({});
 });
 
-test("unusable frame metadata also latches uncertainty after a refused observation", async () => {
-  for (const shape of ["empty", "missing-main", "duplicate-main", "missing-document"]) {
-    const f = await opaqueFrameFixture();
-    await f.call("snapshot", { tab: f.tab });
-    const clean = f.opaqueTree().slice(0, 2).map(frame => ({ ...frame }));
-    const bad = clean.map(frame => ({ ...frame }));
-    if (shape === "empty") bad.splice(0);
-    if (shape === "missing-main") bad.shift();
-    if (shape === "duplicate-main") bad.push({ ...bad[0]! });
-    if (shape === "missing-document") delete (bad[0] as any).documentId;
-    f.frames(bad);
-    expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-    f.frames(clean);
-    f.injected.length = 0;
-    const partial = (await f.call("snapshot", { tab: f.tab })).result;
-    expect(partial.framesOmitted).toBe(true);
-    expect(partial.elements.map((e: any) => e.ref)).toEqual(["main-ref"]);
-    expect(JSON.stringify(partial)).not.toContain("PRIVATE_CHILD_SENTINEL");
-    expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-  }
+test("chrome passthrough calls chrome.<namespace>.<method>; showTab/closeTab manage leased tabs", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  expect(await f.ok("chrome", { namespace: "cookies", method: "getAll", args: [{ domain: "example.com" }] })).toEqual([{ name: "sid", value: "v", domain: "example.com" }]);
+  expect((await f.call("chrome", { namespace: "bookmarks", method: "search", args: [] })).error.message).toBe("chrome.bookmarks.search is not available.");
+  const tabId = (await f.ok("createTab")).tab.id;
+  await f.ok("showTab", { tabId });
+  expect(f.browser.tabs.get(tabId)!.active).toBe(true);
+  await f.ok("attach", { tabId });
+  await f.ok("closeTab", { tabId });
+  expect(f.browser.tabs.has(tabId)).toBe(false);
+  expect(f.browser.attachedTabs.has(tabId)).toBe(false);
+  expect((await f.ok("listTabs")).tabs).toEqual([]);
 });
 
-test("new metadata privacy evidence fences pending verification without invalidating safe main actions", async () => {
-  for (const operation of ["snapshot", "click"]) {
-    for (const evidenceKind of ["opaque", "missing-parent", "unusable", "clock-skew"]) {
-      const f = await opaqueFrameFixture();
-      // Browser event time is current, never future. A lagging worker clock
-      // makes timestamp checks insufficient: evidence ordering must fence reset.
-      if (evidenceKind === "clock-skew") f.freezeClock(Date.now() - 100);
-      await f.call("snapshot", { tab: f.tab });
-      f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: opaqueFixtureURL, timeStamp: Date.now() - 1000 });
-      await tick();
-      const clean = f.opaqueTree().slice(0, 2).map(frame => ({ ...frame }));
-      clean[0]!.documentId = "next-main";
-      f.frames(clean);
-      const original = f.chrome.webNavigation.getAllFrames;
-      let resolve!: (value: unknown) => void;
-      f.chrome.webNavigation.getAllFrames = () => new Promise(r => { resolve = r; });
-      f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "next-main", url: clean[0]!.url, timeStamp: Date.now() });
-      await tick(); // A later metadata observation, with no browser event or future timestamp.
-      const evidence = evidenceKind === "unusable" ? [] : f.opaqueTree()
-        .filter(frame => evidenceKind !== "missing-parent" || frame.frameId !== 2)
-        .map(frame => ({ ...frame, ...(frame.frameId === 0 ? { documentId: "next-main" } : {}) }));
-      f.frames(evidence);
-      f.chrome.webNavigation.getAllFrames = original;
-      f.injected.length = 0;
-      const during = await f.call(operation, { tab: f.tab, ...(operation === "click" ? { ref: "main-ref" } : {}) });
-      if (operation === "click" || evidenceKind === "unusable") expect(during.error).toBeDefined();
-      else expect(during.result.framesOmitted).toBe(true);
-      expect(f.injected.some(doc => doc.endsWith(":click"))).toBe(false);
-      resolve(clean); // This response predates the metadata evidence just observed.
-      await tick();
-      f.frames(clean);
-      const after = (await f.call("snapshot", { tab: f.tab })).result;
-      expect(after.framesOmitted).toBe(true);
-      expect(after.elements.map((e: any) => e.ref)).toEqual(["next-main-ref"]);
-      expect(JSON.stringify(after)).not.toContain("PRIVATE_CHILD_SENTINEL");
-      // Stable repeated guards must not advance the action epoch/reference scope,
-      // even though each opaque/incomplete observation advances privacy evidence.
-      for (const frames of evidenceKind === "unusable" ? [clean] : [evidence, clean]) {
-        f.frames(frames);
-        for (let i = 0; i < 3; i++) {
-          expect((await f.call("snapshot", { tab: f.tab })).result.framesOmitted).toBe(true);
-          expect((await f.call("click", { tab: f.tab, ref: "next-main-ref" })).result.ok).toBe(true);
-        }
-      }
-      expect((await f.call("screenshot", { tab: f.tab })).error.reason).toBe("unsupported_frame");
-      expect((await f.call("wait_for", { tab: f.tab, condition: "text_absent", text: "PRIVATE_CHILD_SENTINEL", timeoutMs: 0 })).result.ok).toBe(false);
-      expect(f.injected.every(doc => doc.startsWith("next-main:"))).toBe(true);
-      // A genuinely later, clean new-document commit can still reset scope.
-      await new Promise(resolve => setTimeout(resolve, 5));
-      clean[0]!.documentId = "reset-main";
-      f.frames(clean);
-      f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 0, documentId: "reset-main", url: clean[0]!.url, timeStamp: Date.now() });
-      await tick();
-      const reset = (await f.call("snapshot", { tab: f.tab })).result;
-      expect(reset.framesOmitted).toBeUndefined();
-      expect(reset.frames).toHaveLength(2);
-      expect(reset.elements.some((e: any) => e.ref === "sibling-ref")).toBe(true);
-    }
-  }
-});
-
-test("adopted popup starts with conservative child uncertainty without relaxing adoption authority", async () => {
-  const f = await opaqueFrameFixture();
-  f.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: 1, tabId: 2, url: "https://auth.fixture.example/login" });
-  for (let i = 0; i < 20 && !f.port.messages.some((m: any) => m.type === "tabAdded"); i++) await tick();
-  const popup = f.port.messages.find((m: any) => m.type === "tabAdded").tab;
-  const partial = (await f.call("snapshot", { tab: popup })).result;
-  expect(partial.framesOmitted).toBe(true);
-  expect(partial.frames).toHaveLength(1);
-  expect(f.injected.every(doc => doc.startsWith("main:"))).toBe(true);
-  expect((await f.call("screenshot", { tab: popup })).error.reason).toBe("unsupported_frame");
-  // A genuine protected popup attempt still pauses; uncertainty is not consent.
-  f.chrome.webNavigation.onCreatedNavigationTarget.fire({ sourceTabId: 2, tabId: 3, url: "http://localhost:3100/PRIVATE" });
-  await tick();
-  expect(f.port.messages.some((m: any) => m.type === "pauseState" && m.reason === "popup_denied")).toBe(true);
-});
-
-test("opaque exclusion requires a canonical other-extension child URL; all sensitive boundaries stay denied", async () => {
-  for (const suffix of ["/", "/helper.html?fixture=1#section", "/encoded%20path.html"]) {
-    const f = await opaqueFrameFixture();
-    f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId: 2, url: `chrome-extension://${opaqueFixtureId}${suffix}` });
-    await tick();
-    expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
-  }
-  const denied = [
-    [0, opaqueFixtureURL], [-1, opaqueFixtureURL], [undefined, opaqueFixtureURL], ["2", opaqueFixtureURL], [1.5, opaqueFixtureURL],
-    [2, `chrome-extension://${jellyFixtureId}/popup.html`],
-    [2, `chrome-extension://${"a".repeat(31)}/helper.html`], [2, `chrome-extension://${"a".repeat(33)}/helper.html`],
-    [2, `chrome-extension://${"q".repeat(32)}/helper.html`], [2, `chrome-extension://${opaqueFixtureId.toUpperCase()}/helper.html`],
-    [2, `CHROME-EXTENSION://${opaqueFixtureId}/helper.html`],
-    [2, `chrome-extension://user:PRIVATE@${opaqueFixtureId}/helper.html`], [2, `chrome-extension://${opaqueFixtureId}:123/helper.html`],
-    [2, ` ${opaqueFixtureURL}`], [2, `${opaqueFixtureURL}\n`], [2, `chrome-extension://${opaqueFixtureId}/a/../helper.html`],
-    [2, `chrome-extension://${opaqueFixtureId}/bad%zz`], [2, `${opaqueFixtureURL}?${"x".repeat(2048)}`],
-    [2, "chrome://settings/PRIVATE"], [2, "chrome-error://chromewebdata/"], [2, "devtools://devtools/PRIVATE"],
-    [3, "http://localhost:3100/PRIVATE"],
-  ];
-  for (const [frameId, url] of denied) {
-    const f = await opaqueFrameFixture();
-    f.frames(f.opaqueTree());
-    f.chrome.webNavigation.onCommitted.fire({ tabId: 1, frameId, parentFrameId: 2, url });
-    await tick();
-    expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(true);
-    expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-    expect(f.injected).toEqual([]);
-    expect(JSON.stringify(f.port.messages)).not.toContain("PRIVATE");
-  }
-  const f = await opaqueFrameFixture();
-  const frames = f.opaqueTree();
-  frames[3]!.url = "http://localhost:3100/PRIVATE";
-  f.frames(frames); // Even missing a denial event cannot expose a forbidden descendant.
-  expect((await f.call("snapshot", { tab: f.tab })).error).toBeDefined();
-  expect(f.injected).toEqual([]);
-});
-
-test("ordinary late HTTPS auth child events revoke refs without creating a security pause", async () => {
-  for (const event of ["onCommitted", "onHistoryStateUpdated", "onReferenceFragmentUpdated"]) {
-    const f = await navigationFixture();
-    await f.call("snapshot", { tab: f.tab });
-    f.chrome.webNavigation[event].fire({ tabId: 1, frameId: 1, url: "https://challenge.fixture.example/auth#PRIVATE" });
-    await tick();
-    expect(f.port.messages.some((m: any) => m.type === "pauseState")).toBe(false);
-    expect((await f.call("click", { tab: f.tab, ref: "outside-ref" })).error.reason).toBe("stale_reference");
-    expect((await f.call("snapshot", { tab: f.tab })).result.text).toContain("Auth fixture");
-  }
+test("losing the native port detaches debuggers; the dead-man alarm detaches strays", async () => {
+  const f = await relay();
+  await f.ok("begin", { name: "Task" });
+  const tabId = (await f.ok("createTab")).tab.id;
+  await f.ok("attach", { tabId });
+  expect(f.alarms.get("jelly-debugger-deadman")?.periodInMinutes).toBe(0.5);
+  await f.alarm("jelly-debugger-deadman"); // connected: no-op
+  expect(f.browser.attachedTabs.has(tabId)).toBe(true);
+  f.port.onDisconnect.fire();
+  for (let i = 0; i < 50 && f.browser.attachedTabs.size; i++) await sleep(2);
+  expect(f.browser.attachedTabs.size).toBe(0);
+  expect((await f.rpc("status")).sessions).toEqual([]);
+  f.browser.attachedTabs.add(tabId); // a stray attachment
+  await f.alarm("jelly-debugger-deadman");
+  for (let i = 0; i < 50 && f.browser.attachedTabs.size; i++) await sleep(2);
+  expect(f.browser.attachedTabs.size).toBe(0);
 });
 
 test("auto-connect without popup is single flight, pending and opaque errors are visible", async () => {
@@ -652,7 +373,7 @@ test("auto-connect without popup is single flight, pending and opaque errors are
   f.paired();
   expect((await f.rpc("status")).sessions).toEqual([]);
 });
-test("Disconnect persists across recreation; legacy fragment/status never reconnect; grants rejected", async () => {
+test("Disconnect persists across recreation; legacy fragment/status never reconnect; unknown actions rejected", async () => {
   const f = await fixture();
   await f.rpc("disconnect");
   expect(f.local.connectionOptOut).toBe(true);
@@ -660,7 +381,6 @@ test("Disconnect persists across recreation; legacy fragment/status never reconn
   expect(next.ports).toHaveLength(0);
   expect((await next.rpc("status", "chrome-extension://fixture/popup.html#connect")).optedOut).toBe(true);
   expect(await next.rpc("grant")).toEqual({ error: "Unavailable" });
-  expect(await next.rpc("status")).not.toHaveProperty("candidates");
   next.chrome.runtime.onMessage.fire({ action: "connect" }, { id: "fixture", url: "https://example.com" }, () => { throw new Error("Untrusted RPC answered"); });
   await tick(); expect(next.ports).toHaveLength(0);
   await next.rpc("connect");
@@ -700,18 +420,23 @@ test("Disconnect fences connect awaiting initialization, and stale handshake ala
   f.paired();
   expect((await f.rpc("status")).connected).toBe(true);
 });
-test("unresolved old debugger obligations block automatic pairing and retry without restoring leases", async () => {
-  const f = await fixture({ connectionOptOut: true }, { debuggerCleanupVersion: 1, debuggerCleanup: [7] });
-  // Install a fresh cleanup-only obligation through the same persisted startup seam.
-  f.chrome.debugger.detach = async () => { throw new Error("fixture detach failed"); };
-  f.chrome.debugger.getTargets = async () => [{ tabId: 7, attached: true }];
-  // Use a suspended initial read so the failure is present during reconciliation.
+test("persisted debugger obligations are detached at startup; unresolved ones block automatic pairing", async () => {
+  // Resolvable: detached on worker start, then pairing proceeds.
   let release!: () => void;
-  const ready = new Promise<void>(resolve => { release = resolve; });
-  const blocked = await fixture({}, { debuggerCleanupVersion: 1, debuggerCleanup: [7] }, ready);
-  blocked.chrome.debugger.detach = f.chrome.debugger.detach;
-  blocked.chrome.debugger.getTargets = f.chrome.debugger.getTargets;
-  release(); await tick(); await tick();
+  let ready = new Promise<void>(resolve => { release = resolve; });
+  const clean = await fixture({}, { debuggerCleanup: [7] }, ready);
+  clean.browser.attachedTabs.add(7);
+  clean.browser.tabs.set(7, { id: 7, windowId: 1, url: "", title: "", active: false, groupId: -1, lastAccessed: 0, pinned: false });
+  release(); await sleep(20);
+  expect(clean.browser.attachedTabs.has(7)).toBe(false);
+  expect(clean.session.debuggerCleanup).toEqual([]);
+  expect(clean.ports).toHaveLength(1);
+  // Unresolvable: detach fails while the target still reports attached.
+  ready = new Promise<void>(resolve => { release = resolve; });
+  const blocked = await fixture({}, { debuggerCleanup: [7] }, ready);
+  blocked.chrome.debugger.detach = async () => { throw new Error("fixture detach failed"); };
+  blocked.chrome.debugger.getTargets = async () => [{ tabId: 7, attached: true }];
+  release(); await sleep(20);
   expect(blocked.ports).toHaveLength(0);
   const status = await blocked.rpc("status");
   expect(status).toMatchObject({ connectionError: "cleanup-required", unresolvedDebuggerCleanup: 1, sessions: [] });
@@ -721,15 +446,14 @@ test("unresolved old debugger obligations block automatic pairing and retry with
   expect(blocked.ports).toHaveLength(1);
 });
 
-test("v8 automatic connection refuses v7 pairing without fallback", async () => {
+test("v9 automatic connection refuses v8 pairing without fallback", async () => {
   const f = await fixture();
-  expect(f.ports[0].messages[0].version).toBe(8);
-  f.ports[0].onMessage.fire({ type: "paired", version: 7, capabilities: CHROME_METHODS,
-    generation: f.ports[0].messages[0].generation, instance: "old-server" });
+  expect(f.ports[0].messages[0].version).toBe(9);
+  f.paired(f.ports[0], "paired", 8);
   await tick();
   expect(await f.rpc("status")).toMatchObject({ connected: false, connectionError: "protocol-error", sessions: [] });
   await f.alarm("jelly-connect-retry");
-  expect(f.ports[1].messages[0].version).toBe(8);
+  expect(f.ports[1].messages[0].version).toBe(9);
 });
 test("pending private pairing loss never publishes or reclaims sessions; old pending handback is fenced", async () => {
   const f = await fixture();
@@ -742,4 +466,10 @@ test("pending private pairing loss never publishes or reclaims sessions; old pen
   expect(await f.rpc("status")).toMatchObject({ connected: false, pending: true, sessions: [] });
   f.paired();
   expect(await f.rpc("status")).toMatchObject({ connected: true, sessions: [] });
+});
+test("requests with a stale instance or generation drop the connection", async () => {
+  const f = await relay();
+  f.port.onMessage.fire({ jsonrpc: "2.0", id: "x", instance: "other", generation: f.port.messages[0].generation, session: "s", run: "r", method: "listTabs", params: {} });
+  await tick(); await tick();
+  expect(await f.rpc("status")).toMatchObject({ connected: false, connectionError: "protocol-error" });
 });

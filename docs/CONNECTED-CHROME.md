@@ -103,70 +103,49 @@ No Chrome restart, remote-debugging port, profile copy or cookie migration is
 needed. Browser-on-laptop/Jelly-on-server needs a separate authenticated remote
 transport; local native messaging cannot bridge machines.
 
-## Tasks, tools and user tabs
+## How agents drive Chrome (Codex-style, protocol v9)
 
-- `browser_name_task` gives groups a short task label:
-  `🔎 Jelly · Agent · Task`. Agent colors are stable; groups are per task/window.
-  New task tabs are background tabs. Use Computer control to select a tab on the
-  remote computer. Human regrouping/group deletion never transfers a lease.
-- `browser_open`, `browser_tabs`, `browser_snapshot`, `browser_screenshot`, exact
-  `browser_click`/`browser_fill`, bounded `browser_scroll`, `browser_select`,
-  referenced `browser_key` and `browser_wait_for` are supported. Keys are semantic
-  button activation or element-scoped key events, not OS/global shortcuts or
-  trusted general keyboard emulation. Native controls use DOM click activation;
-  custom `role="button"` controls receive an exact-element synthetic pointer/mouse
-  press/release sequence before the click (including Enter/Space activation).
-  This supports mouse-up-driven toolbars without arbitrary coordinates, selectors,
-  or trusted-input emulation. The outer control owns the reference; `aria-label`
-  labels icon-only controls. Disabled/inert controls are rejected, references are
-  consumed before dispatch, and target safety is rechecked between events. An
-  `ok` response confirms dispatch, **not** application success: verify the visible
-  outcome and never automatically replay a destructive action. Select takes an
-  option value; snapshots do not expose selected form values. Waits support bounded visible text,
-  untruncated text absence, or DOM readiness, never arbitrary evaluation.
-- Snapshots combine bounded visible text and exact references from authorized
-  same-process and cross-site/OOPIF documents. References bind to connection,
-  session, tab, document and observation epochs. Frame origins need no site grant.
-  If hidden/clipped, inherited or srcdoc frames prevent complete frame-tree
-  inspection, text observations fall back to the **main document only**. All
-  child documents (including visible siblings) are omitted, rather than guessed
-  from URLs or inspected using their own viewport. Snapshots report
-  `framesOmitted` and an explanatory notice; references to omitted child frames
-  cannot be acted on. Changes to observation scope invalidate old references,
-  and pre/post checks discard results whose scope changed during collection.
-  Object/embed still fails closed. For author shadow roots (open or closed),
-  text observations omit each host and its entire subtree, including slotted
-  light-DOM content, without traversing the root. They report `shadowRootsOmitted`
-  and a partial-content notice. Controls containing a shadow host are also not
-  actionable. All child frames are omitted when shadow content prevents complete
-  frame visibility checks. The isolated extension uses Chrome's
-  `chrome.dom.openOrClosedShadowRoot` on a bounded light-DOM scan; missing API
-  support fails closed. Changing shadow-host scope invalidates old references.
-  An exact target must remain rooted in the admitted document's light DOM:
-  moving it into an existing open or closed root blocks its action even when
-  the shadow-host set is unchanged. All exact inputs consume references before
-  the first mutation/event and recheck omission, origin, sensitive/disabled state
-  and operation eligibility between events. A refused multi-event input may
-  already have changed a field or triggered a handler; re-observe rather than
-  replaying it. Secret fields in included light DOM still block observation. Excluded content is never
-  returned or given actionable references. Text-absence waits cannot succeed on
-  partial frame/shadow observations; a timeout is not proof of absence. Actions
-  cannot use another document's/agent's stale reference.
-- Screenshots return PNG tool image content, never base64 text in model output.
-  Screenshots never use the main-document-only fallback: unobservable or inherited
-  frames, detected secret/nonempty/contenteditable fields or any author shadow
-  root are rejected. Stable closed-root fields cannot bypass these guards;
-  transient rendering/capture races remain a separate, unresolved rollout gate.
-  Large images fail at the bounded cap rather than exporting to disk.
-- Each agent automatically controls its own Jelly-created task tabs and groups on
-  any website. No individual tab-grant workflow exists. Personal tabs and
-  other agents’ tabs cannot be claimed, even by hidden popup RPCs. Group membership is
-  organization, not authority; reconnect never reclaims stale groups, tabs or capabilities.
-- Popups are adopted only from an exclusively leased opener during an authorized
-  run, after installing policy and checking the destination. Adopted popups get
-  fresh capabilities and task groups; protected-destination/failed popup adoption pauses the
-  task and does not disclose its content. **Chrome can start popup networking
-  before its creation notification**; see the rollout gate below.
+Connected Chrome works the same way as OpenAI Codex's Chrome plugin; the design
+and constants are in `plans/codex-style-browser.md`.
+
+- **Agent surface:** one `browser_js` tool, a persistent JavaScript REPL per
+  agent (`src/server/browser/repl*.ts`) with a ready `browser` global. Agents
+  batch actions and read state once per call: `await tab.ax.click(12);
+  await tab.ax.setValue(7, "x"); await tab.ax.write();`. The API reference is the
+  tool description (`src/server/browser/repl-docs.ts`). Also kept:
+  `browser_reconnect`, `request_browser_login` (optional human sign-in handoff)
+  and `request_browser_recovery`.
+- **Observation:** `tab.ax.write()` renders the page's accessibility tree,
+  captured with CDP `Accessibility.getFullAXTree` for every frame (OOPIFs
+  through flattened auto-attach), joined with `DOMSnapshot`, and turned into
+  VoiceOver-style indexed lines (`src/server/browser/ax-render.ts`). Element
+  indices are stable across captures and never reused. Later captures return a
+  diff (`~` changed, `+` added, removed id ranges) when that saves at least
+  1000 characters and 30%; an unchanged page returns one line. Open shadow DOM
+  and every frame are included.
+- **Settling:** actions return immediately. The next capture waits on CDP
+  events: about 25 ms to detect a navigation, up to 5 s each for commit and
+  first paint, then 50–100 ms of accessibility quiet (capped at 750 ms), plus a
+  DOM-versus-AX lag probe.
+- **Input:** real CDP input. Clicks hit-test the visible centre of the element
+  (shadow- and label-aware, scroll into view, geometry-stable check), then
+  dispatch mouse events, falling back to `el.click()` if the element is covered.
+  `typeText` sends key events per character in one `cdpBatch`. `setValue`
+  uses native setters plus input/change events. Keys use xdotool syntax, the
+  clipboard is virtual, and coordinates are CSS pixels that match screenshots
+  (JPEG q80).
+- **Tabs:** agent tabs open in the background in the session's tab group, with
+  focus emulation, and never steal focus. Popups from leased tabs join the
+  session automatically. User tabs can be listed and claimed. At turn end,
+  unmarked agent tabs close, claimed tabs are released, `markDeliverable()`
+  tabs are kept and ungrouped, and `markHandoff()` tabs are kept for the next run.
+- **Full control:** by owner decision there are no page-level refusals,
+  credential redaction, protected-origin blocks or navigation-policy pauses.
+  Agents may type passwords and OTPs, complete CAPTCHAs, send any key, click
+  coordinates, run page JavaScript (`tab.evaluate`), send raw CDP
+  (`tab.cdp.send`) and call `chrome.*` management APIs (`browser.chrome.*`:
+  tabs, windows, tabGroups, bookmarks, history, downloads, sessions, topSites,
+  cookies).
 
 ## Human use, sign-in and settlement
 
@@ -282,6 +261,67 @@ and/or completion of the relevant private handback may be required; the agent
 tool cannot manufacture that consent. Advanced idle-only **Close session** remains
 for operator repair and intentional profile changes, not routine
 agent-session recovery.
+
+### Agent-requested, human-confirmed session retirement
+
+For a security-paused session, **`request_browser_recovery`** requests a scoped
+Jelly card and waits (at most the intervention lifetime, normally ten minutes).
+It cannot approve itself. A notification, chat instruction, or general tool
+pre-authorization is **not human confirmation**. Only the human clicking
+**Confirm session retirement** on the exact card through Jelly's existing private
+operator cookie/CSRF boundary can authorize retirement. Reject, Stop, expiry,
+shutdown and restart never authorize it. No confirmation credential or approval
+parameter is provided to the model. Never repair or approve through shell/API
+calls, editing session/pairing state, disabling guards, or replaying actions.
+
+The card identifies the exact agent, requesting run, session, cleanup-authority
+run, pinned profile, old and currently paired generations, and pause revision.
+Confirmation consumes that request once, fences browser admission, drains
+previously admitted operations (not the waiting request tool), and rechecks the
+binding and cancellation before and after cleanup. New pauses, native handoffs,
+settlement, changed pairing, wrong identities and racing confirmations fail
+closed. Failed/uncertain cleanup retains blocked authority for existing operator
+repair. The ordinary idle-only Close control remains unchanged.
+
+For a connected task, retirement requires the authenticated exact-identity
+`end(discard:true)` acknowledgement with no retained capabilities. Temporary
+task tabs may close; personal/released tabs are not reclaimed or closed. For a
+genuinely lost task, only its backend identity is retired, and **old tabs may
+remain**. That path requires a freshly paired same-profile generation: extension
+startup/reconnect must finish persisted debugger cleanup before sending its hello,
+and bridge admission must still be enabled. Missing transport, elapsed time or a
+revoked profile is not enough; unresolved debugger obligations prevent pairing.
+No old-generation acknowledgement is fabricated.
+
+No approval handler creates a replacement session. A subsequent ordinary,
+authorized browser action may allocate a fresh empty identity on the same pinned
+profile. Old tabs/references are never restored, and no navigation/input is
+replayed. Reopen the desired page, take a new snapshot, and verify interrupted
+outcomes rather than repeating an unconfirmed action. Tool progress distinguishes
+`requested` and `awaiting_human`; terminal results are `approved_closed` (with
+connected-close or lost-retirement disposition), `rejected`, `cancelled`, `stale`
+or `failed`. Only `approved_closed` establishes successful retirement.
+
+Sign-in requests and native-private handoffs must finish through their own
+controls; generic recovery cannot clear them. Advisory `humanUsing` alone is not
+a privacy lock and is not cleared by retirement. The human must consider unsaved
+task work before confirming. Protected destinations, secret-field guards,
+pairing/revocations and other agents' sessions are unchanged.
+
+This uses the existing operator-control trust boundary, not cryptographic proof
+of human presence or a sandbox against a hostile process with unrestricted
+same-user shell/filesystem access. Agents must not obtain operator credentials
+or call confirmation routes. Raw URLs, browser errors and secrets are not recovery
+diagnostics. This feature does not fix a navigation root cause or prove that an
+extension update was loaded. Rollout/restart is not recovery confirmation or a
+cure for a security fault. If the affected paused task remains, it still needs a
+fresh request and explicit human confirmation (or its existing handoff/operator
+repair). Existing server shutdown/restart semantics are unchanged: task identities
+and profile pins are in-memory, shutdown settles/clears them, and restart does not
+restore them. Pending requests/continuations are interrupted, never replayed or
+auto-approved. If old task identities are gone, fresh ordinary allocation still
+requires the existing extension cleanup, pairing/revocation and privacy safeguards;
+old tabs/references are never restored. No durable pause ledger is added.
 
 Startup reconciles only cleanup: detach this extension's old
 sessions and remove its stale per-tab rules; never close/reclaim leftover tabs.
@@ -720,56 +760,27 @@ existing profile and attested login-keyring daemon, not capture of those existin
 GNOME/Wayland dialogs. Actual owner setup/relaunch/authentication remains private
 operator work after review; tests never perform it.
 
-## Security boundary and remaining rollout gates
+## Transport and trust boundary
 
-Protocol v7 has schema-validated methods/identities, explicit pinned site-access mode, pairing grant, extension ID,
-instance/profile/connection generation binding, bounded pending requests and event
-rates. Pause progress/failure/acknowledgement events also bind to the current run.
-Older protocol versions are rejected: reload the unpacked extension when idle
-after updating Jelly, then reconnect explicitly; no old capability is restored.
-Native frames use a 32-bit little-endian length (supported Linux machines
-are LE) with a **768 KiB** ceiling, below Chrome's 1 MiB limit; PNG base64 is capped
-at **650,000 characters**. Slow readers time out; no mutation is retried. There is
-no artifact chunking. Native stdout is frames only; diagnostics omit grants/page
-content. Owner-only sockets/configuration are an OS-user boundary, not a sandbox
-against unrestricted same-user shell/filesystem access.
+The extension (`extensions/chrome/worker.js`) is a thin CDP relay. It handles
+`attach`, `cdp`, `cdpBatch` and `chrome`, manages tabs, leases and groups, and
+forwards `cdpEvent`, `cdpDetach`, `tabAdded` and `tabRemoved`. Requests run
+concurrently, with attach/detach serialised per tab and lifecycle calls
+serialised per session. CDP commands time out after 10 s by default without
+detaching. A per-request bridge timeout rejects only that request and never
+drops the connection. Errors carry the real message.
 
-Permissions: nativeMessaging, debugger, tabs, tabGroups, storage, scripting,
-webNavigation, declarativeNetRequest, HTTP and HTTPS hosts. Packaged isolated-world scripts
-and document/lease/control-endpoint checks implement observations/input, including OOPIFs;
-CDP is internal for debugger lifecycle/screenshots. There are no page/content-
-script control RPCs, arbitrary eval/CDP tools, cookie/password/autofill/browser-
-storage reads, history/bookmarks tools or network response bodies.
+A 30 s dead-man alarm detaches every debugger when Jelly is not connected.
+Frames: requests from Jelly are limited to 1 MiB (Chrome's native-messaging
+limit); messages from Chrome may be up to 32 MiB. Pairing, the instance and
+generation envelope, freeze/unfreeze for native handoffs, and pause/resume are
+unchanged.
 
-Agent tab DNR protections are installed before first navigation. All websites,
-including local/private services, are accessible without an allowlist. Exact
-Jelly/control destinations, credential-bearing URLs and non-web schemes are
-blocked for main documents, redirects and subresources. This is **not managed
-SOCKS egress isolation**. Outstanding signed-in rollout risks include:
-
-- Pre-notification popup traffic and service-worker/background requests without
-  tab association; DNS rebinding/public aliases and sensitive control endpoints.
-- Transient render/secret-field races during screenshots, unusual embedded
-  documents and every debugger attach/takeover interleaving. Stable author shadow
-  roots now fail closed, including closed roots; this does not prove atomic capture.
-  Pre/post guards and drain barriers reduce risk but are not a proof against
-  hostile pages rendering secrets between samples.
-- Live tab replacement/prerender activation and full browser/server restart
-  matrix (the headed suite exercises actual worker-target termination/reconnect
-  and native bridge listener restart, not every application/update/restart mode). Automatic Chrome suspension with a native port
-  is browser-version dependent.
-- Child browser identities: **unavailable**, not parent tools. Full Pi SDK and
-  extension docs and pi-subagents child launch boundary were inspected. Detached
-  children load allowlisted providers in another process; parent's customTools
-  are not a safe provisioning channel. A reviewed authenticated per-child IPC
-  adapter with lifecycle revocation is still needed. All **persistent Jelly
-  agents** share the global choice; this does not silently grant subagents access.
-
-Separate deferred work: reviewed upload/download artifact protocol and chunking,
-remote authenticated transport, side-panel chat/cursor overlays, automatic
-updates, Windows installation and public Web Store distribution/signing.
-No normal-profile cookie/login settings are changed. No claim is made that this
-extension prevents every site-initiated download.
+Permissions: nativeMessaging, alarms, debugger, tabs, tabGroups, storage,
+webNavigation, bookmarks, history, downloads, sessions, topSites, cookies, and
+HTTP/HTTPS hosts. The agent has the same reach as anyone driving that Chrome
+profile with DevTools. The OS-user boundary (owner-only socket and pairing
+file) is the only isolation.
 
 ## Validation
 

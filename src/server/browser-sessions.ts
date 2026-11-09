@@ -1,18 +1,15 @@
 import type { ChromeSessions } from "./chrome-sessions";
+import type { BrowserEngine } from "./browser/engine";
 import type { ChromeSelection } from "../shared/chrome-protocol";
+import type { BrowserRecoveryBinding, BrowserRecoveryResult } from "../shared/browser-recovery";
 
-export type ConnectedBrowserMethod =
-  | "open"
-  | "name"
-  | "snapshot"
-  | "screenshot"
-  | "click"
-  | "fill"
-  | "select"
-  | "key"
-  | "wait_for"
-  | "scroll"
-  | "tabs";
+/** Server-only continuation, never serialized or exposed as an agent tool. */
+export interface BrowserRecovery {
+  binding: BrowserRecoveryBinding;
+  check(): void;
+  close(signal: AbortSignal): Promise<BrowserRecoveryResult>;
+  release(): void;
+}
 
 export interface BrowserPort {
   target?: "chrome";
@@ -20,12 +17,9 @@ export interface BrowserPort {
     status: "reconnected" | "already_connected";
     message: string;
   }>;
-  keepTab?: (mark?: "deliverable" | "handoff") => Promise<unknown>;
-  action(
-    method: ConnectedBrowserMethod,
-    params?: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<unknown>;
+  prepareRecovery?: () => BrowserRecovery;
+  /** Codex-style engine driving this agent's Connected Chrome session. */
+  engine: Pick<BrowserEngine, "execute">;
   reserveLogin(id: string, url: string, signal?: AbortSignal): Promise<unknown>;
   cancelLogin(id: string): void;
 }
@@ -47,7 +41,13 @@ export class BrowserSessions {
       get: (id) => {
         if (id !== agent)
           throw new Error("Child/foreign Chrome browser access is unavailable.");
+        // Only an acknowledged human recovery may retire a port during a run.
+        if (port && this.chrome.recoveryRetired(port)) {
+          port = undefined;
+        }
         if (!port) {
+          // Allocation can fail after retirement; every retry needs fresh authority.
+          assertReconnectAllowed?.();
           port = this.chrome.allocate(agent, run, selected, name, assertReconnectAllowed);
           this.pins.set(agent, selected);
         }

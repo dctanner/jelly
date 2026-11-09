@@ -138,7 +138,12 @@ test("Done and cancellation notify only bound sign-in requests, even after disco
   const profile = crypto.randomUUID(), generation = crypto.randomUUID();
   chrome.bridge.profiles = () => [{ id: profile, generation, connected: true, desktopAvailable: true }];
   chrome.bridge.desktop = () => ({ available: true, display: ":3999", auth: "/synthetic" });
-  chrome.bridge.call = async (_p, _g, _s, _r, method) => method === "open" ? { pageId: "tab" } : { ok: true };
+  chrome.bridge.call = async (_p, _g, _s, _r, method) =>
+    method === "begin" ? { ok: true, tabs: [] }
+    : method === "end" ? { ok: true, retained: [] }
+    : method === "createTab" ? { tab: { id: 1, title: "", url: "about:blank", windowId: 1, active: true, origin: "agent", mark: null } }
+    : method === "listTabs" ? { tabs: [] }
+    : { ok: true };
   const originalStop = (share as any).stopCapture.bind(share);
   try {
     const auth = await fetch(new URL("/api/control-session", app.server.url));
@@ -161,7 +166,8 @@ test("Done and cancellation notify only bound sign-in requests, even after disco
     Object.assign(share, { stopCapture: async () => { throw new Error("uncertain native cleanup"); } });
     expect((await post("chrome/share/release", { generation: share.state().generation })).status).toBe(409);
     expect(await first.promise).toMatchObject({ completed: true, message: expect.stringContaining("finished") });
-    expect(await browser.action("snapshot")).toMatchObject({ humanUsing: false });
+    expect(chrome.state(agent.id).task?.humanUsing).toBe(false);
+    expect(await browser.engine.execute("tabs.list", {})).toEqual([]);
     const second = request();
     await browser.reserveLogin(second.request.id, "https://example.com");
     // Cleanup retry is not a completion action for a request created afterward.
@@ -172,7 +178,7 @@ test("Done and cancellation notify only bound sign-in requests, even after disco
     chrome.bridge.onLoss(profile);
     expect((await post("chrome/done", { agentId: agent.id, handoff: second.request.id })).status).toBe(200);
     expect(await second.promise).toMatchObject({ completed: true });
-    await expect(browser.action("snapshot")).rejects.toThrow("expired");
+    await expect(browser.engine.execute("tabs.list", {})).rejects.toThrow("expired");
     const third = request();
     // Simulate retained status in a disconnected/inactive session, not authority.
     (chrome as any).tasks.get(agent.id).handoff = third.request.id;

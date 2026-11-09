@@ -1807,7 +1807,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
                               event.data.name ===
                                 (entry.item.kind === "sudo"
                                   ? "request_sudo"
-                                  : entry.item.kind === "desktop_handoff" ? "request_desktop_handoff" : "request_browser_login"),
+                                  : entry.item.kind === "desktop_handoff" ? "request_desktop_handoff" : entry.item.kind === "browser_recovery" ? "request_browser_recovery" : "request_browser_login"),
                           )}
                           onChange={() => void refresh.current()}
                         />
