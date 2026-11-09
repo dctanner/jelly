@@ -151,13 +151,16 @@ test("JS confirm dialogs render as a synthetic tree and are handled by index", a
 test("scroll, screenshots in CSS pixels, and diffs on link-heavy pages", async () => {
   const tab = (await h("tabs.new", { url: `${base}/form` })).id;
   await state(tab);
-  const vp = await h("tab.evaluate", { tab, expression: "({w: innerWidth, h: innerHeight})" });
+  // Match the CSS visual viewport: non-overlay scrollbars occupy part of
+  // innerWidth/innerHeight on Linux, but are not part of the captured page.
+  const vp = await h("tab.evaluate", { tab, expression: "({w: Math.round(visualViewport.width), h: Math.round(visualViewport.height)})" });
   await act(tab, { kind: "scroll", target: [100, 100], direction: "down", pages: 1 });
   await Bun.sleep(200);
   expect(await h("tab.evaluate", { tab, expression: "scrollY" })).toBeGreaterThan(100);
   const shot = await h("tab.screenshot", { tab });
   expect(shot.mimeType).toBe("image/jpeg");
   expect(shot.width).toBe(vp.w);
+  expect(shot.height).toBe(vp.h);
   expect(Buffer.from(shot.data, "base64").subarray(0, 2).toString("hex")).toBe("ffd8");
   await h("tab.goto", { tab, url: `${base}/list` });
   const list = await state(tab);

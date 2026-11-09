@@ -369,7 +369,11 @@ export class Harness {
   async freshCheckpoint(session: AgentSession) {
     // The same public entry point as Pi /compact; it shares the native summary
     // generator and extension hooks with automatic context-full compaction.
-    const messages = session.sessionManager.buildSessionContext().messages;
+    // Pi includes the rendered system prompt in context, but never summarizes
+    // it. Count only conversation messages when choosing the retained budget.
+    const messages = session.sessionManager.buildSessionContext().messages.filter(
+      (message) => message.role !== "system",
+    );
     const settings = session.settingsManager.getCompactionSettings(session.model);
     if (messages.reduce((sum, message) => sum + estimateTokens(message), 0) <= settings.keepRecentTokens)
       session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 0 } });

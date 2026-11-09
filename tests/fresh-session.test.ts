@@ -1,10 +1,11 @@
 import { unavailableClaudeStatus } from "./fixtures/claude-code";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { startApp } from "../src/server/app";
+import { effectiveCwd } from "../src/server/directories";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -204,6 +205,25 @@ async function until(predicate: () => boolean) {
   }
   throw new Error("Fixture did not reach expected state");
 }
+
+for (const mode of ["api", "chatgpt"] as const)
+  test(`Fresh Session excludes large rendered system prompts from its retained-history budget (${mode})`, async () => {
+    const f = await fixture(mode);
+    const cwd = effectiveCwd(f.app.store.agent(f.id)!);
+    const marker = "Large fixture-only system prompt; summarize conversation history, not this prefix. ";
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "APPEND_SYSTEM.md"), marker.repeat(1600));
+    await f.seed();
+    expect(JSON.stringify(f.requests[0])).toContain(marker);
+    const { run } = f.app.service.freshSession(f.id, crypto.randomUUID());
+    await f.app.service.settled();
+    expect(f.app.store.run(run.id)).toMatchObject({ status: "completed", error: null });
+    expect(f.requests).toHaveLength(2);
+    expect(JSON.stringify(f.requests[1])).toContain("Remember: the lantern must be blue.");
+    expect(f.app.store.context(f.id)!.find((entry) => entry.type === "compaction")).toMatchObject({
+      summary: expect.stringContaining("lantern-checkpoint"),
+    });
+  });
 
 for (const mode of ["api", "chatgpt"] as const)
   test(`Fresh Session uses native Pi compaction (${mode}), rotates the session, preserves history and resumes after restart`, async () => {
