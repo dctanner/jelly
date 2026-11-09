@@ -749,3 +749,29 @@ dialog.todo-sheet .todo-editor.todo-editor .todo-note-input {
     color: var(--todo-tint-text, var(--accent));
   }
 }
+
+/* Todos destination count: a small notification badge offset onto the
+   top-right of the tab's label, rather than inline text. */
+.destination-label {
+  position: relative;
+  display: inline-block;
+}
+.destination-badge {
+  position: absolute;
+  bottom: calc(100% - 9px);
+  left: calc(100% + 1px);
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #ff453a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}

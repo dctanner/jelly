@@ -2185,7 +2185,7 @@ export function App() {
   const viewing = location.destination === "viewer" && !!location.appId;
   const destinationNavigation = !viewing && <nav className="destination-navigation" aria-label="Jelly destinations">
     <a href="/agents" aria-current={location.destination === "agents" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("agents"); } }}>Agents</a>
-    <a href="/todos" aria-current={location.destination === "todos" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("todos"); } }}>Todos{workspace?.humanTodoCounts?.total ? ` · ${workspace.humanTodoCounts.total}` : ""}</a>
+    <a href="/todos" aria-current={location.destination === "todos" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("todos"); } }}><span className="destination-label">Todos{!!workspace?.humanTodoCounts?.total && <span className="destination-badge"><span className="sr-only">, </span>{workspace.humanTodoCounts.total > 99 ? "99+" : workspace.humanTodoCounts.total}<span className="sr-only"> open</span></span>}</span></a>
     <a href="/apps" aria-current={location.destination === "apps" ? "page" : undefined} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate("apps"); } }}>Apps</a>
   </nav>;
   return <div className="jelly-destinations" data-destination={location.destination} ref={shell}>
