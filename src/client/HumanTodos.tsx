@@ -20,7 +20,6 @@ import { requestId } from "./request-id";
 import { Modal } from "./Modal";
 import { GoalsPanel } from "./Goals";
 import { Avatar } from "./Avatar";
-import { ChatFormActions, ChatFormCard } from "./ChatFormCard";
 import "./HumanTodos.css";
 
 function creationAge(value: string) {
@@ -1028,6 +1027,55 @@ export function AgentNeedsYou({
     </div>
   );
 }
+// Shared live todo reads for chat rows. One request per todo, refreshed on
+// todo invalidation, so many transcript rows never fan out duplicate fetches.
+const chatTodoCache = new Map<string, Promise<HumanTodo | null>>();
+function useChatTodo(id: string) {
+  const revision = useTodoRevision();
+  const [todo, setTodo] = useState<HumanTodo | null | undefined>(undefined);
+  useEffect(() => {
+    let stale = false;
+    const key = `${id}:${revision}`;
+    if (!chatTodoCache.has(key)) {
+      chatTodoCache.set(
+        key,
+        api<HumanTodoDetail>(path(id))
+          .then((detail) => detail.todo)
+          .catch(() => null),
+      );
+      for (const old of chatTodoCache.keys())
+        if (old.startsWith(`${id}:`) && old !== key) chatTodoCache.delete(old);
+    }
+    void chatTodoCache.get(key)!.then((value) => {
+      if (!stale) setTodo(value);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [id, revision]);
+  return todo;
+}
+function chatTodoLabel(event: import("../shared/types").Activity) {
+  if (event.type === "message") return "You marked this done and told the agent";
+  const status = event.data.status;
+  switch (event.data.action) {
+    case "create":
+      return "Added to your todos";
+    case "complete":
+      return "Marked done";
+    case "delete":
+      return "Deleted";
+    default:
+      return status === "open"
+        ? "Reopened"
+        : status === "done"
+          ? "Marked done"
+          : status === "cancelled"
+            ? "Won’t do"
+            : "Updated";
+  }
+}
+
 export function HumanTodoActivity({
   event,
 }: {
@@ -1040,23 +1088,124 @@ export function HumanTodoActivity({
     event.type === "human_todo_continuation_changed"
   )
     return null;
+  const id = String(event.data.todoId ?? "");
+  if (!id) return null;
+  // Creation shows the live item; later changes are one quiet line.
+  if (event.type === "human_todo_changed" && event.data.action === "create")
+    return <ChatTodo id={id} label={chatTodoLabel(event)} />;
+  return <ChatTodoUpdate id={id} label={chatTodoLabel(event)} />;
+}
+
+function ChatTodoUpdate({ id, label }: { id: string; label: string }) {
+  const todo = useChatTodo(id);
   return (
-    <ChatFormCard
-      icon={<ListTodo size={16} />}
-      title={
-        event.data.source === "human_todo"
-          ? "Human-requested follow-up"
-          : "Human todo"
-      }
-      status={String(
-        event.data.status ?? event.data.action ?? "Explicit continuation",
-      )}
+    <button
+      type="button"
+      className="chat-todo-update"
+      onClick={() => openTodo(id)}
+      aria-label={`${label}${todo ? `: ${todo.title}` : ""}. Open todo`}
     >
-      <ChatFormActions>
-        <button onClick={() => openTodo(String(event.data.todoId))}>
-          Open todo
+      {/done|told/i.test(label) ? (
+        <CircleCheck size={14} aria-hidden="true" />
+      ) : (
+        <ListTodo size={14} aria-hidden="true" />
+      )}
+      <span>{label}</span>
+      {todo && <strong>{todo.title}</strong>}
+    </button>
+  );
+}
+
+/** A todo row in the transcript: the live item, styled like the Todos list. */
+function ChatTodo({ id, label }: { id: string; label: string }) {
+  const todo = useChatTodo(id);
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const [requests] = useState(() => new Map<string, string>());
+  const status = todo?.deletedAt ? "deleted" : (todo?.status ?? "open");
+  async function toggle() {
+    if (!todo || todo.deletedAt || busy) return;
+    const key = `${todo.id}:${todo.revision}`;
+    if (!requests.has(key)) requests.set(key, requestId());
+    setBusy(true);
+    setError("");
+    try {
+      if (todo.status === "open")
+        await control(path(todo.id) + "/complete", {
+          requestId: requests.get(key),
+          expectedRevision: todo.revision,
+        });
+      else
+        await api(path(todo.id), {
+          method: "PATCH",
+          body: JSON.stringify({
+            requestId: requests.get(key),
+            expectedRevision: todo.revision,
+            status: "open",
+          }),
+        });
+      changed();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="chat-todo" data-status={status}>
+      <span className="chat-todo-label">
+        <ListTodo size={13} aria-hidden="true" />
+        {label}
+      </span>
+      <div className="chat-todo-row">
+        <button
+          type="button"
+          className="todo-check"
+          disabled={!todo || !!todo.deletedAt || busy}
+          aria-label={
+            todo
+              ? status === "open"
+                ? `Done: ${todo.title}`
+                : `Reopen: ${todo.title}`
+              : "Todo loading"
+          }
+          title={status === "open" ? "Mark done" : "Reopen"}
+          onClick={() => void toggle()}
+        >
+          <span>
+            {status === "done" ? (
+              <Check size={14} strokeWidth={3} />
+            ) : status === "cancelled" || status === "deleted" ? (
+              <X size={14} strokeWidth={3} />
+            ) : null}
+          </span>
         </button>
-      </ChatFormActions>
-    </ChatFormCard>
+        <button
+          type="button"
+          className="chat-todo-copy"
+          aria-label={`Open todo${todo ? `: ${todo.title}` : ""}`}
+          onClick={() => openTodo(id)}
+        >
+          <strong>
+            {todo === undefined
+              ? "Loading todo…"
+              : todo === null
+                ? "Todo unavailable"
+                : todo.title}
+          </strong>
+          {todo?.body && <span className="todo-body">{todo.body}</span>}
+          {todo && (status === "cancelled" || status === "deleted") && (
+            <span className="chat-todo-state">
+              {status === "cancelled" ? "Won’t do" : "Deleted"}
+            </span>
+          )}
+        </button>
+      </div>
+      {error && (
+        <p className="chat-todo-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

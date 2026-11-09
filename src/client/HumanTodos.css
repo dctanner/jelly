@@ -196,7 +196,8 @@
   right: 0;
   border-top: 1px solid var(--border);
 }
-.human-todos .todo-check {
+.human-todos .todo-check,
+.chat-todo .todo-check {
   flex: 0 0 44px;
   display: grid;
   place-items: center;
@@ -220,15 +221,18 @@
   transform: scale(0.88);
 }
 @media (hover: hover) {
+  .chat-todo[data-status="open"] .todo-check:not(:disabled):hover > span,
   .todo-row[data-status="open"] .todo-check:hover > span {
     border-color: var(--accent);
     background: var(--todo-tint);
   }
 }
+.chat-todo[data-status="done"] .todo-check > span,
 .todo-row[data-status="done"] .todo-check > span {
   border-color: var(--accent);
   background: var(--accent);
 }
+.chat-todo:is([data-status="cancelled"], [data-status="deleted"]) .todo-check > span,
 .todo-row[data-status="cancelled"] .todo-check > span {
   border-color: var(--faint);
   background: var(--faint);
@@ -634,5 +638,110 @@ dialog.todo-sheet .todo-editor.todo-editor .todo-note-input {
   }
   dialog.todo-sheet .todo-editor.todo-editor .todo-title-input {
     font-size: 18px;
+  }
+}
+
+/* Inline chat todo: a single quiet checklist item in the transcript. */
+.chat-todo {
+  --todo-tint: color-mix(in srgb, var(--accent) 14%, transparent);
+  --todo-tint-text: color-mix(in srgb, var(--accent) 86%, var(--text));
+  max-width: min(100%, 560px);
+  margin: 6px 0;
+  min-width: 0;
+}
+.chat-todo-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 4px 2px;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 550;
+}
+.chat-todo[data-status="open"] .chat-todo-label {
+  color: var(--todo-tint-text);
+}
+.chat-todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 2px 6px 2px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.chat-todo .todo-check:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.chat-todo-copy {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  gap: 2px;
+  padding: 11px 6px 11px 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.chat-todo-copy > strong {
+  font-size: 15px;
+  font-weight: 550;
+  line-height: 1.35;
+}
+.chat-todo:not([data-status="open"]) .chat-todo-copy > strong {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent);
+}
+.chat-todo-copy .todo-body {
+  font-size: 13.5px;
+}
+.chat-todo-state {
+  color: var(--faint);
+  font-size: 12px;
+}
+@media (hover: hover) {
+  .chat-todo-row:has(.chat-todo-copy:hover) {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+}
+.chat-todo-error {
+  margin: 6px 2px 0;
+  color: var(--error);
+  font-size: 13px;
+}
+.chat-todo-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 2px 0;
+  padding: 0 2px;
+  background: none;
+  color: var(--faint);
+  font-size: 13px;
+  text-align: left;
+}
+.chat-todo-update > svg {
+  flex: 0 0 auto;
+  color: var(--good);
+}
+.chat-todo-update > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 550;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (hover: hover) {
+  .chat-todo-update:hover > strong {
+    color: var(--todo-tint-text, var(--accent));
   }
 }

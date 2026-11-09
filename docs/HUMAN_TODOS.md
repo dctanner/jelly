@@ -28,6 +28,10 @@ the linked agent is the requester and continuation destination.
 - Completed/cancelled tasks are available in history. Archived agents' open tasks
   remain visible, with links to the archived conversation.
 
+In an agent's conversation, a todo it creates appears as a live checklist item
+matching the Todos list: tap the circle to mark it done/reopen, or the text to open
+it. Later status changes show as one quiet line (for example “Marked done · title”).
+
 Global, agent, and project counts use the same canonical records. Viewing a task
 does not clear its count. Todo blockers do not hold a run open or replace the
 agent's actual execution status; agents can do unrelated work while a dependency
