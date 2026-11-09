@@ -633,7 +633,11 @@ dialog.todo-sheet .todo-editor.todo-editor .todo-note-input {
   }
   .human-todos input,
   .human-todos select,
-  .todo-editor :is(input, textarea, select) {
+  dialog.todo-sheet .todo-editor.todo-editor :is(input, textarea, select) {
+    font-size: 16px;
+  }
+  dialog.todo-sheet .todo-editor.todo-editor
+    :is(.todo-body-input, .todo-note-input, .todo-agent-select select) {
     font-size: 16px;
   }
   dialog.todo-sheet .todo-editor.todo-editor .todo-title-input {
