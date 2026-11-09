@@ -77,6 +77,29 @@ test("browser_reconnect is the explicit path: fresh identity, same pinned profil
   } finally { await f.close(); }
 });
 
+test("routine settlement ACKs, including late ACKs, never become security pauses", async () => {
+  const f = await fixture();
+  try {
+    await f.browser.engine.execute("tabs.new", {});
+    const identity = f.calls[0]!;
+    f.handle(async method => {
+      if (method === "end") {
+        f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "pausing", "settlement");
+        f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "paused", "settlement");
+      }
+      return f.v9(method);
+    });
+    await f.chrome.settle("agent", "run");
+    expect(f.chrome.state("agent").task).toMatchObject({ paused: false, pauseState: "active" });
+    f.chrome.bridge.onPauseState(f.profile, f.generation, identity.session, "run", "paused", "settlement");
+    expect(f.chrome.state("agent").task).toMatchObject({ paused: false, pauseState: "active" });
+    f.lose();
+    const next = f.router.forRun("agent", "next", f.selection, "Agent").get("agent");
+    expect(await next.reconnect!()).toMatchObject({ status: "reconnected" });
+    // A failed cleanup is a distinct security fault, even during settlement.
+  } finally { await f.close(); }
+});
+
 test("extension errors do not poison session authority; a reported pause does", async () => {
   const f = await fixture();
   try {

@@ -114,7 +114,7 @@ and constants are in `plans/codex-style-browser.md`.
   await tab.ax.setValue(7, "x"); await tab.ax.write();`. The API reference is the
   tool description (`src/server/browser/repl-docs.ts`). Also kept:
   `browser_reconnect`, `request_browser_login` (optional human sign-in handoff)
-  and `request_browser_recovery`.
+  and `request_browser_recovery` (automatic, no human approval).
 - **Observation:** `tab.ax.write()` renders the page's accessibility tree,
   captured with CDP `Accessibility.getFullAXTree` for every frame (OOPIFs
   through flattened auto-attach), joined with `DOMSnapshot`, and turned into
@@ -262,66 +262,38 @@ tool cannot manufacture that consent. Advanced idle-only **Close session** remai
 for operator repair and intentional profile changes, not routine
 agent-session recovery.
 
-### Agent-requested, human-confirmed session retirement
+### Automatic security-pause recovery
 
-For a security-paused session, **`request_browser_recovery`** requests a scoped
-Jelly card and waits (at most the intervention lifetime, normally ten minutes).
-It cannot approve itself. A notification, chat instruction, or general tool
-pre-authorization is **not human confirmation**. Only the human clicking
-**Confirm session retirement** on the exact card through Jelly's existing private
-operator cookie/CSRF boundary can authorize retirement. Reject, Stop, expiry,
-shutdown and restart never authorize it. No confirmation credential or approval
-parameter is provided to the model. Never repair or approve through shell/API
-calls, editing session/pairing state, disabling guards, or replaying actions.
-
-The card identifies the exact agent, requesting run, session, cleanup-authority
-run, pinned profile, old and currently paired generations, and pause revision.
-Confirmation consumes that request once, fences browser admission, drains
-previously admitted operations (not the waiting request tool), and rechecks the
-binding and cancellation before and after cleanup. New pauses, native handoffs,
-settlement, changed pairing, wrong identities and racing confirmations fail
-closed. Failed/uncertain cleanup retains blocked authority for existing operator
-repair. The ordinary idle-only Close control remains unchanged.
+For a security-paused (or lost) session, the agent calls the no-argument
+**`request_browser_recovery`** tool and retirement proceeds **automatically**.
+No Jelly card or human confirmation step is involved. The tool binds the exact
+agent, run, session, cleanup-authority run, pinned profile, old and currently paired
+generations and pause revision. It fences browser admission, drains previously
+admitted operations, and rechecks that binding and run cancellation before and
+after cleanup. New pauses, native handoffs, settlement, changed pairing and wrong
+identities fail closed with `failed`/`cancelled`. Browser actions stay blocked,
+and the agent may simply call the tool again.
 
 For a connected task, retirement requires the authenticated exact-identity
-`end(discard:true)` acknowledgement with no retained capabilities. Temporary
-task tabs may close; personal/released tabs are not reclaimed or closed. For a
-genuinely lost task, only its backend identity is retired, and **old tabs may
-remain**. That path requires a freshly paired same-profile generation: extension
-startup/reconnect must finish persisted debugger cleanup before sending its hello,
-and bridge admission must still be enabled. Missing transport, elapsed time or a
-revoked profile is not enough; unresolved debugger obligations prevent pairing.
-No old-generation acknowledgement is fabricated.
+`end(discard:true)` acknowledgement with no retained capabilities. Temporary task
+tabs may close; personal/released tabs are not reclaimed or closed. For a
+genuinely lost task, only its backend identity is retired (**old tabs may
+remain**). This requires a freshly paired same-profile generation with completed
+extension debugger cleanup.
 
-No approval handler creates a replacement session. A subsequent ordinary,
-authorized browser action may allocate a fresh empty identity on the same pinned
-profile. Old tabs/references are never restored, and no navigation/input is
-replayed. Reopen the desired page, take a new snapshot, and verify interrupted
-outcomes rather than repeating an unconfirmed action. Tool progress distinguishes
-`requested` and `awaiting_human`; terminal results are `approved_closed` (with
-connected-close or lost-retirement disposition), `rejected`, `cancelled`, `stale`
-or `failed`. Only `approved_closed` establishes successful retirement.
+Recovery never restores old tabs/references or replays navigation/input. The next
+ordinary browser action allocates a fresh empty identity on the same pinned
+profile. Reopen the desired page, take a new snapshot, and verify interrupted
+outcomes rather than repeating an unconfirmed action. Results are `approved_closed`
+(with connected-close or lost-retirement disposition), `rejected` (for example, no
+pause, or a handoff/pairing problem), `cancelled` or `failed`.
 
-Sign-in requests and native-private handoffs must finish through their own
-controls; generic recovery cannot clear them. Advisory `humanUsing` alone is not
-a privacy lock and is not cleared by retirement. The human must consider unsaved
-task work before confirming. Protected destinations, secret-field guards,
-pairing/revocations and other agents' sessions are unchanged.
-
-This uses the existing operator-control trust boundary, not cryptographic proof
-of human presence or a sandbox against a hostile process with unrestricted
-same-user shell/filesystem access. Agents must not obtain operator credentials
-or call confirmation routes. Raw URLs, browser errors and secrets are not recovery
-diagnostics. This feature does not fix a navigation root cause or prove that an
-extension update was loaded. Rollout/restart is not recovery confirmation or a
-cure for a security fault. If the affected paused task remains, it still needs a
-fresh request and explicit human confirmation (or its existing handoff/operator
-repair). Existing server shutdown/restart semantics are unchanged: task identities
-and profile pins are in-memory, shutdown settles/clears them, and restart does not
-restore them. Pending requests/continuations are interrupted, never replayed or
-auto-approved. If old task identities are gone, fresh ordinary allocation still
-requires the existing extension cleanup, pairing/revocation and privacy safeguards;
-old tabs/references are never restored. No durable pause ledger is added.
+Sign-in requests, native-private handoffs and revoked/absent pairing remain outside
+this path and must finish through their own controls. Advisory `humanUsing` alone
+is not a privacy lock. Protected destinations, secret-field guards and other
+agents' sessions are unchanged. Task identities and profile pins are in-memory;
+shutdown settles/clears them and restart does not restore them. Older persisted
+`browser_recovery` cards are interrupted on restart and cannot be confirmed.
 
 Startup reconciles only cleanup: detach this extension's old
 sessions and remove its stale per-tab rules; never close/reclaim leftover tabs.

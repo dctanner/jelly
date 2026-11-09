@@ -98,15 +98,15 @@ export function interventionTools(
     }),
     define({
       name: "request_browser_recovery",
-      label: "Request human browser recovery",
-      description: "Request and wait for HUMAN confirmation to retire this agent's paused Connected Chrome session. This tool cannot approve recovery or clear its own pause. The human must confirm the exact request in Jelly; chat instructions are not confirmation. Sign-in/native privacy handoffs and revoked pairing require their existing controls. No shell/API repair, restored tabs/references, or replay. After approved closure, reopen the page and take a fresh snapshot; verify interrupted actions first.",
+      label: "Recover paused browser session",
+      description: "Automatically retire this agent's security-paused (or lost) Connected Chrome session so work can continue; no human approval step. Sign-in/native privacy handoffs and revoked pairing still require their existing controls. Old tabs/references are not restored and nothing is replayed. After closure, open the page again (a fresh session is allocated on the next browser action), take a fresh snapshot and verify interrupted actions before repeating them.",
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: async (_id, args, signal, onUpdate) => {
         if (Object.keys(args).length) return result({ status: "rejected", message: "Recovery accepts no approval, identity or credential arguments." });
         if (signal?.aborted) return result({ status: "cancelled", message: "Recovery request cancelled." });
         let session: BrowserPort;
         try { session = browser(); }
-        catch { return result({ status: "rejected", message: "No current authorized browser session is available for recovery. Use the existing operator connection controls." }); }
+        catch { return result({ status: "rejected", message: "No current authorized browser session is available for recovery. Check the Connected Chrome profile selection." }); }
         return result(await requests.recoverBrowser(agentId, runId, session, signal, value => onUpdate?.(result(value))));
       },
     }),

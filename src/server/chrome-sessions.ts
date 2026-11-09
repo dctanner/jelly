@@ -125,10 +125,15 @@ export class ChromeSessions {
           (t.run === run || (!t.begun && t.authorityRun === run)) &&
           !t.lost
         ) {
+          // end() emits a routine settlement pause while releasing debugger
+          // leases. It is not a security pause. In particular, an ACK arriving
+          // after settle() must not poison the next run (or make a routine
+          // transport loss require security-pause session retirement).
+          // Independent failures, including failed settlement cleanup, still
+          // reach the security latch below.
+          if (reason === "settlement" && state !== "failed" &&
+              (t.settling || t.recoveryClosing || !t.run)) return;
           t.paused = true;
-          // The confirmed end RPC emits its own settlement pause. It cannot
-          // invalidate itself, but independent/unknown/failed pauses still do.
-          if (t.recoveryClosing && reason === "settlement" && state !== "failed") return;
           // Legacy peers omit the reason on generic pause acknowledgements.
           // Retain a known current native cause, never an independent failure.
           const nativeAcknowledgement =
@@ -275,7 +280,7 @@ export class ChromeSessions {
       prepareRecovery: (): BrowserRecovery => {
         assertRun();
         assertReconnectAllowed();
-        if (t.recoveryRequest) throw new Error("A recovery request is already awaiting the human.");
+        if (t.recoveryRequest) throw new Error("A recovery is already in progress.");
         if (this.nativeHandoff || this.nativePauses.has(t) || t.pauseReason === "native_handoff" || t.handoff || t.pausePending || t.resumePending)
           throw new Error("Finish the existing sign-in or native private handoff using its own control. Recovery cannot clear it.");
         if (!t.lost && !t.paused) throw new Error("This browser session does not need operator recovery.");
@@ -338,14 +343,19 @@ export class ChromeSessions {
                 status: "approved_closed" as const,
                 disposition: binding.lost ? "retired_lost_session" as const : "closed_connected_session" as const,
                 message: binding.lost
-                  ? "The human approved retirement of the lost backend session. Old tabs may remain and cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting."
-                  : "The human approved closure and Chrome acknowledged retirement of this session. Old tabs/references cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting.",
+                  ? "The lost backend session was retired. Old tabs may remain and cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting."
+                  : "Chrome acknowledged retirement of this session. Old tabs/references cannot be reused. No action was replayed. Reopen the desired page and take a fresh snapshot; verify any interrupted action before acting.",
               };
             })();
-            // Settlement must drain confirmation too. Failure retains the fence;
-            // only existing operator repair can remove that blocked task.
-            t.chain = closing;
-            return closing;
+            // Settlement must drain retirement too. On failure the task stays
+            // paused/lost (no browser work is admitted), but the agent may retry
+            // recovery automatically; no operator repair is needed.
+            const settled = closing.catch((error) => {
+              if (this.tasks.get(agent) === t) t.recoveryClosing = false;
+              throw error;
+            });
+            t.chain = settled;
+            return settled;
           },
         };
       },
@@ -355,7 +365,7 @@ export class ChromeSessions {
         assertReconnectAllowed();
         if (this.nativeHandoff || t.handoff || t.pausePending || t.resumePending ||
             t.pauseState !== "active" || this.nativePauses.has(t))
-          throw new Error("Browser reconnect cannot clear a sign-in handoff, native privacy pause or security fault. Finish handoffs through their existing human controls. For a security pause, request_browser_recovery can request human confirmation to retire only this session; it cannot approve repair.");
+          throw new Error("Browser reconnect cannot clear a sign-in handoff, native privacy pause or security fault. Finish handoffs through their existing human controls. For a security pause, call request_browser_recovery to retire this session automatically and continue.");
         const profile = this.bridge.profiles().find(p => p.id === t.profile);
         if (!profile || !this.bridge.canReconnect(t.profile, profile.generation) ||
             (t.lost && profile.generation === t.generation))
