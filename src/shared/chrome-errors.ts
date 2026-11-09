@@ -14,5 +14,5 @@ export function chromePauseReason(value: unknown): ChromePauseReason | undefined
 }
 export function chromePauseError(value: unknown): string {
   const reason = chromePauseReason(value);
-  return `Chrome automation paused [${reason ?? "unknown"}]: ${reason ? pauseReasons[reason] : "The pause cause was not reported by the connected extension."} Finish any sign-in/native private handoff using its existing human control, then resume.`;
+  return `Chrome automation paused [${reason ?? "unknown"}]: ${reason ? pauseReasons[reason] : "The pause cause was not reported by the connected extension."} Finish any sign-in/native private handoff using its existing human control. For any other pause, call request_browser_recovery to retire this session automatically, then reopen the page.`;
 }

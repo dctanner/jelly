@@ -28,7 +28,7 @@ const toolLabels: Record<string, string> = {
   subagent: "Delegate work",
   request_sudo: "Administrator access",
   request_browser_login: "Browser sign-in",
-  request_browser_recovery: "Human browser recovery",
+  request_browser_recovery: "Browser recovery",
   peekaboo: "Mac control",
 };
 

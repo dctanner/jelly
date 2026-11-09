@@ -41,7 +41,7 @@ export class BrowserSessions {
       get: (id) => {
         if (id !== agent)
           throw new Error("Child/foreign Chrome browser access is unavailable.");
-        // Only an acknowledged human recovery may retire a port during a run.
+        // Only an acknowledged recovery may retire a port during a run.
         if (port && this.chrome.recoveryRetired(port)) {
           port = undefined;
         }

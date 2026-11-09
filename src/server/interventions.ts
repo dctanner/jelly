@@ -106,28 +106,28 @@ export class Interventions {
       recovery.release();
       return { status: "rejected", message: "Recovery must belong to this agent's current run." };
     }
-    let pending: ReturnType<Interventions["request"]>;
-    try { pending = this.request("browser_recovery", agentId, runId, { binding: recovery.binding }, signal); }
-    catch (error) { recovery.release(); throw error; }
-    this.recoveries.set(pending.request.id, recovery);
-    // The request waiter is deliberately outside the browser operation chain.
-    // No request or confirmation continuation survives server restart.
-    const timer = setInterval(() => {
-      if (this.store.intervention(pending.request.id)?.status !== "pending") return;
-      try { recovery.check(); }
-      catch { this.finishRecovery(pending.request.id, { status: "stale", message: "Browser authority changed. This request cannot close a session; request again only after the relevant operator handoff/repair." }); }
-    }, 250);
-    timer.unref();
-    try {
-      progress({ status: "requested", message: "Recovery requested; no session has been closed." });
-      progress({ status: "awaiting_human", message: "Awaiting explicit human confirmation in Jelly. A notification is not approval." });
-      return await pending.promise as BrowserRecoveryResult;
-    } finally {
-      if (this.waiting.has(pending.request.id)) this.cancel(pending.request.id);
-      clearInterval(timer);
-      this.recoveries.delete(pending.request.id);
-      recovery.release();
-    }
+    // Automatic recovery: no human confirmation step. Retirement still drains
+    // admitted work, rechecks the exact binding before and after cleanup, and
+    // requires Chrome's authenticated end(discard) acknowledgement for a
+    // connected session. Nothing is replayed or restored.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    const job = (async (): Promise<BrowserRecoveryResult> => {
+      progress({ status: "requested", message: "Retiring the paused browser session automatically." });
+      try { return await recovery.close(controller.signal); }
+      catch (error) {
+        if (controller.signal.aborted)
+          return { status: "cancelled", message: "Recovery cancelled. Closure may have been dispatched; browser actions remain blocked. Nothing was replayed. Call request_browser_recovery again to retry." };
+        return { status: "failed", message: "Recovery could not confirm safe retirement; browser actions remain blocked. Nothing was replayed. Call request_browser_recovery again to retry." };
+      } finally {
+        signal?.removeEventListener("abort", abort);
+        recovery.release();
+      }
+    })();
+    this.executions.add(job);
+    void job.finally(() => this.executions.delete(job)).catch(() => {});
+    return job;
   }
   private finishRecovery(id: string, result: BrowserRecoveryResult) {
     const status = result.status === "approved_closed" ? "completed"

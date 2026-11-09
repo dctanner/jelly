@@ -165,7 +165,7 @@ Control sessions use HttpOnly, SameSite=Strict cookies plus CSRF headers on muta
 | GET    | `/api/control-session`           | Establish browser session; return CSRF token                       |
 | POST   | `/api/interventions/:id/approve` | Submit transient `{password}` for exactly one pending sudo request |
 | POST   | `/api/interventions/:id/deny`    | Deny a pending handoff                                             |
-| POST   | `/api/interventions/:id/confirm-browser-recovery` | Private human confirmation of the exact displayed recovery binding; no tool approval route |
+| POST   | `/api/interventions/:id/confirm-browser-recovery` | Legacy; recovery is now automatic, so no new requests are created |
 | GET    | `/api/chrome`                   | Read connected profiles and the selected agent's task              |
 | POST   | `/api/chrome/settings`          | Save the connected profile                          |
 | GET    | `/api/chrome/share`             | Read human-only sharing state                                     |
@@ -337,7 +337,7 @@ and builds the actual task session with the current name.
 
 `interventionTools` binds browser tools exclusively to the running agent's Connected Chrome session. Callers cannot select another agent. OpenAI API and ChatGPT use the same registration.
 
-Supported tools are `browser_open`, `browser_screenshot`, `browser_snapshot`, reference-only `browser_click`, `browser_fill`, `browser_select`, bounded `browser_key`, task-local `browser_tabs`, `browser_scroll`, `browser_wait_for`, `browser_name_task`, `browser_keep_tab` and `request_browser_login`, plus routine `browser_reconnect` and human-confirmed `request_browser_recovery`. Recovery is request-only for the model: its bounded intervention waiter is outside the browser work queue; only private operator confirmation can consume the exact binding, fence/drain work and retire the old session. Restart interrupts requests, failures retain blocked authority, and no approval handler allocates or replays browser work. See [human-confirmed retirement](CONNECTED-CHROME.md#agent-requested-human-confirmed-session-retirement) for the lost-generation cleanup invariant and trust limitations. There are no coordinate clicks, free typing, upload or diagnostics tools.
+Supported tools are `browser_open`, `browser_screenshot`, `browser_snapshot`, reference-only `browser_click`, `browser_fill`, `browser_select`, bounded `browser_key`, task-local `browser_tabs`, `browser_scroll`, `browser_wait_for`, `browser_name_task`, `browser_keep_tab` and `request_browser_login`, plus routine `browser_reconnect` and automatic `request_browser_recovery`. Recovery runs without human approval: it fences/drains work, rechecks the exact binding and retires the old session (Chrome `end(discard)` ACK when connected). Failures keep browser actions blocked but are retryable, and nothing is restored or replayed. See [automatic security-pause recovery](CONNECTED-CHROME.md#automatic-security-pause-recovery). There are no coordinate clicks, free typing, upload or diagnostics tools.
 
 Snapshots expose bounded visible text and opaque element references without form values. References expire on navigation, tab changes and handoff; stale/foreign references fail rather than retargeting. Site-visible text can itself contain sensitive information. Never supply credentials as tool arguments: use private sign-in and explicit human handback.
 
