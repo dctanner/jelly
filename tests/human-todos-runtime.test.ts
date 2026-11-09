@@ -31,7 +31,6 @@ async function fixture(delay = 20, concurrency = 2, scheduleClock?: () => number
     app.service.changeHumanTodo("create", null, {
       title: "Upload signed document",
       agentId: agent.id,
-      blocking: true,
       requestId: crypto.randomUUID(),
     }).todo;
   const complete = (todo: HumanTodo) =>
@@ -132,7 +131,7 @@ test.each(["reopen", "delete", "reassign", "edit", "stop"])(
           ? { status: "open" }
           : operation === "reassign"
             ? { agentId: null }
-            : { instructions: "New dependency context" }),
+            : { body: "New dependency context" }),
       });
     await f.service.settled();
     expect(f.store.runs(f.agent.id)).toHaveLength(1);

@@ -56,7 +56,7 @@ test("authenticated CRUD works without provider; atomic Done & continue failure 
   const edit = {
     requestId: "edit",
     expectedRevision: 1,
-    instructions: "Use uploads",
+    body: "Use uploads",
   };
   let response = await f.request(`/api/human-todos/${todo.id}`, edit, "PATCH");
   expect(response.status).toBe(200);
@@ -160,7 +160,7 @@ test("cookie/CSRF/origin/body/field boundaries, private IDs and deleted tombston
       await f.request(path, {
         title: "Bad",
         requestId: "big",
-        instructions: "x".repeat(70000),
+        body: "x".repeat(70000),
       })
     ).status,
   ).toBe(413);

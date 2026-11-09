@@ -68,10 +68,10 @@ test("four parent-bound tools reject forged scope/provenance/wakes, support huma
     todoId: human.id,
     expectedRevision: 1,
     requestId: "edit",
-    instructions: "Updated instructions",
+    body: "Updated instructions",
   });
   expect(edited.todo.creator).toEqual({ kind: "human" });
-  expect(edited.todo.instructions).toBe("Updated instructions");
+  expect(edited.todo.body).toBe("Updated instructions");
   const foreign = todos.mutate("create", null, {
     title: "Other",
     agentId: other.id,

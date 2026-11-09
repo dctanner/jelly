@@ -31,3 +31,58 @@ export function migrateHumanTodos(db: Database) {
     PRAGMA user_version=20;
   `);
 }
+
+/** v21: collapse instructions/reason/criteria into one free-form body and drop
+ * the blocking flag. Text is preserved verbatim under short headings. */
+export function mergeLegacyTodoText(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const part = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  const instructions = part(record.instructions),
+    reason = part(record.reason),
+    criteria = part(record.criteria);
+  const body =
+    typeof record.body === "string"
+      ? record.body
+      : [
+          instructions,
+          reason && (instructions || criteria ? `Why: ${reason}` : reason),
+          criteria && `Done when: ${criteria}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+  const {
+    instructions: _i,
+    reason: _r,
+    criteria: _c,
+    blocking: _b,
+    ...rest
+  } = record;
+  return { ...rest, body };
+}
+export function migrateHumanTodoBody(db: Database) {
+  const todos = db.query("SELECT id, record FROM human_todos").all() as {
+    id: string;
+    record: string;
+  }[];
+  const update = db.query("UPDATE human_todos SET record=? WHERE id=?");
+  for (const row of todos)
+    update.run(JSON.stringify(mergeLegacyTodoText(JSON.parse(row.record))), row.id);
+  const deliveries = db
+    .query("SELECT id, record FROM human_todo_deliveries")
+    .all() as { id: string; record: string }[];
+  const updateDelivery = db.query(
+    "UPDATE human_todo_deliveries SET record=? WHERE id=?",
+  );
+  for (const row of deliveries) {
+    const delivery = JSON.parse(row.record);
+    delivery.snapshot = mergeLegacyTodoText(delivery.snapshot ?? {});
+    updateDelivery.run(JSON.stringify(delivery), row.id);
+  }
+  db.exec(`
+    DROP INDEX IF EXISTS idx_human_todos_open;
+    ALTER TABLE human_todos DROP COLUMN blocking;
+    CREATE INDEX idx_human_todos_open ON human_todos(status,createdAt DESC,id DESC) WHERE deletedAt IS NULL;
+    PRAGMA user_version=21;
+  `);
+}

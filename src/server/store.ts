@@ -1,5 +1,5 @@
 import { HttpError } from "./errors";
-import { migrateHumanTodos } from "./human-todo-schema";
+import { migrateHumanTodoBody, migrateHumanTodos } from "./human-todo-schema";
 import type { HumanTodoSource } from "../shared/human-todos";
 import { migrateSchedules } from "./schedule-schema";
 import { migrateGoals, migrateGoalCompactions } from "./goal-schema";
@@ -53,7 +53,7 @@ export class Store {
     const version = (
       this.db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    if (version > 20)
+    if (version > 21)
       throw new Error("This database was created by a newer Jelly version.");
     if (version === 0)
       this.db.transaction(() => {
@@ -206,6 +206,7 @@ export class Store {
     if (version < 18) this.db.transaction(() => migrateGoals(this.db))();
     if (version < 19) this.db.transaction(() => migrateGoalCompactions(this.db))();
     if (version < 20) this.db.transaction(() => migrateHumanTodos(this.db))();
+    if (version < 21) this.db.transaction(() => migrateHumanTodoBody(this.db))();
     // Apps stores registration metadata only. No deployment schema or data migration.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, record TEXT NOT NULL);

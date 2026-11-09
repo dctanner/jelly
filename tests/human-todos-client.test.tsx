@@ -37,10 +37,7 @@ function task(id = "todo"): HumanTodo {
     id,
     agentId: agent.id,
     title: "Upload agreement",
-    instructions: "Use uploads",
-    reason: "Finish filing",
-    criteria: "Signed document",
-    blocking: true,
+    body: "Use uploads to finish filing",
     status: "open",
     revision: 1,
     createdAt: "2026-01-01",
@@ -170,34 +167,34 @@ test("global/direct destination routing, empty/search state and accessible Done 
   fireEvent.change(screen.getByLabelText("Search"), {
     target: { value: "missing" },
   });
-  await screen.findByText("Nothing needs you right now.");
-  expect(screen.getByRole("button", { name: "Add todo" })).toBeTruthy();
+  await screen.findByText("No matching todos.");
+  expect(screen.getByRole("button", { name: "New todo" })).toBeTruthy();
 });
 test("pinned stale drafts survive live invalidation/conflicts with stable retry IDs; fresh reads win over delayed bodies", async () => {
   const f = fixture();
   render(<HumanTodos snapshot={null} active agentId="agent" />);
   fireEvent.click(
     await screen.findByRole("button", {
-      name: "Edit or manage Upload agreement",
+      name: "Open Upload agreement",
     }),
   );
   const title = (await screen.findByLabelText(
-    "Action title",
+    "Title",
   )) as HTMLInputElement;
   fireEvent.change(title, { target: { value: "My unsaved edit" } });
   f.update({ title: "New agent edit", revision: 2 });
   act(invalidation);
-  await screen.findByText(/draft is retained at revision 1/);
+  await screen.findByText(/Someone else changed this todo/);
   expect(title.value).toBe("My unsaved edit");
-  fireEvent.click(screen.getByRole("button", { name: "Save todo" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   await screen.findByRole("alert");
   expect(f.calls[0]?.input.expectedRevision).toBe(1);
-  fireEvent.click(screen.getByRole("button", { name: "Save todo" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   await waitFor(() => expect(f.calls).toHaveLength(2));
   expect(f.calls[1]?.input.requestId).toBe(f.calls[0]?.input.requestId);
   expect(title.value).toBe("My unsaved edit");
   fireEvent.click(
-    screen.getByRole("button", { name: "Discard draft and load latest" }),
+    screen.getByRole("button", { name: "Discard my edits" }),
   );
   await waitFor(() => expect(title.value).toBe("New agent edit"));
   f.delay();
@@ -208,9 +205,9 @@ test("pinned stale drafts survive live invalidation/conflicts with stable retry 
   const stale = f.detail();
   f.update({ title: "Latest saved", revision: 3 });
   act(invalidation);
-  await screen.findByText(/saved revision is 3/);
+  await screen.findByText(/Someone else changed this todo/);
   await act(async () => f.release(stale));
-  expect(screen.getByText(/saved revision is 3/)).toBeTruthy();
+  expect(screen.getByText(/Someone else changed this todo/)).toBeTruthy();
 });
 test("pagination survives SSE/reconnect and destination toggles; per-agent strip preserves runtime status", async () => {
   const f = fixture();
@@ -250,11 +247,11 @@ test("goal-linked Done exposes Review goal, never ordinary continuation; notific
   render(<HumanTodos snapshot={null} active agentId="agent" />);
   fireEvent.click(
     await screen.findByRole("button", {
-      name: "Edit or manage Upload agreement",
+      name: "Open Upload agreement",
     }),
   );
-  expect(await screen.findByRole("button", { name: "Done" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /Done & continue/ })).toBeNull();
+  expect(await screen.findByRole("button", { name: "Mark done" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /tell agent/ })).toBeNull();
   expect(screen.getByRole("button", { name: "Review goal" })).toBeTruthy();
   const notification = agentNotificationText(agent, {
     id: 1,
@@ -274,22 +271,22 @@ test("browser Back/destination unmount preserves the pinned todo draft and note 
     projects: [],
   } as unknown as Snapshot;
   const ui = render(<HumanTodos snapshot={snapshot} active todoId="todo" />);
-  fireEvent.change(await screen.findByLabelText("Action title"), {
+  fireEvent.change(await screen.findByLabelText("Title"), {
     target: { value: "Unsent todo edit" },
   });
   fireEvent.change(
-    screen.getByLabelText("Optional non-secret completion note"),
+    screen.getByLabelText("Note"),
     { target: { value: "Unsent note" } },
   );
   ui.rerender(<HumanTodos snapshot={snapshot} active={false} />);
   ui.rerender(<HumanTodos snapshot={snapshot} active todoId="todo" />);
   expect(
-    ((await screen.findByLabelText("Action title")) as HTMLInputElement).value,
+    ((await screen.findByLabelText("Title")) as HTMLInputElement).value,
   ).toBe("Unsent todo edit");
   expect(
     (
       screen.getByLabelText(
-        "Optional non-secret completion note",
+        "Note",
       ) as HTMLTextAreaElement
     ).value,
   ).toBe("Unsent note");
@@ -297,25 +294,25 @@ test("browser Back/destination unmount preserves the pinned todo draft and note 
 
 const isolatedSnapshot = () => ({ instance: { id: crypto.randomUUID() }, agents: [agent], projects: [] }) as unknown as Snapshot;
 test.each([
-  ["Done", false], ["Done", true],
-  ["Done & continue — runs agent", false], ["Done & continue — runs agent", true],
-  ["Continue agent", false], ["Continue agent", true],
-  ["Delete todo", false], ["Delete todo", true],
-  ["Cancel todo", false], ["Reopen", false],
+  ["Mark done", false], ["Mark done", true],
+  ["Done & tell agent", false], ["Done & tell agent", true],
+  ["Tell agent", false], ["Tell agent", true],
+  ["Delete", false], ["Delete", true],
+  ["Won’t do", false], ["Reopen", false],
 ] as const)("%s uses the reviewed revision (note-only draft: %s)", async (action, withNote) => {
   const f = fixture();
-  if (["Continue agent", "Reopen"].includes(action)) f.update({ status: "done", completionId: "completion" });
+  if (["Tell agent", "Reopen"].includes(action)) f.update({ status: "done", completionId: "completion" });
   render(<HumanTodos snapshot={isolatedSnapshot()} active todoId="todo" />);
-  const title = await screen.findByLabelText("Action title") as HTMLInputElement;
-  if (withNote) fireEvent.change(screen.getByLabelText("Optional non-secret completion note"), { target: { value: "Reviewed old instructions" } });
-  f.update({ instructions: "New unreviewed requirements", revision: 2 });
+  const title = await screen.findByLabelText("Title") as HTMLInputElement;
+  if (withNote) fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Reviewed old instructions" } });
+  f.update({ body: "New unreviewed requirements", revision: 2 });
   act(invalidation);
-  await screen.findByText(/saved revision is 2/);
-  if (action === "Continue agent" && withNote) {
+  await screen.findByText(/Someone else changed this todo/);
+  if (action === "Tell agent" && withNote) {
     expect((screen.getByRole("button", { name: action }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Save completion note" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
   } else {
-    if (action === "Delete todo") fireEvent.click(screen.getByText("Delete todo", { selector: "summary" }));
+    if (action === "Delete") window.confirm = () => true;
     fireEvent.click(screen.getByRole("button", { name: action }));
   }
   await screen.findByRole("alert");
@@ -323,21 +320,21 @@ test.each([
   expect(f.calls[0]?.input.expectedRevision).toBe(1);
   expect(f.todo().revision).toBe(2);
   expect(title.value).toBe("Upload agreement");
-  if (withNote) expect((screen.getByLabelText("Optional non-secret completion note") as HTMLTextAreaElement).value).toBe("Reviewed old instructions");
+  if (withNote) expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe("Reviewed old instructions");
 });
 
 test.each(["create", "edit"])("%s locks inputs through delayed mutation and saved-state refresh", async (mode) => {
   const f = fixture();
   render(<HumanTodos snapshot={isolatedSnapshot()} active {...(mode === "edit" ? { todoId: "todo" } : {})} />);
-  if (mode === "create") fireEvent.click(screen.getByRole("button", { name: "Add todo" }));
-  const title = await screen.findByLabelText("Action title") as HTMLInputElement;
+  if (mode === "create") fireEvent.click(screen.getByRole("button", { name: "New todo" }));
+  const title = await screen.findByLabelText("Title") as HTMLInputElement;
   fireEvent.change(title, { target: { value: "Submitted draft" } });
-  if (mode === "edit") fireEvent.change(screen.getByLabelText("Optional non-secret completion note"), { target: { value: "Keep this pending note" } });
+  if (mode === "edit") fireEvent.change(screen.getByLabelText("Note"), { target: { value: "Keep this pending note" } });
   f.delayMutation();
-  fireEvent.click(screen.getByRole("button", { name: "Save todo" }));
+  fireEvent.click(screen.getByRole("button", { name: mode === "create" ? "Add todo" : "Save changes" }));
   await waitFor(() => expect(f.calls).toHaveLength(1));
   expect(title.closest("fieldset")?.disabled).toBe(true);
-  expect((screen.getByLabelText("Linked agent") as HTMLSelectElement).closest("fieldset")?.disabled).toBe(true);
+  expect((screen.getByLabelText("Assigned agent") as HTMLSelectElement).closest("fieldset")?.disabled).toBe(true);
   if (mode === "edit") {
     f.delay();
     await act(async () => { f.releaseMutation(); await Bun.sleep(5); });
@@ -348,10 +345,10 @@ test.each(["create", "edit"])("%s locks inputs through delayed mutation and save
     await act(async () => f.release(f.detail()));
     await waitFor(() => expect(title.closest("fieldset")?.disabled).toBe(false));
     expect(title.value).toBe("Submitted draft");
-    expect((screen.getByLabelText("Optional non-secret completion note") as HTMLTextAreaElement).value).toBe("Keep this pending note");
+    expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe("Keep this pending note");
   } else {
     await act(async () => f.releaseMutation());
-    await waitFor(() => expect(screen.queryByLabelText("Action title")).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText("Title")).toBeNull());
   }
 });
 
@@ -359,13 +356,13 @@ test("Done task notes require revision-checked persistence before Continue", asy
   const f = fixture();
   f.update({ status: "done", completionId: "completion", resolutionActor: { kind: "human" } });
   render(<HumanTodos snapshot={isolatedSnapshot()} active todoId="todo" />);
-  fireEvent.change(await screen.findByLabelText("Optional non-secret completion note"), { target: { value: "Saved signed.pdf" } });
-  expect((screen.getByRole("button", { name: "Continue agent" }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Save completion note" }));
+  fireEvent.change(await screen.findByLabelText("Note"), { target: { value: "Saved signed.pdf" } });
+  expect((screen.getByRole("button", { name: "Tell agent" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Save note" }));
   await screen.findByText("Saved signed.pdf", { selector: "p" });
-  await waitFor(() => expect((screen.getByRole("button", { name: "Continue agent" }) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Tell agent" }) as HTMLButtonElement).disabled).toBe(false));
   expect(f.calls[0]).toMatchObject({ method: "PATCH", input: { resolutionNote: "Saved signed.pdf", expectedRevision: 1 } });
-  fireEvent.click(screen.getByRole("button", { name: "Continue agent" }));
+  fireEvent.click(screen.getByRole("button", { name: "Tell agent" }));
   await waitFor(() => expect(f.calls).toHaveLength(2));
   expect(f.calls[1]).toMatchObject({ path: "/api/human-todos/todo/continue", input: { expectedRevision: 2 } });
   expect(f.todo().resolutionNote).toBe("Saved signed.pdf");
@@ -376,7 +373,7 @@ test("unassignment preserves independent historical source navigation without an
   f.update({ agentId: null, sourceAgentId: "original", sourceActivityId: 42 });
   window.history.replaceState({}, "", "/todos/todo");
   render(<HumanTodos snapshot={isolatedSnapshot()} active todoId="todo" />);
-  await screen.findByLabelText("Action title");
+  await screen.findByLabelText("Title");
   expect(screen.queryByRole("button", { name: "Open agent" })).toBeNull();
   const before = window.history.length;
   fireEvent.click(screen.getByRole("button", { name: "Source conversation" }));

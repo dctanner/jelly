@@ -8,16 +8,23 @@ the linked agent is the requester and continuation destination.
 
 ## Using the inbox
 
-- Open **Todos** beside Agents and Apps. Search or filter by agent/project; open
-  blockers sort first, oldest first within each group.
-- **Add todo** creates an action without calling a model. Link an agent or leave
-  it unassigned. Agents can create and manage tasks linked to themselves.
-- Open a task to edit its title, instructions, reason, completion criteria,
-  Blocking flag, and linked agent. Human edits remain available while an agent works.
-- **Done** records completion only. **Cancel** means the action is no longer
-  wanted, not that it succeeded. **Reopen** returns either state to the open list.
-- **Delete** hides the task but retains an audit tombstone; it is not permanent
-  data erasure.
+- Open **Todos** beside Agents and Apps. A segmented **To do / Completed** control,
+  search, and an agent filter sit above a checklist; newest todos come first.
+- Each todo has just a **title**, a free-form **body** (what to do, why, and what
+  counts as done), and an **assigned agent**. The agent picker lists active agents
+  ordered by most recent activity; archived agents are hidden (an already-assigned
+  archived agent remains shown for that todo only).
+- **New todo** creates an action without calling a model. Agents can create and
+  manage tasks assigned to themselves.
+- Tap the circle on a row to mark it done (no agent run); tap it on a completed
+  row to reopen. Open the row to edit, add a note, or choose **Done & tell agent**.
+- **Won’t do** means the action is no longer wanted, not that it succeeded.
+  **Reopen** returns either state to the open list.
+- **Delete** (with confirmation) hides the task but retains an audit tombstone; it
+  is not permanent data erasure. **Activity** shows who changed what.
+- Databases from before v21 had separate instructions/reason/criteria fields and
+  a Blocking flag. Migration merges the text into the body (with “Why:” and
+  “Done when:” prefixes) and drops the flag.
 - Completed/cancelled tasks are available in history. Archived agents' open tasks
   remain visible, with links to the archived conversation.
 
@@ -30,15 +37,15 @@ Edits and actions use the revision you reviewed. If another actor changes the ta
 reload/review the new state before retrying; your draft is retained on conflict.
 Inputs are disabled during saving and the following saved-state refresh.
 
-## Done versus Done & continue
+## Mark done versus Done & tell agent
 
-**Done** does not run an agent. Completion is a human/agent attestation, not proof
+**Mark done** does not run an agent. Completion is a human/agent attestation, not proof
 that an uploaded file, sign-in, or other external action succeeded.
 
-**Done & continue — runs agent** explicitly requests one follow-up in the linked
-agent's existing conversation. On an already completed task, use **Continue agent**.
-An additional note on a completed task must first be saved with **Save completion
-note**; saving it alone does not run the agent.
+**Done & tell agent** explicitly requests one follow-up in the assigned
+agent's existing conversation. On an already completed task, use **Tell agent**.
+An additional note on a completed task must first be saved with **Save note**;
+saving it alone does not run the agent.
 
 The follow-up contains the dependency and saved completion note. The agent should
 verify the result and continue only work that is now unblocked and authorized.
@@ -59,7 +66,8 @@ separately.
 
 ### Goals
 
-A blocking task created by an admitted goal execution retains that goal's identity,
+A task an agent creates with `blocking: true` during an admitted goal execution (a
+tool-only hint; it is not stored or shown as a field) retains that goal's identity,
 including further dependencies discovered after the first blocker. It fences
 goal-generated continuations without aborting already-running tools or children.
 

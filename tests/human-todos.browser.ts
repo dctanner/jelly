@@ -25,9 +25,7 @@ app.store.event(agent.id, null, "message", {
 const todo = app.service.changeHumanTodo("create", null, {
   requestId: "browser-fixture",
   title: "Upload the signed agreement",
-  instructions: "A long non-secret instruction. ".repeat(80),
-  reason: "Finish authorized filing",
-  blocking: true,
+  body: "A long non-secret instruction. ".repeat(80),
   agentId: agent.id,
 }).todo;
 const project = app.service.saveProject(null, { name: "Archived project", defaultCwd: dir });
@@ -60,19 +58,19 @@ try {
     await page.getByRole("link", { name: /Todos/ }).click();
     await page
       .getByRole("button", {
-        name: "Edit or manage Upload the signed agreement",
+        name: "Open Upload the signed agreement",
       })
       .click();
-    await page.getByLabel("Action title").fill("Preserved todo draft");
+    await page.getByLabel("Title").fill("Preserved todo draft");
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Keep editing" }).click();
     if (
-      (await page.getByLabel("Action title").inputValue()) !==
+      (await page.getByLabel("Title").inputValue()) !==
       "Preserved todo draft"
     )
       throw new Error("Todo draft lost on dismissal.");
     await page
-      .getByRole("dialog", { name: "Todo details" })
+      .getByRole("dialog", { name: "Todo" })
       .evaluate(async (element) => {
         await Promise.all(
           element
@@ -109,8 +107,8 @@ try {
     )
       throw new Error("Chat draft lost switching destinations.");
     await page.goto(app.server.url.origin + `/todos/${todo.id}`);
-    await page.getByLabel("Action title").waitFor();
-    if ((await page.getByLabel("Action title").inputValue()) !== todo.title)
+    await page.getByLabel("Title").waitFor();
+    if ((await page.getByLabel("Title").inputValue()) !== todo.title)
       throw new Error("Direct todo link failed.");
     await page.getByRole("button", { name: "Close dialog" }).click();
     await page.waitForFunction(() => !document.querySelector("dialog[open]"));
@@ -139,7 +137,7 @@ try {
       await page.locator(".composer textarea").waitFor();
       if (width < 768) await page.getByRole("button", { name: "Agents", exact: true }).click();
       await page.getByRole("link", { name: /Todos/ }).click();
-      await page.getByRole("button", { name: `Edit or manage ${fixture.todo.title}` }).click();
+      await page.getByRole("button", { name: `Open ${fixture.todo.title}` }).click();
       const detailUrl = page.url();
       await page.getByRole("button", { name: "Open agent", exact: true }).click();
       await page.getByRole("button", { name: `Edit ${fixture.agent.name} profile` }).waitFor();
@@ -147,27 +145,31 @@ try {
       if ((await page.evaluate(() => history.state.jellyProject)) !== fixture.agent.projectId)
         throw new Error("Archived link used the wrong project scope.");
       await page.goBack();
-      await page.getByLabel("Action title").waitFor();
+      await page.getByLabel("Title").waitFor();
       if (page.url() !== detailUrl) throw new Error("Browser Back lost the canonical todo detail.");
       await page.getByRole("button", { name: "Source conversation", exact: true }).click();
       const source = page.getByRole("dialog", { name: "Source conversation" });
       await source.getByText(`Historical context for ${fixture.agent.name}`, { exact: true }).waitFor();
       await page.getByRole("button", { name: `Edit ${fixture.agent.name} profile` }).waitFor({ state: "attached" });
       await page.goBack();
-      await page.getByLabel("Action title").waitFor();
+      await page.getByLabel("Title").waitFor();
       if (page.url() !== detailUrl) throw new Error("Browser Back from source lost the todo.");
       // Unassign through the real revision-checked UI, keeping immutable source navigation.
-      await page.getByLabel("Linked agent").selectOption("");
-      await page.getByRole("button", { name: "Save todo", exact: true }).click();
+      await page.getByLabel("Assigned agent").selectOption("");
+      await page.getByRole("button", { name: "Save changes", exact: true }).click();
       await page.waitForFunction(() => !document.querySelector(".todo-editor[disabled]"));
       if (await page.getByRole("button", { name: "Open agent", exact: true }).count())
         throw new Error("Unassigned task retained a current-agent action.");
       await page.getByRole("button", { name: "Source conversation", exact: true }).click();
       await page.getByRole("dialog", { name: "Source conversation" }).getByText(`Historical context for ${fixture.agent.name}`, { exact: true }).waitFor();
       await page.goBack();
-      await page.getByLabel("Action title").waitFor();
-      await page.getByLabel("Linked agent").selectOption(fixture.agent.id);
-      await page.getByRole("button", { name: "Save todo", exact: true }).click();
+      await page.getByLabel("Title").waitFor();
+      // Archived agents are no longer offered once unassigned.
+      if (await page.getByLabel("Assigned agent").locator(`option[value="${fixture.agent.id}"]`).count())
+        throw new Error("Archived agent offered in the assignment picker.");
+      // Restore the assignment for the next viewport width (API still accepts it).
+      const current = app.service.humanTodos.get(fixture.todo.id);
+      app.service.changeHumanTodo("update", current.id, { requestId: `restore-${width}-${current.id}`, expectedRevision: current.revision, agentId: fixture.agent.id });
       await page.waitForFunction(() => !document.querySelector(".todo-editor[disabled]"));
       if (app.store.runs(fixture.agent.id).length !== 1) throw new Error("Archived navigation started work.");
     }

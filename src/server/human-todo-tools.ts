@@ -3,16 +3,19 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { HumanTodos } from "./human-todos";
 
 export const HUMAN_TODO_INSTRUCTIONS =
-  "Human todos are durable actions for the human, not your implementation checklist. Record concrete dependencies of authorized work, not every question/tool failure. Check human_todo_list first; reuse existing blockers and stable requestId/dedupeKey. Provide actionable title, instructions, reason and completion criteria. Never put passwords, tokens or recovery codes in persisted text; use private handoff tools. Only claim saved after the durable receipt succeeds. Finish this run when no useful work remains; never sleep/poll/hold a tool open for a todo. Re-read current state before relying on it. Human edits/cancellation are authoritative, not permission to expand the job. Completion is attestation, not verified effects: agent completion needs observed evidence or explicit human instruction in resolutionNote. Open-task cancellation/deletion needs a reason. These tools cannot wake agents or resume goals. Ordinary child agents report blockers to their persistent parent; they have no independent todo owner.";
+  "Human todos are durable actions for the human, not your implementation checklist. Record concrete dependencies of authorized work, not every question/tool failure. Check human_todo_list first; reuse existing blockers and stable requestId/dedupeKey. Give a short actionable title and a body explaining what to do, why, and what counts as done. Set blocking:true only when it blocks your active goal. Never put passwords, tokens or recovery codes in persisted text; use private handoff tools. Only claim saved after the durable receipt succeeds. Finish this run when no useful work remains; never sleep/poll/hold a tool open for a todo. Re-read current state before relying on it. Human edits/cancellation are authoritative, not permission to expand the job. Completion is attestation, not verified effects: agent completion needs observed evidence or explicit human instruction in resolutionNote. Open-task cancellation/deletion needs a reason. These tools cannot wake agents or resume goals. Ordinary child agents report blockers to their persistent parent; they have no independent todo owner.";
 const define = <T extends TSchema>(tool: ToolDefinition<T>): ToolDefinition =>
   tool as ToolDefinition;
 const id = Type.String({ minLength: 1, maxLength: 100 });
 const fields = {
   title: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
-  instructions: Type.Optional(Type.String({ maxLength: 8000 })),
-  reason: Type.Optional(Type.String({ maxLength: 4000 })),
-  criteria: Type.Optional(Type.String({ maxLength: 4000 })),
-  blocking: Type.Optional(Type.Boolean()),
+  body: Type.Optional(Type.String({ maxLength: 8000 })),
+  blocking: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set true only if this blocks your active goal; it pauses the goal. Not shown to the human.",
+    }),
+  ),
 };
 export function humanTodoTools(
   todos: HumanTodos,
@@ -34,7 +37,7 @@ export function humanTodoTools(
       name: "human_todo_list",
       label: "Read human todos",
       description:
-        "List this parent's paginated todo summaries and current revisions. Supply todoId for full instructions, provenance and bounded history before editing or relying on a task. " +
+        "List this parent's paginated todo summaries and current revisions. Supply todoId for the full body, provenance and bounded history before editing or relying on a task. " +
         HUMAN_TODO_INSTRUCTIONS,
       parameters: Type.Object(
         {

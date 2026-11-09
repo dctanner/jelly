@@ -47,8 +47,7 @@ export function fixture() {
       {
         requestId: crypto.randomUUID(),
         title: "Upload agreement",
-        instructions: "Use existing upload",
-        reason: "Finish filing",
+        body: "Use existing upload",
         ...input,
       },
       owner,
@@ -88,7 +87,7 @@ test("v19 migration, durable revisions/receipts/audit, soft deletion and actor p
   const migrated = new Store(f.file);
   cleanup.push(() => migrated.close());
   expect(migrated.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 20,
+    user_version: 21,
   });
   const input = { requestId: "stable", title: "Upload agreement" };
   const first = f.todos.mutate("create", null, input, f.actor);
@@ -178,7 +177,7 @@ test("completion and delivery commit together; revision fences; at-most-once adm
   const delivery = receipt.delivery!;
   expect(delivery.state).toBe("waiting");
   expect(f.store.pendingMessages(f.agent.id)).toHaveLength(0);
-  todo = f.update(todo, { instructions: "Updated context" });
+  todo = f.update(todo, { body: "Updated context" });
   expect(f.todos.delivery(delivery.id)?.state).toBe("cancelled");
   expect(() =>
     f.store.db.transaction(() => f.todos.admit(delivery.id, f.run.id))(),
@@ -189,7 +188,7 @@ test("completion and delivery commit together; revision fences; at-most-once adm
   }).delivery!;
   expect(reconfirmed.id).not.toBe(delivery.id);
   expect(f.todos.delivery(delivery.id)?.snapshot).toEqual(delivery.snapshot);
-  expect(reconfirmed.snapshot.instructions).toBe("Updated context");
+  expect(reconfirmed.snapshot.body).toBe("Updated context");
   const event = f.store.db.transaction(() =>
     f.todos.admit(reconfirmed.id, f.run.id),
   )();
@@ -259,11 +258,15 @@ test("goal blocker transaction and private handoff grouping preserve secure requ
 });
 test("open ordering/cursor/filter/history, field limits, rollback and post-commit notifications", () => {
   const f = fixture();
-  const first = f.create({ title: "Ordinary" }),
-    blocker = f.create({ title: "Blocking", blocking: true });
+  const first = f.create({ title: "Ordinary" });
+  f.create({ title: "Blocking", blocking: true });
   f.create({ title: "Other" }, { kind: "human" });
+  const all = f.todos.list().items;
+  // Newest first; `blocking` is a goal hint, not a stored sort key.
+  expect(all.map((t) => t.createdAt)).toEqual(all.map((t) => t.createdAt).sort().reverse());
+  expect(all.some((t) => "blocking" in t)).toBe(false);
   const page = f.todos.list({ limit: 1 });
-  expect(page.items[0]?.id).toBe(blocker.id);
+  expect(page.items[0]?.id).toBe(all[0]!.id);
   expect(page.after).toBeTruthy();
   expect(f.todos.list({ limit: 1, after: page.after }).items[0]?.id).toBe(
     f.todos.list().items[1]?.id,
@@ -399,4 +402,13 @@ test("ordinary runs do not inherit a replacement goal and historical run provena
   expect(historical.goalId).toBe(goal.id);
   expect(historical.originGoalId).toBe(goal.id);
   expect(f.goals.get(f.agent.id)).toEqual(replacement);
+});
+
+test("v21 migration merges legacy instructions/reason/criteria into body and drops blocking", async () => {
+  const { mergeLegacyTodoText } = await import("../src/server/human-todo-schema");
+  expect(mergeLegacyTodoText({ title: "T", instructions: "Upload it", reason: "Filing", criteria: "PDF exists", blocking: true }))
+    .toEqual({ title: "T", body: "Upload it\n\nWhy: Filing\n\nDone when: PDF exists" });
+  expect(mergeLegacyTodoText({ title: "T", instructions: "", reason: "Only reason", criteria: "" }))
+    .toEqual({ title: "T", body: "Only reason" });
+  expect(mergeLegacyTodoText({ title: "T", body: "kept", reason: "ignored" })).toEqual({ title: "T", body: "kept" });
 });

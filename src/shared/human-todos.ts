@@ -7,10 +7,8 @@ export interface HumanTodo {
   id: string;
   agentId: string | null;
   title: string;
-  instructions: string;
-  reason: string;
-  criteria: string;
-  blocking: boolean;
+  /** Free-form details: what to do, why, and what counts as done. */
+  body: string;
   status: HumanTodoStatus;
   revision: number;
   createdAt: string;
@@ -77,11 +75,11 @@ export type HumanTodoSummary = Pick<
   | "id"
   | "agentId"
   | "title"
-  | "reason"
-  | "blocking"
+  | "body"
   | "status"
   | "revision"
   | "createdAt"
+  | "resolvedAt"
 >;
 export interface HumanTodosPage {
   items: HumanTodoSummary[];

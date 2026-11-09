@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ListTodo } from "lucide-react";
+import {
+  Check,
+  CircleCheck,
+  KeyRound,
+  ListTodo,
+  Plus,
+  Search,
+  X,
+} from "lucide-react";
 import type { AgentRecord, Snapshot } from "../shared/types";
 import type {
   HumanTodo,
@@ -61,6 +69,19 @@ function linkedAgent(todo: HumanTodoSummary, agents: AgentRecord[]) {
   return agents.find((agent) => agent.id === todo.agentId);
 }
 
+/** Active agents for pickers, most recently active first (server order). */
+function pickableAgents(agents: AgentRecord[], keep?: string | null) {
+  return agents.filter((agent) => !agent.archivedAt || agent.id === keep);
+}
+const handoffLabel = (kind: string) =>
+  kind === "sudo"
+    ? "Approve an admin command"
+    : kind === "browser_login"
+      ? "Sign in to a website"
+      : kind === "browser_recovery"
+        ? "Recover the browser"
+        : "Take back the desktop";
+
 /** Mounted independently of destination visibility so filters and list scroll survive navigation. */
 export function HumanTodos({
   snapshot,
@@ -74,17 +95,16 @@ export function HumanTodos({
   todoId?: string | null;
 }) {
   const [page, setPage] = useState<HumanTodosPage | null>(null);
-  const [status, setStatus] = useState("open"),
+  const [status, setStatus] = useState<"open" | "history">("open"),
     [q, setQ] = useState(""),
-    [filterAgent, setFilterAgent] = useState(""),
-    [project, setProject] = useState("");
+    [filterAgent, setFilterAgent] = useState("");
   const [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
     [editing, setEditing] = useState<string | null>(null);
   const revision = useTodoRevision(),
     generation = useRef(0),
     request = useRef<AbortController | null>(null);
-  const listKey = `${status}:${q}:${agentId ?? filterAgent}:${project}`;
+  const listKey = `${status}:${q}:${agentId ?? filterAgent}`;
   const currentKey = useRef(listKey);
   currentKey.current = listKey;
   const focusAfterDone = useRef<string | null>(null);
@@ -110,7 +130,6 @@ export function HumanTodos({
         ...((agentId ?? filterAgent)
           ? { agentId: agentId ?? filterAgent }
           : {}),
-        ...(project ? { projectId: project } : {}),
         ...(after ? { after } : {}),
       });
       let next = await api<HumanTodosPage>(`/human-todos?${params}`, {
@@ -181,14 +200,24 @@ export function HumanTodos({
   }, [active]);
   const selected = todoId ?? editing;
   const [doneRequests] = useState(() => new Map<string, string>());
-  async function done(todo: HumanTodoSummary) {
+  async function toggle(todo: HumanTodoSummary) {
     const key = `${todo.id}:${todo.revision}`;
     if (!doneRequests.has(key)) doneRequests.set(key, requestId());
     try {
-      await control(path(todo.id) + "/complete", {
-        requestId: doneRequests.get(key),
-        expectedRevision: todo.revision,
-      });
+      if (todo.status === "open")
+        await control(path(todo.id) + "/complete", {
+          requestId: doneRequests.get(key),
+          expectedRevision: todo.revision,
+        });
+      else
+        await api(path(todo.id), {
+          method: "PATCH",
+          body: JSON.stringify({
+            requestId: doneRequests.get(key),
+            expectedRevision: todo.revision,
+            status: "open",
+          }),
+        });
       const index = page?.items.findIndex((item) => item.id === todo.id) ?? -1;
       focusAfterDone.current =
         page?.items[index + 1]?.id ?? page?.items[index - 1]?.id ?? "heading";
@@ -211,203 +240,228 @@ export function HumanTodos({
         heading.current?.focus({ preventScroll: true });
     });
   };
+  const agents = page?.agents ?? snapshot?.agents ?? [];
+  const openCount = agentId
+    ? (snapshot?.humanTodoCounts?.agents[agentId] ?? 0)
+    : (snapshot?.humanTodoCounts?.total ?? page?.counts.total ?? 0);
+  const handoffs = status === "open" ? (page?.handoffs ?? []) : [];
+  const items =
+    page?.items.filter(
+      (todo) =>
+        status !== "open" || !handoffs.some((item) => item.todoId === todo.id),
+    ) ?? [];
   return (
     <section
       className={`human-todos ${agentId ? "agent-todos" : ""}`}
       aria-label={agentId ? "Agent todos" : "Todos"}
       ref={list}
     >
-      <header className="todos-heading">
-        <h1 tabIndex={-1} ref={heading}>
-          {agentId ? "Needs you" : "Todos"}
-        </h1>
-        <button className="primary" onClick={() => setEditing("new")}>
-          Add todo
-        </button>
-      </header>
-      <div className="todo-filters">
-        <label>
-          Search
-          <input
-            type="search"
-            value={q}
-            maxLength={200}
-            onChange={(event) => setQ(event.target.value)}
-          />
-        </label>
-        <label>
-          Show
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="open">Open todos</option>
-            <option value="history">Done / Cancelled</option>
-          </select>
-        </label>
-        {!agentId && (
-          <>
-            <label>
-              Agent
-              <select
-                value={filterAgent}
-                onChange={(event) => setFilterAgent(event.target.value)}
-              >
-                <option value="">All agents</option>
-                <option value="unassigned">Unassigned</option>
-                {(page?.agents ?? snapshot?.agents ?? []).map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                    {agent.archivedAt ? " (archived)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Project
-              <select
-                value={project}
-                onChange={(event) => setProject(event.target.value)}
-              >
-                <option value="">All projects</option>
-                {snapshot?.projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
-        )}
-      </div>
-      {error && (
-        <p role="alert">
-          {error} <button onClick={() => void load()}>Retry</button>
-        </p>
-      )}
-      {loading && !page && <p role="status">Loading todos…</p>}
-      {status === "open" && !!page?.handoffs.length && (
-        <section aria-label="Needs attention now">
-          <h2>Needs attention now</h2>
-          {page.handoffs.map((item) => (
-            <article className="todo-row" key={item.id}>
-              <div>
-                <strong>
-                  {item.kind === "sudo"
-                    ? "Sudo authentication"
-                    : item.kind === "browser_login"
-                      ? "Browser sign-in"
-                      : item.kind === "browser_recovery"
-                        ? "Browser recovery"
-                        : "Desktop handback"}
-                </strong>
-                <p>
-                  {page.agents.find((agent) => agent.id === item.agentId)?.name}{" "}
-                  ·{" "}
-                  {item.status === "executing"
-                    ? "In progress"
-                    : `Expires ${new Date(item.expiresAt).toLocaleString()}`}
-                </p>
-                {item.todoId && (
-                  <button onClick={() => select(item.todoId!)}>
-                    Linked todo · still needs completion
-                  </button>
-                )}
-              </div>
+      <div className="todos-content">
+        <header className="todos-heading">
+          <h1 tabIndex={-1} ref={heading}>
+            {agentId ? "Needs you" : "Todos"}
+          </h1>
+          <button className="todos-add" onClick={() => setEditing("new")}>
+            <span>
+              <Plus size={17} aria-hidden="true" />
+              New todo
+            </span>
+          </button>
+        </header>
+        <div className="todo-toolbar">
+          <div className="todo-segments" role="group" aria-label="Show">
+            {(
+              [
+                ["open", "To do"],
+                ["history", "Completed"],
+              ] as const
+            ).map(([value, label]) => (
               <button
-                onClick={() =>
-                  openTodoAgent(item.agentId, item.sourceActivityId)
-                }
+                key={value}
+                type="button"
+                aria-pressed={status === value}
+                onClick={() => setStatus(value)}
               >
-                Open request
+                {label}
+                {value === "open" && openCount > 0 && (
+                  <span className="todo-segment-count">{openCount}</span>
+                )}
               </button>
-            </article>
-          ))}
-        </section>
-      )}
-      {page &&
-        !page.items.length &&
-        !(status === "open" && page.handoffs.length) && (
-          <p>
-            {status === "open"
-              ? "Nothing needs you right now."
-              : "No resolved todos."}
+            ))}
+          </div>
+          <label className="todo-search">
+            <Search size={17} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Search"
+              placeholder="Search"
+              value={q}
+              maxLength={200}
+              onChange={(event) => setQ(event.target.value)}
+            />
+          </label>
+          {!agentId && (
+            <select
+              className="todo-agent-filter"
+              aria-label="Agent"
+              value={filterAgent}
+              onChange={(event) => setFilterAgent(event.target.value)}
+            >
+              <option value="">All agents</option>
+              <option value="unassigned">No agent</option>
+              {pickableAgents(agents, filterAgent).map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        {error && (
+          <p className="todo-error" role="alert">
+            {error} <button onClick={() => void load()}>Retry</button>
           </p>
         )}
-      <ul className="todo-list">
-        {page?.items
-          .filter(
-            (todo) =>
-              status !== "open" ||
-              !page.handoffs.some((item) => item.todoId === todo.id),
-          )
-          .map((todo) => {
-            const agent = linkedAgent(todo, page.agents);
-            return (
-              <li className="todo-row" key={todo.id}>
-                {todo.status === "open" && (
-                  <button
-                    className="icon"
-                    aria-label={`Done: ${todo.title}`}
-                    title="Done — no agent run"
-                    onClick={() => void done(todo)}
-                  >
-                    <Check size={20} />
-                  </button>
-                )}
-                <button
-                  className="todo-copy"
-                  onClick={() => select(todo.id)}
-                  id={`todo-${todo.id}`}
-                >
-                  <strong>{todo.title}</strong>
-                  <span>
-                    {todo.blocking ? "Blocking · " : ""}
-                    {todo.status === "open"
-                      ? "Open"
-                      : todo.status === "done"
-                        ? "Done · attested"
-                        : "Cancelled"}{" "}
-                    ·{" "}
-                    <time
-                      dateTime={todo.createdAt}
-                      title={new Date(todo.createdAt).toLocaleString()}
+        {loading && !page && (
+          <p className="todo-empty" role="status">
+            Loading todos…
+          </p>
+        )}
+        {!!handoffs.length && (
+          <section className="todo-group" aria-label="Waiting on you now">
+            <h2>Waiting on you now</h2>
+            <ul className="todo-list">
+              {handoffs.map((item) => {
+                const agent = agents.find((a) => a.id === item.agentId);
+                return (
+                  <li className="todo-row todo-handoff" key={item.id}>
+                    <span className="todo-handoff-icon" aria-hidden="true">
+                      <KeyRound size={16} />
+                    </span>
+                    <div className="todo-copy">
+                      <strong>{handoffLabel(item.kind)}</strong>
+                      <span className="todo-meta">
+                        {agent && <Avatar agent={agent} />}
+                        {agent?.name ?? "Agent"} ·{" "}
+                        {item.status === "executing"
+                          ? "In progress"
+                          : `Expires ${new Date(item.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                      </span>
+                      {item.todoId && (
+                        <button
+                          className="todo-link"
+                          onClick={() => select(item.todoId!)}
+                        >
+                          View linked todo
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      className="todo-pill"
+                      onClick={() =>
+                        openTodoAgent(item.agentId, item.sourceActivityId)
+                      }
                     >
-                      {creationAge(todo.createdAt)}
-                    </time>
-                  </span>
-                  <span>{todo.reason.slice(0, 200)}</span>
-                  <span className="todo-agent">
-                    {agent && <Avatar agent={agent} />}
-                    {agent?.name ?? "Unassigned"}
-                    {agent?.archivedAt ? " (archived)" : ""}
-                    {agent?.projectId
-                      ? ` · ${snapshot?.projects.find((project) => project.id === agent.projectId)?.name ?? "Project"}`
-                      : ""}
-                  </span>
-                </button>
-                <button
-                  aria-label={`Edit or manage ${todo.title}`}
-                  onClick={() => select(todo.id)}
+                      Open
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+        {page && !items.length && !handoffs.length && (
+          <div className="todo-empty">
+            {q || filterAgent ? (
+              <p>No matching todos.</p>
+            ) : status === "open" ? (
+              <>
+                <CircleCheck size={36} aria-hidden="true" />
+                <p>Nothing needs you right now.</p>
+              </>
+            ) : (
+              <p>No completed todos yet.</p>
+            )}
+          </div>
+        )}
+        {!!items.length && (
+          <ul className="todo-list">
+            {items.map((todo) => {
+              const agent = linkedAgent(todo, agents);
+              const settled = todo.status !== "open";
+              return (
+                <li
+                  className="todo-row"
+                  data-status={todo.status}
+                  key={todo.id}
                 >
-                  •••
-                </button>
-              </li>
-            );
-          })}
-      </ul>
-      {page?.after && (
-        <button disabled={loading} onClick={() => void load(page.after!)}>
-          {loading ? "Loading…" : "Load more"}
-        </button>
-      )}
+                  <button
+                    className="todo-check"
+                    aria-label={
+                      settled ? `Reopen: ${todo.title}` : `Done: ${todo.title}`
+                    }
+                    title={settled ? "Reopen" : "Mark done"}
+                    onClick={() => void toggle(todo)}
+                  >
+                    <span>
+                      {todo.status === "done" ? (
+                        <Check size={14} strokeWidth={3} />
+                      ) : todo.status === "cancelled" ? (
+                        <X size={14} strokeWidth={3} />
+                      ) : null}
+                    </span>
+                  </button>
+                  <button
+                    className="todo-copy"
+                    onClick={() => select(todo.id)}
+                    id={`todo-${todo.id}`}
+                    aria-label={`Open ${todo.title}`}
+                  >
+                    <strong>{todo.title}</strong>
+                    {todo.body && <span className="todo-body">{todo.body}</span>}
+                    <span className="todo-meta">
+                      {agent ? (
+                        <>
+                          <Avatar agent={agent} />
+                          {agent.name}
+                        </>
+                      ) : (
+                        "No agent"
+                      )}
+                      <span aria-hidden="true">·</span>
+                      {todo.status === "cancelled" ? "Won’t do · " : ""}
+                      <time
+                        dateTime={todo.resolvedAt ?? todo.createdAt}
+                        title={new Date(
+                          todo.resolvedAt ?? todo.createdAt,
+                        ).toLocaleString()}
+                      >
+                        {creationAge(todo.resolvedAt ?? todo.createdAt)}
+                      </time>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {page?.after && (
+          <button
+            className="todo-load-more"
+            disabled={loading}
+            onClick={() => void load(page.after!)}
+          >
+            {loading ? "Loading…" : "Load more"}
+          </button>
+        )}
+      </div>
       {active && selected && (
         <TodoEditor
           key={draftKey}
           id={selected}
           draftKey={draftKey}
           agentId={agentId}
-          agents={page?.agents ?? snapshot?.agents ?? []}
+          agents={agents}
           onClose={close}
           onNavigate={() => {
             todoDrafts.delete(draftKey);
@@ -419,10 +473,7 @@ export function HumanTodos({
   );
 }
 
-type Draft = Pick<
-  HumanTodo,
-  "title" | "instructions" | "reason" | "criteria" | "blocking" | "agentId"
->;
+type Draft = Pick<HumanTodo, "title" | "body" | "agentId">;
 // In-tab only, scoped to the instance and canonical todo. Browser Back/destination
 // changes must not discard a pinned edit; explicit Discard clears it.
 const todoDrafts = new Map<
@@ -437,10 +488,7 @@ const todoDrafts = new Map<
 >();
 const blank = (agentId?: string): Draft => ({
   title: "",
-  instructions: "",
-  reason: "",
-  criteria: "",
-  blocking: false,
+  body: "",
   agentId: agentId ?? null,
 });
 function TodoEditor({
@@ -597,292 +645,273 @@ function TodoEditor({
         onClose={() => setReviewGoal(false)}
       />
     );
+  const isNew = id === "new";
+  const locked = dirty || !!note;
+  const options = pickableAgents(agents, draft.agentId);
+  const resolvedBy =
+    todo?.resolutionActor?.kind === "agent"
+      ? (agents.find((a) => a.id === (todo.resolutionActor as { agentId: string }).agentId)?.name ?? "an agent")
+      : "you";
   return (
     <Modal
-      title={id === "new" ? "Add todo" : "Todo details"}
+      title={isNew ? "New todo" : "Todo"}
       onClose={onClose}
       dirty={dirty || !!note}
       dismissible={!saving}
       focusHeading
+      className="todo-sheet"
     >
       <fieldset className="todo-editor" data-open-todo-id={id} disabled={saving}>
         {error && (
-          <p role="alert">
+          <p className="todo-error" role="alert">
             {error}{" "}
-            <button onClick={() => void load()}>Refresh saved state</button>
+            <button type="button" onClick={() => void load()}>
+              Refresh
+            </button>
           </p>
         )}
-        {id !== "new" && !detail ? (
-          <p>Loading todo…</p>
+        {!isNew && !detail ? (
+          <p className="todo-empty">Loading todo…</p>
+        ) : todo?.deletedAt ? (
+          <p className="todo-banner">This todo was deleted.</p>
         ) : (
           <>
-            {todo?.deletedAt ? (
-              <p>
-                This todo was deleted. Its tombstone and audit remain; deletion
-                is not permanent data erasure.
-              </p>
-            ) : (
-              <>
-                {base !== null && todo && base !== todo.revision && (
-                  <p role="status">
-                    This todo changed. Your draft is retained at revision {base}
-                    ; saved revision is {todo.revision}.{" "}
-                    <button onClick={() => void load(true)}>
-                      Discard draft and load latest
-                    </button>
-                  </p>
+            {todo && todo.status !== "open" && (
+              <p className="todo-banner" data-status={todo.status}>
+                {todo.status === "done" ? (
+                  <Check size={16} aria-hidden="true" />
+                ) : (
+                  <X size={16} aria-hidden="true" />
                 )}
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void mutate("save");
-                  }}
-                >
-                  <p id="todo-privacy">
-                    Todo text and notes are persisted and may be sent to the
-                    linked agent’s provider. Never enter credentials; use
-                    private handoffs.
-                  </p>
-                  {(
-                    [
-                      ["title", "Action title", 160],
-                      ["instructions", "Instructions", 8000],
-                      ["reason", "Why it is needed", 4000],
-                      ["criteria", "What counts as done", 4000],
-                    ] as const
-                  ).map(([key, label, max]) => (
-                    <label className="chat-form-field" key={key}>
-                      {label}
-                      {key === "title" ? (
-                        <input
-                          required
-                          maxLength={max}
-                          value={draft[key]}
-                          aria-describedby="todo-privacy"
-                          onChange={(event) => {
-                            setDraft({ ...draft, [key]: event.target.value });
-                            setDirty(true);
-                          }}
-                        />
-                      ) : (
-                        <textarea
-                          maxLength={max}
-                          value={draft[key]}
-                          aria-describedby="todo-privacy"
-                          onChange={(event) => {
-                            setDraft({ ...draft, [key]: event.target.value });
-                            setDirty(true);
-                          }}
-                        />
-                      )}
-                    </label>
-                  ))}
-                  <label className="chat-form-field">
-                    Linked agent
-                    <select
-                      value={draft.agentId ?? ""}
-                      onChange={(event) => {
-                        setDraft({
-                          ...draft,
-                          agentId: event.target.value || null,
-                        });
-                        setDirty(true);
-                      }}
-                    >
-                      <option value="">Unassigned</option>
-                      {agents.map((agent) => (
-                        <option key={agent.id} value={agent.id}>
-                          {agent.name}
-                          {agent.archivedAt ? " (archived)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={draft.blocking}
-                      onChange={(event) => {
-                        setDraft({ ...draft, blocking: event.target.checked });
-                        setDirty(true);
-                      }}
-                    />{" "}
-                    Blocking dependency
-                  </label>
-                  <ChatFormActions>
-                    <button
-                      type="submit"
-                      className="primary"
-                      disabled={saving || (id !== "new" && !dirty)}
-                    >
-                      Save todo
+                <span>
+                  {todo.status === "done" ? "Done" : "Won’t do"} · marked by{" "}
+                  {resolvedBy}
+                  {todo.resolvedAt
+                    ? ` ${creationAge(todo.resolvedAt).toLowerCase()}`
+                    : ""}
+                </span>
+              </p>
+            )}
+            {base !== null && todo && base !== todo.revision && (
+              <p className="todo-banner" role="status">
+                <span>Someone else changed this todo while you were editing.</span>
+                <button type="button" onClick={() => void load(true)}>
+                  Discard my edits
+                </button>
+              </p>
+            )}
+            <form
+              className="todo-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void mutate("save");
+              }}
+            >
+              <input
+                className="todo-title-input"
+                required
+                aria-label="Title"
+                placeholder="What needs doing?"
+                maxLength={160}
+                value={draft.title}
+                aria-describedby="todo-privacy"
+                onChange={(event) => {
+                  setDraft({ ...draft, title: event.target.value });
+                  setDirty(true);
+                }}
+              />
+              <textarea
+                className="todo-body-input"
+                aria-label="Details"
+                placeholder="Add details"
+                maxLength={8000}
+                value={draft.body}
+                aria-describedby="todo-privacy"
+                onChange={(event) => {
+                  setDraft({ ...draft, body: event.target.value });
+                  setDirty(true);
+                }}
+              />
+              <label className="todo-agent-field">
+                <span aria-hidden="true">Agent</span>
+                <span className="todo-agent-select">
+                  {(() => {
+                    const current = agents.find((a) => a.id === draft.agentId);
+                    return current ? <Avatar agent={current} /> : null;
+                  })()}
+                  <select
+                    aria-label="Assigned agent"
+                    value={draft.agentId ?? ""}
+                    onChange={(event) => {
+                      setDraft({ ...draft, agentId: event.target.value || null });
+                      setDirty(true);
+                    }}
+                  >
+                    <option value="">No agent</option>
+                    {options.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                        {agent.archivedAt ? " (archived)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </label>
+              <p className="todo-hint" id="todo-privacy">
+                The assigned agent can read this. Don’t include passwords or
+                codes.
+              </p>
+              {(isNew || dirty) && (
+                <div className="todo-actions">
+                  {!isNew && (
+                    <button type="button" onClick={() => void load(true)}>
+                      Revert
                     </button>
-                  </ChatFormActions>
-                </form>
-                {todo && (
-                  <section aria-label="Resolution">
-                    <p>
-                      Status: <strong>{todo.status}</strong>
-                      {todo.status === "done"
-                        ? ` · reported by ${todo.resolutionActor?.kind ?? "unknown"}; not independently verified`
-                        : ""}
-                    </p>
-                    {todo.resolutionNote && (
-                      <p className="todo-text">{todo.resolutionNote}</p>
-                    )}
-                    <label className="chat-form-field">
-                      Optional non-secret completion note
-                      <textarea
-                        value={note}
-                        maxLength={4000}
-                        aria-describedby="todo-privacy"
-                        onChange={(event) => setNote(event.target.value)}
-                      />
-                    </label>
-                    {todo.status === "done" && !!note && (
-                      <p>Save the completion note before continuing the agent.</p>
-                    )}
-                    <ChatFormActions>
-                      {todo.status === "done" && (
+                  )}
+                  <button
+                    type="submit"
+                    className="primary"
+                    disabled={saving || !draft.title.trim()}
+                  >
+                    {isNew ? "Add todo" : "Save changes"}
+                  </button>
+                </div>
+              )}
+            </form>
+            {todo && (
+              <section className="todo-resolve" aria-label="Resolution">
+                {todo.resolutionNote && (
+                  <p className="todo-note">{todo.resolutionNote}</p>
+                )}
+                {todo.status !== "cancelled" && (
+                  <textarea
+                    className="todo-note-input"
+                    aria-label="Note"
+                    placeholder={
+                      todo.status === "open"
+                        ? "Add a note for the agent (optional)"
+                        : "Update the note (optional)"
+                    }
+                    value={note}
+                    maxLength={4000}
+                    aria-describedby="todo-privacy"
+                    onChange={(event) => setNote(event.target.value)}
+                  />
+                )}
+                {dirty && (
+                  <p className="todo-hint">Save or revert your edits first.</p>
+                )}
+                <div className="todo-actions">
+                  {todo.status === "open" ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={saving || dirty}
+                        onClick={() => void mutate("cancel")}
+                      >
+                        Won’t do
+                      </button>
+                      <button
+                        type="button"
+                        className={canContinue ? undefined : "primary"}
+                        disabled={saving || dirty}
+                        onClick={() => void mutate("complete")}
+                      >
+                        Mark done
+                      </button>
+                      {canContinue && (
                         <button
-                          disabled={saving || dirty || !note}
+                          type="button"
+                          className="primary"
+                          disabled={saving || dirty}
+                          onClick={() => void mutate("complete", true)}
+                        >
+                          Done &amp; tell agent
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={saving || dirty}
+                        onClick={() => void mutate("reopen")}
+                      >
+                        Reopen
+                      </button>
+                      {todo.status === "done" && !!note && (
+                        <button
+                          type="button"
+                          disabled={saving || dirty}
                           onClick={() => void mutate("save-note")}
                         >
-                          Save completion note
+                          Save note
                         </button>
-                      )}
-                      {todo.status !== "open" && (
-                        <button
-                          disabled={saving || dirty}
-                          onClick={() => void mutate("reopen")}
-                        >
-                          Reopen
-                        </button>
-                      )}
-                      {todo.status === "open" && (
-                        <>
-                          <button
-                            disabled={saving || dirty}
-                            onClick={() => void mutate("cancel")}
-                          >
-                            Cancel todo
-                          </button>
-                          <button
-                            className="primary"
-                            disabled={saving || dirty}
-                            onClick={() => void mutate("complete")}
-                          >
-                            Done
-                          </button>
-                          {canContinue && (
-                            <button
-                              disabled={saving || dirty}
-                              onClick={() => void mutate("complete", true)}
-                            >
-                              Done &amp; continue — runs agent
-                            </button>
-                          )}
-                        </>
                       )}
                       {todo.status === "done" && canContinue && (
                         <button
+                          type="button"
+                          className="primary"
                           disabled={saving || dirty || !!note}
                           onClick={() => void mutate("continue")}
                         >
                           {currentDelivery?.state === "needs_retry" ||
                           currentDelivery?.state === "cancelled"
-                            ? "Retry continuation — runs agent"
-                            : "Continue agent"}
+                            ? "Retry telling agent"
+                            : "Tell agent"}
                         </button>
                       )}
-                    </ChatFormActions>
-                    {todo.goalId && (
-                      <p>
-                        Goal dependency: Done does not resume it.{" "}
-                        <button
-                          disabled={dirty || !!note}
-                          onClick={() => setReviewGoal(true)}
-                        >
-                          Review goal
-                        </button>{" "}
-                        · Use the existing explicit Resume goal action after
-                        review.
-                      </p>
-                    )}
-                    <details>
-                      <summary>Delete todo</summary>
-                      <p>
-                        Soft deletion removes this task from lists, not its
-                        audit. This is not permanent data erasure.
-                      </p>
-                      <button
-                        disabled={saving}
-                        className="danger"
-                        onClick={() => void mutate("delete")}
-                      >
-                        Delete todo
-                      </button>
-                    </details>
-                  </section>
-                )}
-              </>
-            )}
-            {delivery && (
-              <section aria-label="Continuation">
-                <h3>
-                  {currentDelivery
-                    ? "Continuation"
-                    : "Previous completion’s continuation"}{" "}
-                  — separate from task status
-                </h3>
-                <p>
-                  {delivery.state === "waiting"
-                    ? "Waiting for agent"
-                    : delivery.state === "needs_retry"
-                      ? "Not started — retry"
-                      : delivery.state === "admitted"
-                        ? "Already started"
-                        : "Cancelled"}
-                </p>
-                <p>{delivery.reason}</p>
-                {detail.run && (
-                  <p>
-                    Run outcome: {detail.run.status}
-                    {detail.run.error ? ` · ${detail.run.error}` : ""}
+                    </>
+                  )}
+                </div>
+                {todo.goalId && (
+                  <p className="todo-hint">
+                    This todo is blocking a goal. Marking it done won’t resume
+                    the goal automatically.{" "}
+                    <button
+                      type="button"
+                      className="todo-link"
+                      disabled={locked}
+                      onClick={() => setReviewGoal(true)}
+                    >
+                      Review goal
+                    </button>
                   </p>
                 )}
-                {delivery.state === "admitted" && (
-                  <p>
-                    External effects may have occurred. This delivery cannot be
-                    replayed. Use the agent’s Stop control separately; further
-                    work requires a new explicit chat request.{" "}
-                    <button
-                      disabled={dirty || !!note}
-                      onClick={() => {
-                        onNavigate();
-                        openTodoAgent(delivery.agentId);
-                      }}
-                    >
-                      Open continuation agent
-                    </button>
+                {delivery && (
+                  <p className="todo-hint" aria-label="Continuation">
+                    {currentDelivery ? "" : "Earlier: "}
+                    {delivery.state === "waiting"
+                      ? "Agent will pick this up when it’s free."
+                      : delivery.state === "needs_retry"
+                        ? `Agent wasn’t told — ${delivery.reason}`
+                        : delivery.state === "admitted"
+                          ? `Agent was told${detail?.run ? ` (run ${detail.run.status})` : ""}.`
+                          : `Not sent — ${delivery.reason}`}
                   </p>
                 )}
               </section>
             )}
-            {todo && (todo.agentId || (todo.sourceActivityId && todo.sourceAgentId)) && (
-              <ChatFormActions>
-                {todo.agentId && <button
-                  disabled={dirty || !!note}
-                  onClick={() => {
-                    onNavigate();
-                    openTodoAgent(todo.agentId!);
-                  }}
-                >
-                  Open agent
-                </button>}
+            {todo && (
+              <nav className="todo-links" aria-label="Related">
+                {todo.agentId && (
+                  <button
+                    type="button"
+                    className="todo-link"
+                    disabled={locked}
+                    onClick={() => {
+                      onNavigate();
+                      openTodoAgent(todo.agentId!);
+                    }}
+                  >
+                    Open agent
+                  </button>
+                )}
                 {todo.sourceActivityId && todo.sourceAgentId && (
                   <button
-                    disabled={dirty || !!note}
+                    type="button"
+                    className="todo-link"
+                    disabled={locked}
                     onClick={() => {
                       onNavigate();
                       const origin = todo.sourceAgentId;
@@ -892,33 +921,34 @@ function TodoEditor({
                     Source conversation
                   </button>
                 )}
-              </ChatFormActions>
+                <button
+                  type="button"
+                  className="todo-link danger-link"
+                  disabled={saving}
+                  onClick={() => {
+                    if (window.confirm("Delete this todo?"))
+                      void mutate("delete");
+                  }}
+                >
+                  Delete
+                </button>
+              </nav>
             )}
-            {todo && (
-              <details>
-                <summary>History and provenance</summary>
-                <p>
-                  Created by {todo.creator.kind} ·{" "}
-                  {new Date(todo.createdAt).toLocaleString()} · revision{" "}
-                  {todo.revision}
-                </p>
-                <p>Todo ID: {todo.id}</p>
-                {todo.originGoalId && <p>Original goal: {todo.originGoalId}</p>}
-                {todo.originInterventionId && (
-                  <p>
-                    Original private request: {todo.originInterventionId}. Its
-                    own expiry and approval controls still apply.
-                  </p>
-                )}
+            {todo && !!detail?.history.length && (
+              <details className="todo-history">
+                <summary>Activity</summary>
                 <ol>
                   {detail.history.map((entry, index) => (
                     <li key={`${entry.requestId}:${index}`}>
-                      {entry.actor.kind} · {entry.action} · revision{" "}
-                      {entry.afterRevision} ·{" "}
-                      {new Date(entry.createdAt).toLocaleString()}
-                      {entry.changes?.resolutionNote
-                        ? ` · ${String(entry.changes.resolutionNote)}`
-                        : ""}
+                      <span>
+                        {entry.actor.kind === "human"
+                          ? "You"
+                          : (agents.find((a) => a.id === (entry.actor as { agentId: string }).agentId)?.name ?? "Agent")}{" "}
+                        {historyVerb(entry)}
+                      </span>
+                      <time dateTime={entry.createdAt}>
+                        {new Date(entry.createdAt).toLocaleString()}
+                      </time>
                     </li>
                   ))}
                 </ol>
@@ -929,6 +959,29 @@ function TodoEditor({
       </fieldset>
     </Modal>
   );
+}
+function historyVerb(entry: import("../shared/human-todos").HumanTodoAudit) {
+  const status = entry.changes?.status;
+  const note = entry.changes?.resolutionNote;
+  const verb =
+    entry.action === "create"
+      ? "created this"
+      : entry.action === "complete"
+        ? "marked it done"
+        : entry.action === "continue"
+          ? "told the agent"
+          : entry.action === "delete"
+            ? "deleted it"
+            : entry.action === "deduplicated"
+              ? "re-requested it"
+              : status === "open"
+                ? "reopened it"
+                : status === "cancelled"
+                  ? "marked it won’t do"
+                  : status === "done"
+                    ? "marked it done"
+                    : "edited it";
+  return note ? `${verb}: “${String(note)}”` : verb;
 }
 
 export function AgentNeedsYou({
@@ -953,7 +1006,7 @@ export function AgentNeedsYou({
         .then((page) => {
           if (!stale)
             setPreview(
-              page.items[0]?.blocking ? `Blocking: ${page.items[0].title}` : "",
+              page.items[0]?.title ?? "",
             );
         })
         .catch(() => {});
