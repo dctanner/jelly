@@ -107,6 +107,45 @@ test("API keys require private session+CSRF, save with private permissions and p
   );
   expect(readFileSync(join(f.dir, "auth.json"), "utf8")).not.toContain(key);
 });
+test("Firecrawl settings protect credentials with private sessions and CSRF without changing model defaults", async () => {
+  const f = await fixture(), headers = await f.session();
+  const path = new URL("/api/settings/firecrawl", f.app.server.url);
+  const privateKey = "fc-api-test-private-123456789";
+  const req = (method: string, value?: unknown, auth: Record<string, string> = headers, url = path) =>
+    fetch(url, { method, headers: { "Content-Type": "application/json", ...auth },
+      ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
+  for (const method of ["GET", "PUT", "DELETE"]) {
+    expect((await req(method, method === "PUT" ? { key: privateKey } : undefined, {})).status).toBe(401);
+  }
+  expect((await req("PUT", { key: privateKey }, { cookie: headers.cookie })).status).toBe(403);
+  expect((await req("DELETE", undefined, { cookie: headers.cookie })).status).toBe(403);
+  expect((await req("PUT", { key: privateKey }, { ...headers, Origin: "https://evil.example" })).status).toBe(403);
+  expect((await req("GET", undefined, { ...headers, "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+  const importPath = new URL(path + "/import");
+  expect((await req("POST", {}, {}, importPath)).status).toBe(401);
+  expect((await req("POST", {}, { cookie: headers.cookie }, importPath)).status).toBe(403);
+  const mode = f.app.service.snapshot().config.mode;
+  const events = f.app.store.events(0).length;
+  const saved = await req("PUT", { key: privateKey });
+  expect(saved.status).toBe(200);
+  expect(await saved.json()).toEqual({ configured: true, source: "settings" });
+  expect(f.app.service.harness.firecrawl.apiKey()).toBe(privateKey);
+  expect(statSync(join(f.dir, "firecrawl.json")).mode & 0o777).toBe(0o600);
+  expect(await (await req("GET")).json()).toEqual({ configured: true, source: "settings" });
+  expect(await (await req("PUT", { key: privateKey + "\ninvalid" })).text()).not.toContain(privateKey);
+  expect((await req("PUT", { key: "bad-key" })).status).toBe(400);
+  expect((await req("PUT", { key: "x".repeat(5000) })).status).toBe(413);
+  expect(f.app.service.harness.firecrawl.apiKey()).toBe(privateKey);
+  expect((await req("POST", {}, headers, importPath)).status).toBe(409);
+  expect(f.app.service.snapshot().config.mode).toBe(mode);
+  expect(f.app.store.events(0)).toHaveLength(events);
+  expect(JSON.stringify(f.app.service.snapshot())).not.toContain(privateKey);
+  expect(await (await f.req("/status", {}, headers)).text()).not.toContain(privateKey);
+  expect(await (await req("DELETE")).json()).toEqual({ configured: false, source: null });
+  expect(f.app.service.harness.firecrawl.apiKey()).toBeUndefined();
+  expect(readFileSync(join(f.dir, "firecrawl.json"), "utf8")).not.toContain(privateKey);
+});
+
 test("device login belongs to its starting session and automatically saves only final tokens", async () => {
   let finish!: () => void;
   const f = await fixture(async (cb) => {

@@ -9,6 +9,7 @@ import { GeneratedImages, imageGenerationTool } from "./image-generation";
 import { RenderedFiles, renderFileTool } from "./rendered-files";
 import { applyPatchTool } from "./apply-patch";
 import { webTools, WEB_RESEARCH_INSTRUCTIONS } from "./web-tools";
+import { FirecrawlSettings } from "./firecrawl-settings";
 import { APPS_INSTRUCTIONS, instanceInfoTool } from "./apps-tools";
 import { SCHEDULE_INSTRUCTIONS } from "./schedule-tools";
 import type { AppsService } from "./apps";
@@ -55,6 +56,7 @@ export class Harness {
   readonly images: GeneratedImages;
   readonly files: RenderedFiles;
   readonly auth: JellyAuth;
+  readonly firecrawl: FirecrawlSettings;
   readonly registry: ModelRegistry;
   readonly mcps: Mcps;
   private constructor(
@@ -68,6 +70,7 @@ export class Harness {
     this.files = new RenderedFiles(dataDir);
     this.mcps = new Mcps(configDir);
     this.auth = new JellyAuth(runtime, authPath);
+    this.firecrawl = new FirecrawlSettings(dataDir);
     this.registry = new ModelRegistry(runtime);
   }
   static async create(
@@ -264,7 +267,7 @@ export class Harness {
         ...(config.activeMode === "chatgpt" ? [imageGenerationTool(this.runtime, model, this.images, report)] : []),
         renderFileTool(this.files, cwd, report),
         applyPatchTool(cwd),
-        ...webTools(),
+        ...webTools({ apiKey: () => this.firecrawl.apiKey() }),
         ...extraTools,
         instanceInfoTool(instance, agent, apps),
       ],

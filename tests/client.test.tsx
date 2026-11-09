@@ -129,6 +129,89 @@ async function saveAgentProfile(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
   await waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
 }
+test("Firecrawl Settings saves, replaces and removes private credentials without changing the model provider", async () => {
+  const app = await setup();
+  app.service.harness.firecrawl.remove();
+  const mode = app.service.snapshot().config.mode;
+  render(<App />);
+  await waitForConnectedAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Agent list menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Firecrawl" }));
+  await screen.findByText("Not configured");
+  const input = screen.getByLabelText("Firecrawl API key") as HTMLInputElement;
+  expect(input.type).toBe("password");
+  expect(input.value).toBe("");
+  for (const value of ["fc-ui-private-first-123456789", "fc-ui-private-replacement-123456789"]) {
+    fireEvent.change(input, { target: { value } });
+    expect(screen.getByRole("button", { name: "Save settings" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save API key" }));
+    expect(input.value).toBe("");
+    await waitFor(() => expect(app.service.harness.firecrawl.apiKey()).toBe(value));
+    await screen.findByText(/Firecrawl key saved/);
+    expect(JSON.stringify(app.service.snapshot())).not.toContain(value);
+    expect(document.body.textContent).not.toContain(value);
+    expect(JSON.stringify(localStorage)).not.toContain(value);
+  }
+  fireEvent.change(input, { target: { value: "invalid-key" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save API key" }));
+  expect(input.value).toBe("");
+  await screen.findByRole("alert");
+  expect(app.service.harness.firecrawl.apiKey()).toBe("fc-ui-private-replacement-123456789");
+  fireEvent.click(screen.getByRole("button", { name: "Remove key" }));
+  await screen.findByText(/Firecrawl key removed/);
+  expect(app.service.harness.firecrawl.status()).toEqual({ configured: false, source: null });
+  expect(app.service.snapshot().config.mode).toBe(mode);
+});
+
+test("Firecrawl Settings imports an environment key without sending it to or from the browser", async () => {
+  const { FirecrawlConnection } = await import("../src/client/FirecrawlConnection");
+  const writes: unknown[] = [];
+  let source: "environment" | "settings" = "environment";
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (String(input).endsWith("/control-session")) return Response.json({ csrf: "test-token" });
+    if (String(input).endsWith("/settings/firecrawl/import")) {
+      expect(init.method).toBe("POST");
+      writes.push(JSON.parse(init.body));
+      source = "settings";
+    }
+    return Response.json({ configured: true, source });
+  }) as typeof fetch;
+  render(<FirecrawlConnection onBusy={() => {}} onDirty={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Move environment key to Settings" }));
+  await screen.findByText(/Environment key saved in Settings/);
+  expect(writes).toEqual([{}]);
+  expect((screen.getByLabelText("Firecrawl API key") as HTMLInputElement).value).toBe("");
+  expect(screen.queryByRole("button", { name: "Move environment key to Settings" })).toBeNull();
+});
+
+test("Firecrawl Settings ignores a stale initial read after saving and keeps failed submissions empty", async () => {
+  const { FirecrawlConnection } = await import("../src/client/FirecrawlConnection");
+  let finishRead!: (response: Response) => void;
+  let rejectSave = false;
+  globalThis.fetch = (async (input: any, init: any) => {
+    if (String(input).endsWith("/control-session")) return Response.json({ csrf: "test-token" });
+    if (!init?.method || init.method === "GET") return new Promise<Response>((resolve) => { finishRead = resolve; });
+    return rejectSave
+      ? Response.json({ error: "Could not save Firecrawl settings." }, { status: 500 })
+      : Response.json({ configured: true, source: "settings" });
+  }) as typeof fetch;
+  render(<FirecrawlConnection onBusy={() => {}} onDirty={() => {}} />);
+  await waitFor(() => expect(typeof finishRead).toBe("function"));
+  const input = screen.getByLabelText("Firecrawl API key") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "fc-ui-private-race-123456789" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save API key" }));
+  await screen.findByText(/Firecrawl key saved/);
+  await act(async () => { finishRead(Response.json({ configured: false, source: null })); });
+  expect(screen.getByText("Configured")).toBeDefined();
+  rejectSave = true;
+  fireEvent.change(input, { target: { value: "fc-ui-private-failed-123456789" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save API key" }));
+  expect(input.value).toBe("");
+  await screen.findByRole("alert");
+  expect(input.hasAttribute("disabled")).toBe(false);
+});
+
 test("Computer control is shared by agent options and Connected Chrome settings", async () => {
   const a = await setup();
   render(<App />);

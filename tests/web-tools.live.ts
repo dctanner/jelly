@@ -3,10 +3,13 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { webTools } from "../src/server/web-tools";
+import { FirecrawlSettings } from "../src/server/firecrawl-settings";
+import { resolve } from "node:path";
 
+const settings = new FirecrawlSettings(resolve(process.env.JELLY_DATA_DIR ?? ".jelly"));
 assert(
-  process.env.FIRECRAWL_API_KEY?.trim(),
-  "Set FIRECRAWL_API_KEY on the server before running this live test.",
+  settings.apiKey(),
+  "Configure an API key in Jelly Settings → Firecrawl before running this live test.",
 );
 const startedAt = new Date().toISOString();
 const hosts = new Set(["www.phone.inc", "docs.phone.inc"]);
@@ -81,7 +84,7 @@ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
   }
   return response;
 }) as typeof fetch;
-const tool = webTools({ fetch: fetcher }).find((t) => t.name === "web_fetch")!;
+const tool = webTools({ apiKey: () => settings.apiKey(), fetch: fetcher }).find((t) => t.name === "web_fetch")!;
 let sitemapPages = 0;
 try {
   await sitemap("https://www.phone.inc/sitemap-index.xml");

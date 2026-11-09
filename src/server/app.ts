@@ -428,6 +428,25 @@ export async function startApp(options: AppOptions) {
                 await service.interventions.approveSudo(id!, password),
               );
             }
+            if (url.pathname === "/api/settings/firecrawl") {
+              controls.require(req, req.method !== "GET");
+              const settings = service.harness.firecrawl;
+              if (req.method === "GET") return json(settings.status());
+              if (req.method === "DELETE") return json(settings.remove());
+              if (req.method === "PUT") {
+                const input = await body(req, 4096);
+                try {
+                  return json(settings.save(input.key));
+                } finally {
+                  delete input.key;
+                }
+              }
+              throw new HttpError(405, "Unsupported Firecrawl settings operation.");
+            }
+            if (req.method === "POST" && url.pathname === "/api/settings/firecrawl/import") {
+              controls.require(req);
+              return json(service.harness.firecrawl.importEnvironment());
+            }
             if (req.method === "POST" && url.pathname === "/api/mcps/status") {
               controls.require(req);
               return json(await service.harness.mcps.status());

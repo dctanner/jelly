@@ -97,7 +97,7 @@ Both speed selections cover chat turns, tool continuations, naming, and compacti
 Pi subagents still use their own service-tier settings (they inherit the upstream
 model and effort, not Jelly's Fast or Ultrafast selection).
 
-Optional environment settings are documented in [`.env.example`](.env.example). Put local values in `.env.local`, which is ignored by Git. Set `FIRECRAWL_API_KEY` to enable web search and fetching.
+Optional environment settings are documented in [`.env.example`](.env.example). Put local values in `.env.local`, which is ignored by Git. Configure web search and page reading in **Settings → Firecrawl**. Keys are saved privately on the Jelly computer and take effect on the next web request without a restart; existing environment keys can be imported there. See [Firecrawl web tools](docs/WEB_RESEARCH.md).
 
 ### Production
 

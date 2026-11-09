@@ -133,6 +133,10 @@ export interface LoginFlow {
   url: string | null;
   error: string | null;
 }
+export interface FirecrawlStatus {
+  configured: boolean;
+  source: "settings" | "environment" | null;
+}
 export interface ConnectionStatus {
   claudeReady?: boolean;
   claudeNotice?: string;

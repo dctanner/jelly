@@ -314,7 +314,7 @@ test("a 65-page crawl has no cumulative page or content cap", async () => {
 test("missing keys and invalid input fail before any network request", async () => {
   const f = fixture(() => Response.json({}), { apiKey: () => " " });
   await expect(f.call("web_search", { query: "test" })).rejects.toThrow(
-    "FIRECRAWL_API_KEY",
+    "Settings → Firecrawl",
   );
   await expect(f.call("web_search", { query: "  " })).rejects.toThrow("empty");
   for (const url of [
@@ -328,7 +328,7 @@ test("missing keys and invalid input fail before any network request", async () 
 
 test("HTTP errors are actionable and never echo provider error bodies", async () => {
   for (const [status, message] of [
-    [401, "FIRECRAWL_API_KEY"],
+    [401, "Settings → Firecrawl"],
     [403, "account access"],
     [402, "credits"],
     [429, "rate limit"],

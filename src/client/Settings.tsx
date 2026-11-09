@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { ChevronRight, Check } from "lucide-react";
 import { Modal } from "./Modal";
 import { Connections } from "./Connections";
+import { FirecrawlConnection } from "./FirecrawlConnection";
 import { ComputerControlPanel } from "./ComputerControlPanel";
 import { ChromeConnection } from "./ChromeConnection";
 import { DesktopConnection } from "./DesktopConnection";
@@ -185,6 +186,7 @@ export function Settings({
       {page === "Connected Chrome" && <ChromeConnection data={{ ...data, selectedAgentId: null }} refresh={refresh} />}
       {page === "Native Mac desktop" && <DesktopConnection />}
       {page === "Browser notifications" && <BrowserNotifications instance={data.instance.id} />}
+      {page === "Firecrawl" && <FirecrawlConnection onDirty={setDetailDirty} onBusy={setBusy} />}
       {page === "Settings" && (
         <>
           <section className="settings-section">
@@ -254,6 +256,7 @@ export function Settings({
                 onClick={() => setPage("MCP connections")}
               />
               <SettingsRow label="Native Mac desktop" onClick={() => setPage("Native Mac desktop")} />
+              <SettingsRow label="Firecrawl" value="Web search & page reading" onClick={() => setPage("Firecrawl")} />
             </div>
           </section>
           <section className="settings-section">

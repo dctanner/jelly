@@ -1,5 +1,29 @@
 # Firecrawl web tools
 
+## Settings and credentials
+
+Open **Settings → Firecrawl** to save, replace, or remove the API key for all
+agents. The password field is never prefilled; Jelly returns only configured/source
+status. Keys are saved in an owner-only (0600) `firecrawl.json` inside
+`JELLY_DATA_DIR` (normally `.jelly`), separate from snapshots, chat, browser storage
+and the activity database. This is a private plaintext credential file, not an
+encrypted vault. API reads require the private control session; writes also require
+the same-origin CSRF token.
+
+Changes apply to the next web request, even in existing agent sessions, without a
+restart. In-flight requests may finish with the old key. Saving/importing a key
+does not call Firecrawl or spend credits; the next web request checks account access.
+
+For existing installations, `FIRECRAWL_API_KEY` remains a fallback only until a
+key is saved or removed in Settings. **Move environment key to Settings** copies
+it server-side without revealing it to the browser. Then remove its assignment
+from `.env.local` or the service environment yourself; Jelly does not rewrite
+operator-owned configuration. A saved key takes precedence over the environment,
+and **Remove key** persists a disabled setting so an old environment key cannot
+silently reactivate the integration. Re-enable by saving a key in Settings.
+
+## Fetching and rate limits
+
 `web_fetch` returns 300,000 Markdown characters by default (previously 30,000).
 Use `maxCharacters` up to 1,000,000, or follow `nextStartIndex` for longer pages.
 `includeLinks: true` includes the page's links for site discovery. There is no
@@ -24,7 +48,7 @@ consume that allowance, but cannot share this process-local scheduler.
 bun tests/web-tools.live.ts /tmp/phone-inc-firecrawl-report.json
 ```
 
-This is an **opt-in, billable** test requiring `FIRECRAWL_API_KEY`; normal unit
+This is an **opt-in, billable** test requiring a configured Firecrawl key; normal unit
 tests never call the provider. It reads public sitemap XML for `www.phone.inc`
 and `docs.phone.inc`, then fetches every listed webpage through the actual
 `web_fetch` tool and follows additional links on those hosts. It excludes the
