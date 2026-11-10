@@ -8,6 +8,7 @@ export const MODEL_OPTIONS = [
   { id: "gpt-6.1-sol-fast", label: "GPT-6.1 Sol Fast" },
   { id: "gpt-6.1-sol-ultrafast", label: "GPT-6.1 Sol Ultrafast" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+  { id: "claude-fable-5-2", label: "Claude Fable 5.2" },
   { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
 ] as const;

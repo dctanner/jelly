@@ -271,8 +271,10 @@ test.each(["returned billing", "thrown billing", "auth", "aborted"])(
 );
 
 test("Claude model and effort choices match the pinned explicit upstream catalog", () => {
+  const catalog = createJellyClaudeProvider().getModels();
+  expect(catalog.some((model) => model.id === "claude-fable-5-2")).toBe(true);
   for (const model of modelsForMode("claude-code")) {
-    const upstream = CLAUDE_CODE_MODELS.find(
+    const upstream = catalog.find(
       (option) => option.id === model.id,
     )!;
     expect(upstream).toBeDefined();
