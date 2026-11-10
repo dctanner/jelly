@@ -1,4 +1,4 @@
-import { HumanTodos, AgentNeedsYou, HumanTodoActivity } from "./HumanTodos";
+import { HumanTodos, AgentNeedsYou, HumanTodoActivity, openAgentTodos } from "./HumanTodos";
 import { AppRegistration } from "./AppRegistration";
 import { SchedulesPanel, ScheduledMessage, ScheduleNotice } from "./Schedules";
 import { GoalNotice, GoalExecution } from "./Goals";
@@ -76,6 +76,7 @@ import {
   Pencil,
   AlertCircle,
   Ellipsis,
+  ListTodo,
 } from "lucide-react";
 import type {
   Activity,
@@ -377,7 +378,9 @@ export function AgentDetails({
   onMove,
   onArchive,
   onSaved,
+  todoCount = 0,
 }: {
+  todoCount?: number;
   agent: AgentRecord;
   projects: ProjectRecord[];
   connected: boolean;
@@ -478,6 +481,15 @@ export function AgentDetails({
               value={nextSchedule ? `Next: ${nextSchedule}` : schedules ? "No upcoming runs" : "Open to view schedules"}
               disabled={!connected}
               onClick={() => setSchedulesOpen(true)}
+            />
+            <SettingsRow
+              label="Todos"
+              value={todoCount ? `${todoCount} open` : "None open"}
+              icon={<ListTodo size={19} />}
+              onClick={() => {
+                onClose();
+                openAgentTodos(agent.id);
+              }}
             />
             <SettingsRow
               label="Computer control"
@@ -2110,6 +2122,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
             void archive(!agent.archivedAt);
           }}
           onSaved={() => void refresh.current()}
+          todoCount={data?.humanTodoCounts?.agents[agent.id] ?? 0}
         />
       )}
       {modal === "archived" && (
@@ -2197,7 +2210,7 @@ export function App() {
       <div className="destination-layer apps-layer" data-active={location.destination === "apps"} inert={location.destination !== "apps"} aria-hidden={location.destination !== "apps"}>
         <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={editApp} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />
       </div>
-      <div className="destination-layer todos-layer" data-active={location.destination === "todos"} inert={location.destination !== "todos"} aria-hidden={location.destination !== "todos"}><HumanTodos snapshot={workspace} active={location.destination === "todos"} todoId={location.todoId} /></div>
+      <div className="destination-layer todos-layer" data-active={location.destination === "todos"} inert={location.destination !== "todos"} aria-hidden={location.destination !== "todos"}><HumanTodos snapshot={workspace} active={location.destination === "todos"} todoId={location.todoId} agentFilter={location.todoAgentId} /></div>
       {viewing && <AppViewer appId={location.appId!} navigationId={location.navigationId} changedApp={changedApp} revision={revision} onHome={() => navigate("apps", location.appId)} onLaunch={launch} onChanged={changed} onDetails={setDetails} onEdit={editApp} onRemove={setRemoving} />}
     </div>
     {mobileNavigation && destinationNavigation}

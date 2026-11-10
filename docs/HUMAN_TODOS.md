@@ -14,6 +14,10 @@ the linked agent is the requester and continuation destination.
   counts as done), and an **assigned agent**. The agent picker lists active agents
   ordered by most recent activity; archived agents are hidden (an already-assigned
   archived agent remains shown for that todo only).
+- An agent's **…** menu has a **Todos** row (with its open count) that opens
+  `/todos?agent=<id>`: the list filtered to that agent. The filter lives in the
+  URL, so it survives opening a todo, reloads and Back; the To do count and New
+  todo's default assignee follow it. Changing the dropdown updates the URL.
 - **New todo** creates an action without calling a model. Agents can create and
   manage tasks assigned to themselves.
 - Tap the circle on a row to mark it done (no agent run); tap it on a completed

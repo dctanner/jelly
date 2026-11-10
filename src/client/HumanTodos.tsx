@@ -36,11 +36,27 @@ function creationAge(value: string) {
         : `${Math.floor(minutes / 1440)}d ago`;
 }
 const path = (id: string) => `/human-todos/${encodeURIComponent(id)}`;
+/** Preserve the list's agent filter (`?agent=`) when opening/closing a todo. */
+function todosQuery() {
+  const agent = new URLSearchParams(window.location.search).get("agent");
+  return agent && window.location.pathname.startsWith("/todos")
+    ? `?agent=${encodeURIComponent(agent)}`
+    : "";
+}
 export function openTodo(id: string | null) {
   window.history.pushState(
     {},
     "",
-    id ? `/todos/${encodeURIComponent(id)}` : "/todos",
+    (id ? `/todos/${encodeURIComponent(id)}` : "/todos") + todosQuery(),
+  );
+  window.dispatchEvent(new window.PopStateEvent("popstate"));
+}
+/** Open the Todos destination filtered to one agent. */
+export function openAgentTodos(agentId: string) {
+  window.history.pushState(
+    { jellyDestination: "todos" },
+    "",
+    `/todos?agent=${encodeURIComponent(agentId)}`,
   );
   window.dispatchEvent(new window.PopStateEvent("popstate"));
 }
@@ -87,16 +103,32 @@ export function HumanTodos({
   active,
   agentId,
   todoId,
+  agentFilter,
 }: {
   snapshot: Snapshot | null;
   active: boolean;
   agentId?: string;
   todoId?: string | null;
+  /** Agent filter from the URL (`/todos?agent=`); undefined when not routed. */
+  agentFilter?: string | null;
 }) {
   const [page, setPage] = useState<HumanTodosPage | null>(null);
   const [status, setStatus] = useState<"open" | "history">("open"),
     [q, setQ] = useState(""),
-    [filterAgent, setFilterAgent] = useState("");
+    [filterAgent, setFilterAgentState] = useState(agentFilter ?? "");
+  // The URL owns the filter on the routed page, so links, Back and reloads agree.
+  useEffect(() => {
+    if (agentFilter !== undefined) setFilterAgentState(agentFilter ?? "");
+  }, [agentFilter]);
+  const setFilterAgent = (value: string) => {
+    setFilterAgentState(value);
+    if (agentFilter === undefined || agentId) return;
+    const url = new URL(window.location.href);
+    if (value) url.searchParams.set("agent", value);
+    else url.searchParams.delete("agent");
+    window.history.replaceState(window.history.state, "", url);
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+  };
   const [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
     [editing, setEditing] = useState<string | null>(null);
@@ -229,7 +261,7 @@ export function HumanTodos({
     if (agentId) setEditing(id);
     else openTodo(id);
   };
-  const draftKey = `${snapshot?.instance.id ?? "unknown"}:${selected === "new" ? `new:${agentId ?? "unassigned"}` : selected}`;
+  const draftKey = `${snapshot?.instance.id ?? "unknown"}:${selected === "new" ? `new:${agentId ?? (filterAgent || "unassigned")}` : selected}`;
   const close = () => {
     todoDrafts.delete(draftKey);
     if (todoId) openTodo(null);
@@ -240,9 +272,15 @@ export function HumanTodos({
     });
   };
   const agents = page?.agents ?? snapshot?.agents ?? [];
-  const openCount = agentId
-    ? (snapshot?.humanTodoCounts?.agents[agentId] ?? 0)
-    : (snapshot?.humanTodoCounts?.total ?? page?.counts.total ?? 0);
+  const scopedAgent = agentId ?? filterAgent;
+  const openCount =
+    scopedAgent === "unassigned"
+      ? null
+      : scopedAgent
+        ? (snapshot?.humanTodoCounts?.agents[scopedAgent] ??
+          page?.counts.agents[scopedAgent] ??
+          0)
+        : (snapshot?.humanTodoCounts?.total ?? page?.counts.total ?? 0);
   const handoffs = status === "open" ? (page?.handoffs ?? []) : [];
   const items =
     page?.items.filter(
@@ -282,7 +320,7 @@ export function HumanTodos({
                 onClick={() => setStatus(value)}
               >
                 {label}
-                {value === "open" && openCount > 0 && (
+                {value === "open" && !!openCount && (
                   <span className="todo-segment-count">{openCount}</span>
                 )}
               </button>
@@ -459,7 +497,12 @@ export function HumanTodos({
           key={draftKey}
           id={selected}
           draftKey={draftKey}
-          agentId={agentId}
+          agentId={
+            agentId ??
+            (filterAgent && filterAgent !== "unassigned"
+              ? filterAgent
+              : undefined)
+          }
           agents={agents}
           onClose={close}
           onNavigate={() => {

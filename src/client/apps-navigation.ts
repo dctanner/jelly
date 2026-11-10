@@ -7,6 +7,8 @@ export interface AppsLocation {
   destination: AppDestination;
   appId: string | null;
   todoId: string | null;
+  /** Todos list filter from `/todos?agent=<id>`. */
+  todoAgentId: string | null;
   agentId: string | null;
   navigationId: string;
   focusAppId: string | null;
@@ -19,7 +21,8 @@ export function readAppsLocation(): AppsLocation {
   const viewer = /^\/apps\/([^/]+)(\/.*)?$/.exec(path);
   const todo = /^\/todos(?:\/([^/]+))?\/?$/.exec(path);
   const agent = /^\/agents\/([^/]+)\/?$/.exec(path);
-  const queryAgent = new URLSearchParams(window.location.search).get("agentId");
+  const search = new URLSearchParams(window.location.search);
+  const queryAgent = search.get("agentId");
   let appId: string | null = null;
   let agentId: string | null = null;
   try {
@@ -44,6 +47,7 @@ export function readAppsLocation(): AppsLocation {
     destination,
     appId,
     todoId: todo?.[1] ?? null,
+    todoAgentId: todo ? search.get("agent") || null : null,
     agentId,
     navigationId,
     focusAppId:

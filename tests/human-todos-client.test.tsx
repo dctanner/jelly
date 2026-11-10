@@ -380,3 +380,25 @@ test("unassignment preserves independent historical source navigation without an
   expect(window.location.pathname + window.location.search).toBe("/agents/original?activity=42");
   expect(window.history.length).toBe(before + 1);
 });
+
+test("/todos?agent= filters the list, survives opening/closing a todo and syncs the dropdown to the URL", async () => {
+  fixture();
+  const requested: string[] = [];
+  const base = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init?: RequestInit) => {
+    if (String(url).includes("/human-todos?")) requested.push(String(url));
+    return base(url, init);
+  }) as typeof fetch;
+  window.history.replaceState({}, "", "/todos?agent=agent");
+  expect(readAppsLocation()).toMatchObject({ destination: "todos", todoAgentId: "agent", todoId: null });
+  const ui = render(<HumanTodos snapshot={isolatedSnapshot()} active agentFilter="agent" />);
+  await screen.findByText("Upload agreement");
+  expect(requested.at(-1)).toContain("agentId=agent");
+  expect((screen.getByLabelText("Agent") as HTMLSelectElement).value).toBe("agent");
+  fireEvent.click(screen.getByRole("button", { name: "Open Upload agreement" }));
+  expect(window.location.pathname + window.location.search).toBe("/todos/todo?agent=agent");
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "" } });
+  expect(window.location.search).toBe("");
+  ui.rerender(<HumanTodos snapshot={isolatedSnapshot()} active agentFilter={null} />);
+  await waitFor(() => expect(requested.at(-1)).not.toContain("agentId="));
+});
