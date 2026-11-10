@@ -646,6 +646,7 @@ function TodoEditor({
     );
   const isNew = id === "new";
   const locked = dirty || !!note;
+  const formId = `todo-form-${id}`;
   const options = pickableAgents(agents, draft.agentId);
   const resolvedBy =
     todo?.resolutionActor?.kind === "agent"
@@ -700,6 +701,7 @@ function TodoEditor({
               </p>
             )}
             <form
+              id={formId}
               className="todo-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -760,22 +762,6 @@ function TodoEditor({
                 The assigned agent can read this. Don’t include passwords or
                 codes.
               </p>
-              {(isNew || dirty) && (
-                <div className="todo-actions">
-                  {!isNew && (
-                    <button type="button" onClick={() => void load(true)}>
-                      Revert
-                    </button>
-                  )}
-                  <button
-                    type="submit"
-                    className="primary"
-                    disabled={saving || !draft.title.trim()}
-                  >
-                    {isNew ? "Add todo" : "Save changes"}
-                  </button>
-                </div>
-              )}
             </form>
             {todo && (
               <section className="todo-resolve" aria-label="Resolution">
@@ -797,72 +783,6 @@ function TodoEditor({
                     onChange={(event) => setNote(event.target.value)}
                   />
                 )}
-                {dirty && (
-                  <p className="todo-hint">Save or revert your edits first.</p>
-                )}
-                <div className="todo-actions">
-                  {todo.status === "open" ? (
-                    <>
-                      <button
-                        type="button"
-                        disabled={saving || dirty}
-                        onClick={() => void mutate("cancel")}
-                      >
-                        Won’t do
-                      </button>
-                      <button
-                        type="button"
-                        className={canContinue ? undefined : "primary"}
-                        disabled={saving || dirty}
-                        onClick={() => void mutate("complete")}
-                      >
-                        Mark done
-                      </button>
-                      {canContinue && (
-                        <button
-                          type="button"
-                          className="primary"
-                          disabled={saving || dirty}
-                          onClick={() => void mutate("complete", true)}
-                        >
-                          Done &amp; tell agent
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        disabled={saving || dirty}
-                        onClick={() => void mutate("reopen")}
-                      >
-                        Reopen
-                      </button>
-                      {todo.status === "done" && !!note && (
-                        <button
-                          type="button"
-                          disabled={saving || dirty}
-                          onClick={() => void mutate("save-note")}
-                        >
-                          Save note
-                        </button>
-                      )}
-                      {todo.status === "done" && canContinue && (
-                        <button
-                          type="button"
-                          className="primary"
-                          disabled={saving || dirty || !!note}
-                          onClick={() => void mutate("continue")}
-                        >
-                          {currentDelivery?.state === "needs_retry" ||
-                          currentDelivery?.state === "cancelled"
-                            ? "Retry telling agent"
-                            : "Tell agent"}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
                 {todo.goalId && (
                   <p className="todo-hint">
                     This todo is blocking a goal. Marking it done won’t resume
@@ -953,6 +873,97 @@ function TodoEditor({
                 </ol>
               </details>
             )}
+            <footer className="todo-footer">
+              {isNew || dirty ? (
+                <>
+                  <button
+                    type="button"
+                    className="todo-quiet"
+                    onClick={() => (isNew ? onClose() : void load(true))}
+                  >
+                    {isNew ? "Cancel" : "Revert"}
+                  </button>
+                  <span className="todo-footer-status">
+                    {isNew ? "" : "Unsaved changes"}
+                  </span>
+                  <button
+                    type="submit"
+                    form={formId}
+                    className="todo-primary"
+                    disabled={saving || !draft.title.trim()}
+                  >
+                    {isNew ? "Add todo" : "Save changes"}
+                  </button>
+                </>
+              ) : todo?.status === "open" ? (
+                <>
+                  <button
+                    type="button"
+                    className="todo-quiet"
+                    disabled={saving}
+                    onClick={() => void mutate("cancel")}
+                  >
+                    Won’t do
+                  </button>
+                  <span className="todo-footer-status" />
+                  <button
+                    type="button"
+                    className={canContinue ? "todo-secondary" : "todo-primary"}
+                    disabled={saving}
+                    onClick={() => void mutate("complete")}
+                  >
+                    {!canContinue && <Check size={16} aria-hidden="true" />}
+                    Mark done
+                  </button>
+                  {canContinue && (
+                    <button
+                      type="button"
+                      className="todo-primary"
+                      disabled={saving}
+                      onClick={() => void mutate("complete", true)}
+                    >
+                      <Check size={16} aria-hidden="true" />
+                      Done &amp; tell agent
+                    </button>
+                  )}
+                </>
+              ) : todo ? (
+                <>
+                  <button
+                    type="button"
+                    className="todo-quiet"
+                    disabled={saving}
+                    onClick={() => void mutate("reopen")}
+                  >
+                    Reopen
+                  </button>
+                  <span className="todo-footer-status" />
+                  {todo.status === "done" && !!note && (
+                    <button
+                      type="button"
+                      className={canContinue ? "todo-secondary" : "todo-primary"}
+                      disabled={saving}
+                      onClick={() => void mutate("save-note")}
+                    >
+                      Save note
+                    </button>
+                  )}
+                  {todo.status === "done" && canContinue && (
+                    <button
+                      type="button"
+                      className="todo-primary"
+                      disabled={saving || !!note}
+                      onClick={() => void mutate("continue")}
+                    >
+                      {currentDelivery?.state === "needs_retry" ||
+                      currentDelivery?.state === "cancelled"
+                        ? "Retry telling agent"
+                        : "Tell agent"}
+                    </button>
+                  )}
+                </>
+              ) : null}
+            </footer>
           </>
         )}
       </fieldset>

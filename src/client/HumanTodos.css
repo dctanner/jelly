@@ -459,34 +459,83 @@ dialog.todo-sheet .todo-editor .todo-agent-select select {
 .todo-form > .todo-hint {
   padding: 0 16px 12px;
 }
-.todo-form > .todo-actions {
-  padding: 0 12px 12px;
-}
-.todo-hint {
+dialog.todo-sheet .todo-hint {
   margin: 0;
   color: var(--muted);
   font-size: 12.5px;
   line-height: 1.5;
 }
-.todo-actions {
+/* One action bar pinned to the sheet's bottom edge. While the todo has
+   unsaved edits it shows only Revert / Save, so Save is the obvious primary
+   action; otherwise it shows the resolution actions. */
+.todo-footer {
+  position: sticky;
+  bottom: -20px;
+  z-index: 2;
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 8px;
-}
-.todo-editor .todo-actions button {
-  padding: 0 16px;
-  font-size: 15px;
-  border-radius: 10px;
-  background: var(--surface);
-  font-weight: 550;
-}
-.todo-form .todo-actions button:not(.primary) {
+  margin: 4px -20px -20px;
+  padding: 12px 20px max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
   background: var(--page);
 }
-.todo-actions .primary {
+.todo-footer:empty {
+  display: none;
+}
+.todo-footer-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.todo-editor .todo-footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+.todo-editor .todo-footer button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.todo-editor .todo-footer .todo-primary {
   background: var(--button);
   color: var(--button-text);
+}
+.todo-editor .todo-footer .todo-secondary {
+  background: var(--todo-tint);
+  color: var(--todo-tint-text);
+}
+.todo-editor .todo-footer .todo-quiet {
+  padding: 0 10px;
+  margin-left: -10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 550;
+}
+@media (hover: hover) {
+  .todo-editor .todo-footer .todo-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--button) 88%, var(--text));
+  }
+  .todo-editor .todo-footer .todo-secondary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .todo-editor .todo-footer .todo-quiet:hover:not(:disabled) {
+    color: var(--text);
+  }
+}
+.todo-sheet {
+  --todo-tint: color-mix(in srgb, var(--accent) 14%, transparent);
+  --todo-tint-text: color-mix(in srgb, var(--accent) 86%, var(--text));
 }
 .todo-resolve {
   display: grid;
@@ -774,4 +823,22 @@ dialog.todo-sheet .todo-editor.todo-editor .todo-note-input {
   line-height: 1;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* Phones: two resolution actions share a full-width row; the quiet
+   "Won’t do" drops beneath them rather than squeezing the row. */
+@media (max-width: 480px) {
+  .todo-footer:has(.todo-secondary) .todo-footer-status {
+    display: none;
+  }
+  .todo-editor .todo-footer:has(.todo-secondary) :is(.todo-primary, .todo-secondary) {
+    flex: 1 1 0;
+    padding: 0 12px;
+  }
+  .todo-editor .todo-footer:has(.todo-secondary) .todo-quiet {
+    order: 3;
+    flex: 1 1 100%;
+    min-height: 36px;
+    margin: 0;
+  }
 }
