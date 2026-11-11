@@ -554,7 +554,7 @@ export class SessionWork {
       (this.jobs.size || this.live())
     )
       void this.wake(
-        "New user steering is queued. Read it before continuing delegated work.",
+        "New user steering is queued. Read it before continuing delegated work. Keep running subagents going unless the steering invalidates their work; forward relevant corrections with subagent action:steer.",
         "jelly-steering-wake",
       ).catch(() => {});
   }
