@@ -4,6 +4,7 @@ import { Avatar } from "./Avatar";
 import { AgentListMenu } from "./AgentListMenu";
 import { Modal } from "./Modal";
 import { sortAgentsByResponse } from "./agent-order";
+import { ProjectTodos } from "./HumanTodos";
 import type { AgentRecord, ProjectRecord, Snapshot } from "../shared/types";
 
 const attention = (agent: AgentRecord) =>
@@ -226,7 +227,7 @@ export function AgentInbox({
     ) : (
       <ProjectRow
         key={entry.project.id}
-        todoCount={entry.members.reduce((sum, member) => sum + (data?.humanTodoCounts?.agents[member.id] ?? 0), 0)}
+        todoCount={entry.members.reduce((sum, member) => sum + (data?.humanTodoCounts?.agents[member.id] ?? 0), data?.humanTodoCounts?.projects?.[entry.project.id] ?? 0)}
         project={entry.project}
         members={entry.members}
         unread={unread}
@@ -303,6 +304,14 @@ export function AgentInbox({
                 Add existing agent
               </button>
             </div>
+          )}
+          {data && project && (
+            <ProjectTodos
+              key={project.id}
+              snapshot={data}
+              projectId={project.id}
+              active={visible && inProject}
+            />
           )}
         </nav>
       </div>

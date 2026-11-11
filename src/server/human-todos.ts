@@ -145,11 +145,17 @@ export class HumanTodos {
         "SELECT agentId,count(*) AS n FROM human_todos WHERE status='open' AND deletedAt IS NULL GROUP BY agentId",
       )
       .all() as { agentId: string | null; n: number }[];
-    const counts: HumanTodoCounts = { total: 0, agents: {} };
+    const counts: HumanTodoCounts = { total: 0, agents: {}, projects: {} };
     for (const row of rows) {
       counts.total += row.n;
       if (row.agentId) counts.agents[row.agentId] = row.n;
     }
+    for (const row of this.store.db
+      .query(
+        "SELECT projectId,count(*) AS n FROM human_todos WHERE status='open' AND deletedAt IS NULL AND agentId IS NULL AND projectId IS NOT NULL GROUP BY projectId",
+      )
+      .all() as { projectId: string; n: number }[])
+      counts.projects![row.projectId] = row.n;
     for (const item of this.handoffs())
       if (item.status === "pending" && !item.todoId) {
         counts.total++;
@@ -193,8 +199,10 @@ export class HumanTodos {
         params.push(text(agentId, "Agent", 100, true));
     }
     if (query.projectId) {
-      where.push("a.projectId=?");
-      params.push(text(query.projectId, "Project", 100, true));
+      // An agent's project wins; unassigned todos use their own project scope.
+      where.push("(a.projectId=? OR (t.agentId IS NULL AND t.projectId=?))");
+      const project = text(query.projectId, "Project", 100, true);
+      params.push(project, project);
     }
     if (query.q) {
       where.push(
@@ -241,6 +249,7 @@ export class HumanTodos {
         ({
           id,
           agentId,
+          projectId,
           title,
           body,
           status,
@@ -250,6 +259,7 @@ export class HumanTodos {
         }) => ({
           id,
           agentId,
+          projectId: agentId ? null : (projectId ?? null),
           title,
           body: body.slice(0, 280),
           status,
@@ -336,8 +346,9 @@ export class HumanTodos {
         ...(action === "complete" ? ["resolutionNote", "continueAgent"] : []),
         ...(action === "delete" ? ["resolutionNote"] : []),
         ...(actor.kind === "human" && ["create", "update"].includes(action)
-          ? ["agentId"]
+          ? ["agentId", "projectId"]
           : []),
+        ...(action === "delegate" ? ["agentId"] : []),
         // Agent-only hint: this todo blocks the agent's active goal. Not stored.
         ...(actor.kind === "agent" && ["create", "update"].includes(action)
           ? ["blocking"]
@@ -346,7 +357,9 @@ export class HumanTodos {
       if (
         Object.keys(input).some((key) => !allowed.includes(key)) ||
         (actor.kind === "agent" &&
-          (action === "continue" || input.continueAgent !== undefined))
+          (action === "continue" ||
+            action === "delegate" ||
+            input.continueAgent !== undefined))
       )
         throw new HttpError(400, "Unknown or server-owned todo field.");
       if (
@@ -422,6 +435,7 @@ export class HumanTodos {
           agentId: actor.kind === "agent" ? actor.agentId : null,
           title: "",
           body: "",
+          projectId: null,
           status: "open",
           revision: 1,
           createdAt: now,
@@ -469,6 +483,22 @@ export class HumanTodos {
           todo.interventionId = null;
         }
       }
+      if (action === "delegate") {
+        if (todo.status !== "open")
+          throw new HttpError(409, "Only open todos can be sent to an agent.");
+        if (!todo.agentId) throw new HttpError(400, "Choose an agent.");
+      }
+      if (input.projectId !== undefined) {
+        if (
+          input.projectId !== null &&
+          (typeof input.projectId !== "string" ||
+            !this.store.project(input.projectId))
+        )
+          throw new HttpError(404, "Project not found.");
+        todo.projectId = input.projectId as string | null;
+      }
+      // A todo belongs to its agent's project once assigned.
+      if (todo.agentId) todo.projectId = null;
       for (const key of ["title", "body"] as const)
         if (input[key] !== undefined)
           todo[key] = text(
@@ -629,6 +659,7 @@ export class HumanTodos {
       if (action !== "continue") {
         const meaningful =
           action === "create" ||
+          action === "delegate" ||
           previousStatus !== todo.status ||
           action === "delete";
         const event = this.store.event(

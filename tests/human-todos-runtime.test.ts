@@ -391,3 +391,58 @@ test("mixed schedule/todo backlogs alternate actual admission turns without star
   const sources = (f.store.db.query("SELECT json_extract(source,'$.source') source FROM runs ORDER BY rowid").all() as { source: string }[]).map(row => row.source);
   expect(sources).toEqual(Array.from({ length: 11 }, (_, index) => index % 2 ? "schedule" : "human_todo"));
 });
+
+test("project-scoped unassigned todos list/count under the project and delegate once to a new project agent", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "jelly-todo-project-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const project = f.service.saveProject(null, { name: "Taxes", defaultCwd: dir });
+  const todo = f.service.changeHumanTodo("create", null, {
+    requestId: "project-todo", title: "Draft the extension letter", body: "Use last year's template.", projectId: project.id,
+  }).todo;
+  expect(todo).toMatchObject({ agentId: null, projectId: project.id });
+  expect(f.service.humanTodos.counts().projects).toEqual({ [project.id]: 1 });
+  expect(f.service.humanTodos.list({ projectId: project.id }).items.map(t => t.id)).toEqual([todo.id]);
+  expect(f.service.humanTodos.list({ agentId: "unassigned" }).items.map(t => t.id)).toContain(todo.id);
+  expect(() => f.service.changeHumanTodo("create", null, { requestId: "bad-project", title: "x", projectId: "missing" })).toThrow("Project not found");
+  // Agents can never scope todos to projects or delegate.
+  const run = f.store.createRun(f.agent.id, "agent-run", "x", "api", f.agent.model);
+  expect(() => f.service.humanTodos.mutate("create", null, { requestId: "agent-project", title: "x", projectId: project.id }, { kind: "agent", agentId: f.agent.id, runId: run.id })).toThrow("server-owned");
+  f.store.finishRun(run.id, "completed", null);
+
+  const before = f.store.agents().length;
+  const input = { requestId: "delegate-1", expectedRevision: todo.revision };
+  const receipt = f.service.delegateHumanTodo(todo.id, input);
+  expect(f.service.delegateHumanTodo(todo.id, input)).toEqual(receipt); // replay: no second agent/run
+  expect(f.store.agents()).toHaveLength(before + 1);
+  const agent = f.store.agent(receipt.todo.agentId!)!;
+  expect(agent.projectId).toBe(project.id);
+  expect(receipt.todo).toMatchObject({ status: "open", projectId: null, agentId: agent.id });
+  expect(receipt.history[0]?.action).toBe("delegate");
+  await f.service.settled();
+  const runs = f.store.runs(agent.id);
+  expect(runs).toHaveLength(1);
+  expect(f.store.byRequest("todo-delegate:delegate-1")?.prompt).toContain("Draft the extension letter");
+  expect(f.store.byRequest("todo-delegate:delegate-1")?.prompt).toContain("last year's template");
+  expect(f.service.humanTodos.counts().projects).toEqual({});
+  expect(f.service.humanTodos.list({ projectId: project.id }).items.map(t => t.id)).toEqual([todo.id]);
+  expect(() => f.service.delegateHumanTodo(todo.id, { requestId: "delegate-2", expectedRevision: receipt.todo.revision })).toThrow("already has an agent");
+
+  // Deleting the project leaves a remaining project todo as a plain unassigned todo.
+  const other = f.service.changeHumanTodo("create", null, { requestId: "other", title: "Other", projectId: project.id }).todo;
+  f.service.moveAgent(agent.id, null);
+  f.service.deleteProject(project.id);
+  expect(f.service.humanTodos.get(other.id).projectId).toBeNull();
+});
+
+test("delegation fails before creating an agent when no provider is connected", async () => {
+  const f = await fixture();
+  const todo = f.service.changeHumanTodo("create", null, { requestId: "t", title: "Needs a provider" }).todo;
+  const before = f.store.agents().length;
+  const original = f.service.harness.requireConnection.bind(f.service.harness);
+  f.service.harness.requireConnection = () => { throw new Error("Connect a model first."); };
+  expect(() => f.service.delegateHumanTodo(todo.id, { requestId: "d", expectedRevision: 1 })).toThrow("Connect a model");
+  f.service.harness.requireConnection = original;
+  expect(f.store.agents()).toHaveLength(before);
+  expect(f.service.humanTodos.get(todo.id).agentId).toBeNull();
+});

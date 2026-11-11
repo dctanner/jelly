@@ -53,7 +53,7 @@ test("schedule schema migration, durable receipt, mutation idempotency and revis
   expect(receipt.schedule.maxLatenessSeconds).toBe(86400);
   expect(f.store.runs(f.agent.id)).toEqual([]);
   expect(f.store.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 21,
+    user_version: 22,
   });
   const paused = f.schedules.change(f.agent.id, receipt.schedule.id, "pause", {
     requestId: "pause",

@@ -6,6 +6,9 @@ export type HumanTodoActor =
 export interface HumanTodo {
   id: string;
   agentId: string | null;
+  /** Project scope for a human todo with no agent. An assigned agent's own
+   * project takes precedence; this is cleared when an agent is assigned. */
+  projectId?: string | null;
   title: string;
   /** Free-form details: what to do, why, and what counts as done. */
   body: string;
@@ -65,6 +68,8 @@ export interface HumanTodoDetail {
 export interface HumanTodoCounts {
   total: number;
   agents: Record<string, number>;
+  /** Open todos with no agent, scoped to a project. */
+  projects?: Record<string, number>;
 }
 export type HumanTodoHandoff = Pick<
   Intervention,
@@ -74,6 +79,7 @@ export type HumanTodoSummary = Pick<
   HumanTodo,
   | "id"
   | "agentId"
+  | "projectId"
   | "title"
   | "body"
   | "status"
@@ -89,4 +95,4 @@ export interface HumanTodosPage {
   agents: AgentRecord[];
 }
 export type HumanTodoAction =
-  "create" | "update" | "complete" | "continue" | "delete";
+  "create" | "update" | "complete" | "continue" | "delete" | "delegate";

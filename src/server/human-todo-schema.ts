@@ -60,6 +60,14 @@ export function mergeLegacyTodoText(
   } = record;
   return { ...rest, body };
 }
+/** v22: index the unassigned-todo project scope stored in the record. */
+export function migrateHumanTodoProjects(db: Database) {
+  db.exec(`
+    ALTER TABLE human_todos ADD COLUMN projectId TEXT GENERATED ALWAYS AS (json_extract(record,'$.projectId')) VIRTUAL;
+    CREATE INDEX idx_human_todos_project ON human_todos(projectId,status) WHERE deletedAt IS NULL;
+    PRAGMA user_version=22;
+  `);
+}
 export function migrateHumanTodoBody(db: Database) {
   const todos = db.query("SELECT id, record FROM human_todos").all() as {
     id: string;

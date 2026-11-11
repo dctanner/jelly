@@ -44,7 +44,7 @@ function fixture() {
 test("fresh and v17 migration, reopen, scoped one-current-goal, durable mutation replay/conflicts", () => {
   const f = fixture();
   expect(f.store.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 21,
+    user_version: 22,
   });
   // Reconstruct an actual v17 schema before migrating, not merely reset the version.
   removePostV19SchemaForLegacyFixture(f.store.db);

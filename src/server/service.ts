@@ -28,6 +28,7 @@ import { SubagentStore } from "./subagent-store";
 import { thinkingPreview } from "./activity-preview";
 import { Harness } from "./harness";
 import { HttpError } from "./errors";
+import { DEFAULT_AGENT_NAME } from "../shared/agent-names";
 export { HttpError } from "./errors";
 import { BrowserSessions } from "./browser-sessions";
 import { ChromeSessions } from "./chrome-sessions";
@@ -559,6 +560,53 @@ export class JellyService {
     const receipt = this.humanTodos.mutate(action, id, input);
     // Only explicit human continuation requests can create waiting deliveries.
     if (action === "continue" || input.continueAgent === true) this.deliverHumanTodos();
+    return receipt;
+  }
+  /** Hand an open human todo to a brand-new agent in the todo's project and
+   * start it on the task. Replaying the same requestId returns the original
+   * receipt without creating another agent or run. */
+  delegateHumanTodo(id: string, input: Record<string, unknown>) {
+    if (this.closing) throw new HttpError(503, "Jelly is shutting down.");
+    const requestId = typeof input.requestId === "string" ? input.requestId : "";
+    if (!requestId || requestId.length > 100) throw new HttpError(400, "Request ID is required.");
+    if (Object.keys(input).some(key => !["requestId", "expectedRevision"].includes(key)))
+      throw new HttpError(400, "Unknown todo field.");
+    const prior = this.store.db
+      .query("SELECT receipt FROM human_todo_mutations WHERE scope='human' AND requestId=?")
+      .get(requestId) as { receipt: string } | null;
+    if (prior) return JSON.parse(prior.receipt) as ReturnType<HumanTodos["detail"]>;
+    const todo = this.humanTodos.get(id);
+    if (todo.deletedAt) throw new HttpError(410, "Todo deleted.");
+    if (todo.status !== "open") throw new HttpError(409, "Only open todos can be sent to an agent.");
+    if (todo.agentId) throw new HttpError(409, "This todo already has an agent.");
+    if (input.expectedRevision !== todo.revision)
+      throw new HttpError(409, "Todo changed. Review the current revision.");
+    // Check the provider before creating anything so a failure leaves no orphan agent.
+    // A new agent takes the instance's default mode/model/effort (see Store.addAgent).
+    const defaults = this.store.instance();
+    this.harness.requireConnection(this.harness.config(defaults.mode, defaults));
+    const agent = this.createAgent({
+      name: DEFAULT_AGENT_NAME,
+      instructions: "",
+      color: "#b5bafc",
+      avatarId: "jellyfish",
+      nameEdited: false,
+      projectId: todo.projectId ?? null,
+    });
+    const receipt = this.humanTodos.mutate("delegate", id, {
+      requestId,
+      expectedRevision: todo.revision,
+      agentId: agent.id,
+    });
+    const prompt = [
+      `Please take care of this todo for me:`,
+      ``,
+      `**${receipt.todo.title}**`,
+      ...(receipt.todo.body ? [``, receipt.todo.body] : []),
+      ``,
+      `(Jelly todo ${receipt.todo.id}, now assigned to you. When it's done, mark it done with human_todo_update and put what you observed in resolutionNote. If you need something from me, say so or create a todo.)`,
+    ].join("\n");
+    this.start(agent.id, `todo-delegate:${requestId}`, prompt);
     return receipt;
   }
   private deliverHumanTodos() {

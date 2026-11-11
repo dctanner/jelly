@@ -781,13 +781,14 @@ export async function startApp(options: AppOptions) {
               if (!Number.isSafeInteger(id) || !store.db.query("SELECT id FROM timeline WHERE agentId=? AND id=?").get(agentId!, id)) throw new HttpError(404, "Source activity not found for this agent.");
               return json(service.historyPage(agentId!, id + 1));
             }
-            const todoMatch = url.pathname.match(/^\/api\/human-todos(?:\/([^/]+)(?:\/(complete|continue|delete))?)?$/);
+            const todoMatch = url.pathname.match(/^\/api\/human-todos(?:\/([^/]+)(?:\/(complete|continue|delete|delegate))?)?$/);
             if (todoMatch) {
               const [, id, action] = todoMatch;
               if (req.method === "GET" && !id) return json(service.humanTodos.list(Object.fromEntries(url.searchParams)));
               if (req.method === "GET" && id && !action) return json(service.humanTodos.detail(id));
               if (req.method === "POST" && !id) return json(service.changeHumanTodo("create", null, await body(req)), 201);
               if (req.method === "PATCH" && id && !action) return json(service.changeHumanTodo("update", id, await body(req)));
+              if (req.method === "POST" && id && action === "delegate") return json(service.delegateHumanTodo(id, await body(req)));
               if (req.method === "POST" && id && action) return json(service.changeHumanTodo(action as "complete" | "continue" | "delete", id, await body(req)));
             }
             const goalMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/goal(?:\/(create|edit|pause|resume|complete|clear))?$/);

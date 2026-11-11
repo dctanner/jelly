@@ -197,6 +197,7 @@
   border-top: 1px solid var(--border);
 }
 .human-todos .todo-check,
+.project-todos .todo-check,
 .chat-todo .todo-check {
   flex: 0 0 44px;
   display: grid;
@@ -237,7 +238,8 @@
   border-color: var(--faint);
   background: var(--faint);
 }
-.human-todos .todo-copy {
+.human-todos .todo-copy,
+.project-todos .todo-copy {
   flex: 1;
   min-width: 0;
   display: grid;
@@ -840,5 +842,115 @@ dialog.todo-sheet .todo-editor.todo-editor .todo-note-input {
     flex: 1 1 100%;
     min-height: 36px;
     margin: 0;
+  }
+}
+
+/* Active project filter on the Todos page. */
+.todo-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 14px;
+  padding: 0 4px 0 12px;
+  border-radius: 16px;
+  background: var(--todo-tint);
+  color: var(--todo-tint-text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.human-todos .todo-filter-chip button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+}
+
+/* Todos section inside a project's agent list. */
+.project-todos {
+  --todo-tint: color-mix(in srgb, var(--accent) 14%, transparent);
+  --todo-tint-text: color-mix(in srgb, var(--accent) 86%, var(--text));
+  margin: 20px 4px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.project-todos > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: auto;
+  min-height: 0;
+  padding: 0 0 0 10px;
+  border: 0;
+}
+.project-todos > header h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.app .project-todos .project-todos-add {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--todo-tint);
+  color: var(--todo-tint-text);
+}
+.project-todos .todo-row + .todo-row::before {
+  left: 44px;
+}
+.app .project-todos .todo-check {
+  min-height: 44px;
+}
+.app .project-todos .todo-copy {
+  min-height: 44px;
+  padding: 10px 4px 10px 0;
+  border-radius: 0;
+}
+.project-todos .todo-copy > strong {
+  font-size: 15px;
+}
+.project-todos-empty {
+  margin: 8px 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.app .project-todos .project-todos-more {
+  min-height: 36px;
+  margin: 4px 0 0 10px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--todo-tint-text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.app .project-todos .project-todos-send {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 16px;
+  background: var(--todo-tint);
+  color: var(--todo-tint-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .project-todos .todo-row[data-status="open"] .todo-check:hover > span {
+    border-color: var(--accent);
+    background: var(--todo-tint);
   }
 }

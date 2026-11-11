@@ -87,7 +87,7 @@ test("v19 migration, durable revisions/receipts/audit, soft deletion and actor p
   const migrated = new Store(f.file);
   cleanup.push(() => migrated.close());
   expect(migrated.db.query("PRAGMA user_version").get()).toEqual({
-    user_version: 21,
+    user_version: 22,
   });
   const input = { requestId: "stable", title: "Upload agreement" };
   const first = f.todos.mutate("create", null, input, f.actor);

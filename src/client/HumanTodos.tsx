@@ -3,12 +3,14 @@ import {
   Check,
   CircleCheck,
   KeyRound,
+  Folder,
   ListTodo,
   Plus,
+  Send,
   Search,
   X,
 } from "lucide-react";
-import type { AgentRecord, Snapshot } from "../shared/types";
+import type { AgentRecord, ProjectRecord, Snapshot } from "../shared/types";
 import type {
   HumanTodo,
   HumanTodoDetail,
@@ -38,16 +40,30 @@ function creationAge(value: string) {
 const path = (id: string) => `/human-todos/${encodeURIComponent(id)}`;
 /** Preserve the list's agent filter (`?agent=`) when opening/closing a todo. */
 function todosQuery() {
-  const agent = new URLSearchParams(window.location.search).get("agent");
-  return agent && window.location.pathname.startsWith("/todos")
-    ? `?agent=${encodeURIComponent(agent)}`
-    : "";
+  if (!window.location.pathname.startsWith("/todos")) return "";
+  const current = new URLSearchParams(window.location.search);
+  const kept = new URLSearchParams();
+  for (const key of ["agent", "project"]) {
+    const value = current.get(key);
+    if (value) kept.set(key, value);
+  }
+  const query = kept.toString();
+  return query ? `?${query}` : "";
 }
 export function openTodo(id: string | null) {
   window.history.pushState(
     {},
     "",
     (id ? `/todos/${encodeURIComponent(id)}` : "/todos") + todosQuery(),
+  );
+  window.dispatchEvent(new window.PopStateEvent("popstate"));
+}
+/** Open the Todos destination filtered to one project. */
+export function openProjectTodos(projectId: string) {
+  window.history.pushState(
+    { jellyDestination: "todos" },
+    "",
+    `/todos?project=${encodeURIComponent(projectId)}`,
   );
   window.dispatchEvent(new window.PopStateEvent("popstate"));
 }
@@ -104,14 +120,28 @@ export function HumanTodos({
   agentId,
   todoId,
   agentFilter,
+  projectFilter,
+  projectId: embeddedProject,
 }: {
   snapshot: Snapshot | null;
   active: boolean;
   agentId?: string;
+  /** Embedded in a project view: list that project's todos (agents' and
+   * unassigned), and default new todos to the project with no agent. */
+  projectId?: string;
   todoId?: string | null;
   /** Agent filter from the URL (`/todos?agent=`); undefined when not routed. */
   agentFilter?: string | null;
+  /** Project filter from the URL (`/todos?project=`). */
+  projectFilter?: string | null;
 }) {
+  const projectId = embeddedProject ?? projectFilter ?? undefined;
+  const clearProjectFilter = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("project");
+    window.history.replaceState(window.history.state, "", url);
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+  };
   const [page, setPage] = useState<HumanTodosPage | null>(null);
   const [status, setStatus] = useState<"open" | "history">("open"),
     [q, setQ] = useState(""),
@@ -135,7 +165,7 @@ export function HumanTodos({
   const revision = useTodoRevision(),
     generation = useRef(0),
     request = useRef<AbortController | null>(null);
-  const listKey = `${status}:${q}:${agentId ?? filterAgent}`;
+  const listKey = `${status}:${q}:${agentId ?? filterAgent}:${projectId ?? ""}`;
   const currentKey = useRef(listKey);
   currentKey.current = listKey;
   const focusAfterDone = useRef<string | null>(null);
@@ -161,6 +191,7 @@ export function HumanTodos({
         ...((agentId ?? filterAgent)
           ? { agentId: agentId ?? filterAgent }
           : {}),
+        ...(projectId ? { projectId } : {}),
         ...(after ? { after } : {}),
       });
       let next = await api<HumanTodosPage>(`/human-todos?${params}`, {
@@ -261,7 +292,7 @@ export function HumanTodos({
     if (agentId) setEditing(id);
     else openTodo(id);
   };
-  const draftKey = `${snapshot?.instance.id ?? "unknown"}:${selected === "new" ? `new:${agentId ?? (filterAgent || "unassigned")}` : selected}`;
+  const draftKey = `${snapshot?.instance.id ?? "unknown"}:${selected === "new" ? `new:${agentId ?? (filterAgent || "unassigned")}:${projectId ?? ""}` : selected}`;
   const close = () => {
     todoDrafts.delete(draftKey);
     if (todoId) openTodo(null);
@@ -273,8 +304,9 @@ export function HumanTodos({
   };
   const agents = page?.agents ?? snapshot?.agents ?? [];
   const scopedAgent = agentId ?? filterAgent;
-  const openCount =
-    scopedAgent === "unassigned"
+  const openCount = projectId
+    ? null
+    : scopedAgent === "unassigned"
       ? null
       : scopedAgent
         ? (snapshot?.humanTodoCounts?.agents[scopedAgent] ??
@@ -354,6 +386,23 @@ export function HumanTodos({
             </select>
           )}
         </div>
+        {projectFilter && !embeddedProject && (
+          <p className="todo-filter-chip">
+            <Folder size={14} aria-hidden="true" />
+            <span>
+              {snapshot?.projects.find((p) => p.id === projectFilter)?.name ??
+                "Project"}
+            </span>
+            <button
+              type="button"
+              aria-label="Show all projects"
+              title="Show all projects"
+              onClick={clearProjectFilter}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </p>
+        )}
         {error && (
           <p className="todo-error" role="alert">
             {error} <button onClick={() => void load()}>Retry</button>
@@ -462,6 +511,10 @@ export function HumanTodos({
                           <Avatar agent={agent} />
                           {agent.name}
                         </>
+                      ) : todo.projectId && !projectId ? (
+                        (snapshot?.projects.find(
+                          (p) => p.id === todo.projectId,
+                        )?.name ?? "Project") + " · No agent"
                       ) : (
                         "No agent"
                       )}
@@ -504,6 +557,8 @@ export function HumanTodos({
               : undefined)
           }
           agents={agents}
+          projects={snapshot?.projects ?? []}
+          projectId={projectId}
           onClose={close}
           onNavigate={() => {
             todoDrafts.delete(draftKey);
@@ -515,7 +570,7 @@ export function HumanTodos({
   );
 }
 
-type Draft = Pick<HumanTodo, "title" | "body" | "agentId">;
+type Draft = Pick<HumanTodo, "title" | "body" | "agentId" | "projectId">;
 // In-tab only, scoped to the instance and canonical todo. Browser Back/destination
 // changes must not discard a pinned edit; explicit Discard clears it.
 const todoDrafts = new Map<
@@ -528,22 +583,28 @@ const todoDrafts = new Map<
     retry: Map<string, string>;
   }
 >();
-const blank = (agentId?: string): Draft => ({
+const blank = (agentId?: string, projectId?: string): Draft => ({
   title: "",
   body: "",
   agentId: agentId ?? null,
+  projectId: agentId ? null : (projectId ?? null),
 });
 function TodoEditor({
   draftKey,
   id,
   agentId,
   agents,
+  projects,
+  projectId,
   onClose,
   onNavigate,
 }: {
   id: string;
   draftKey: string;
   agentId?: string;
+  /** Default project for a new unassigned todo. */
+  projectId?: string;
+  projects: ProjectRecord[];
   agents: AgentRecord[];
   onClose: () => void;
   onNavigate: () => void;
@@ -551,7 +612,7 @@ function TodoEditor({
   const cached = todoDrafts.get(draftKey);
   const [reviewGoal, setReviewGoal] = useState(false);
   const [detail, setDetail] = useState<HumanTodoDetail | null>(null),
-    [draft, setDraft] = useState<Draft>(() => cached?.draft ?? blank(agentId)),
+    [draft, setDraft] = useState<Draft>(() => cached?.draft ?? blank(agentId, projectId)),
     [base, setBase] = useState<number | null>(() => cached?.base ?? null);
   const [note, setNote] = useState(cached?.note ?? ""),
     [dirty, setDirty] = useState(cached?.dirty ?? false),
@@ -593,7 +654,7 @@ function TodoEditor({
           Object.fromEntries(
             Object.keys(blank()).map((key) => [
               key,
-              next.todo[key as keyof HumanTodo],
+              next.todo[key as keyof HumanTodo] ?? null,
             ]),
           ) as Draft,
         );
@@ -614,7 +675,7 @@ function TodoEditor({
     };
   }, []);
   async function mutate(
-    action: "save" | "save-note" | "complete" | "continue" | "delete" | "reopen" | "cancel",
+    action: "save" | "save-note" | "complete" | "continue" | "delete" | "reopen" | "cancel" | "delegate",
     continueAgent = false,
   ) {
     if (busy.current || saving) return;
@@ -649,14 +710,18 @@ function TodoEditor({
         action === "cancel";
       const url =
         id === "new" ? "/human-todos" : path(id) + (patch ? "" : `/${action}`);
-      await api(url, {
+      const receipt = await api<HumanTodoDetail>(url, {
         method: patch ? "PATCH" : "POST",
         body: JSON.stringify({ ...data, requestId: retry.current.get(key) }),
       });
       changed();
       if (!mounted.current) return;
       if (id === "new") onClose();
-      else await load(true, action === "save", true);
+      else if (action === "delegate") {
+        // Follow the work: the new agent's conversation shows it starting.
+        onNavigate();
+        if (receipt.todo.agentId) openTodoAgent(receipt.todo.agentId);
+      } else await load(true, action === "save", true);
     } catch (error) {
       if (!mounted.current) return;
       setError((error as Error).message);
@@ -688,6 +753,8 @@ function TodoEditor({
       />
     );
   const isNew = id === "new";
+  const canDelegate =
+    !!todo && todo.status === "open" && !todo.agentId && !todo.deletedAt;
   const locked = dirty || !!note;
   const formId = `todo-form-${id}`;
   const options = pickableAgents(agents, draft.agentId);
@@ -787,7 +854,19 @@ function TodoEditor({
                     aria-label="Assigned agent"
                     value={draft.agentId ?? ""}
                     onChange={(event) => {
-                      setDraft({ ...draft, agentId: event.target.value || null });
+                      const agentId = event.target.value || null;
+                      // Keep the project choice when switching back to No agent;
+                      // the server clears it once an agent is assigned.
+                      setDraft({
+                        ...draft,
+                        agentId,
+                        projectId: agentId
+                          ? null
+                          : (draft.projectId ??
+                            agents.find((a) => a.id === draft.agentId)
+                              ?.projectId ??
+                            null),
+                      });
                       setDirty(true);
                     }}
                   >
@@ -801,6 +880,31 @@ function TodoEditor({
                   </select>
                 </span>
               </label>
+              {!draft.agentId && (
+                <label className="todo-agent-field">
+                  <span aria-hidden="true">Project</span>
+                  <span className="todo-agent-select">
+                    <select
+                      aria-label="Project"
+                      value={draft.projectId ?? ""}
+                      onChange={(event) => {
+                        setDraft({
+                          ...draft,
+                          projectId: event.target.value || null,
+                        });
+                        setDirty(true);
+                      }}
+                    >
+                      <option value="">No project</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                </label>
+              )}
               <p className="todo-hint" id="todo-privacy">
                 The assigned agent can read this. Don’t include passwords or
                 codes.
@@ -951,13 +1055,35 @@ function TodoEditor({
                   <span className="todo-footer-status" />
                   <button
                     type="button"
-                    className={canContinue ? "todo-secondary" : "todo-primary"}
+                    className={
+                      canContinue || canDelegate
+                        ? "todo-secondary"
+                        : "todo-primary"
+                    }
                     disabled={saving}
                     onClick={() => void mutate("complete")}
                   >
-                    {!canContinue && <Check size={16} aria-hidden="true" />}
+                    {!canContinue && !canDelegate && (
+                      <Check size={16} aria-hidden="true" />
+                    )}
                     Mark done
                   </button>
+                  {canDelegate && (
+                    <button
+                      type="button"
+                      className="todo-primary"
+                      disabled={saving}
+                      title={`Create a new agent${
+                        todo.projectId
+                          ? ` in ${projects.find((p) => p.id === todo.projectId)?.name ?? "this project"}`
+                          : ""
+                      } and ask it to do this`}
+                      onClick={() => void mutate("delegate")}
+                    >
+                      <Send size={16} aria-hidden="true" />
+                      Send to new agent
+                    </button>
+                  )}
                   {canContinue && (
                     <button
                       type="button"
@@ -1261,5 +1387,172 @@ function ChatTodo({ id, label }: { id: string; label: string }) {
         </p>
       )}
     </div>
+  );
+}
+
+/** Compact todos section in a project's agent list: the project's open todos
+ * (its agents' and unassigned ones), quick add, and a link to the full list. */
+export function ProjectTodos({
+  snapshot,
+  projectId,
+  active,
+}: {
+  snapshot: Snapshot;
+  projectId: string;
+  active: boolean;
+}) {
+  const [page, setPage] = useState<HumanTodosPage | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const revision = useTodoRevision();
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    void api<HumanTodosPage>(
+      `/human-todos?projectId=${encodeURIComponent(projectId)}&limit=6`,
+      { signal: controller.signal },
+    )
+      .then((next) => {
+        setPage(next);
+        setError("");
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setError((error as Error).message);
+      });
+    return () => controller.abort();
+  }, [projectId, active, revision]);
+  const [requests] = useState(() => new Map<string, string>());
+  async function done(todo: HumanTodoSummary) {
+    const key = `${todo.id}:${todo.revision}`;
+    if (!requests.has(key)) requests.set(key, requestId());
+    try {
+      await control(path(todo.id) + "/complete", {
+        requestId: requests.get(key),
+        expectedRevision: todo.revision,
+      });
+      changed();
+    } catch (error) {
+      setError((error as Error).message);
+    }
+  }
+  const [sending, setSending] = useState<string | null>(null);
+  async function send(todo: HumanTodoSummary) {
+    const key = `delegate:${todo.id}:${todo.revision}`;
+    if (!requests.has(key)) requests.set(key, requestId());
+    setSending(todo.id);
+    setError("");
+    try {
+      const receipt = await control<HumanTodoDetail>(
+        path(todo.id) + "/delegate",
+        { requestId: requests.get(key), expectedRevision: todo.revision },
+      );
+      changed();
+      if (receipt.todo.agentId) openTodoAgent(receipt.todo.agentId);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setSending(null);
+    }
+  }
+  const agents = page?.agents ?? snapshot.agents;
+  const items = page?.items ?? [];
+  const draftKey = `${snapshot.instance.id}:${editing === "new" ? `new:project:${projectId}` : editing}`;
+  return (
+    <section className="project-todos" aria-label="Project todos">
+      <header>
+        <h2>Todos</h2>
+        <button
+          type="button"
+          className="project-todos-add"
+          aria-label="New project todo"
+          title="New todo"
+          onClick={() => setEditing("new")}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+      </header>
+      {error && (
+        <p className="todo-error" role="alert">
+          {error}
+        </p>
+      )}
+      {page && !items.length && (
+        <p className="project-todos-empty">No open todos.</p>
+      )}
+      <ul className="todo-list">
+        {items.map((todo) => {
+          const agent = agents.find((a) => a.id === todo.agentId);
+          return (
+            <li className="todo-row" data-status={todo.status} key={todo.id}>
+              <button
+                className="todo-check"
+                aria-label={`Done: ${todo.title}`}
+                title="Mark done"
+                onClick={() => void done(todo)}
+              >
+                <span />
+              </button>
+              <button
+                className="todo-copy"
+                aria-label={`Open ${todo.title}`}
+                onClick={() => setEditing(todo.id)}
+              >
+                <strong>{todo.title}</strong>
+                <span className="todo-meta">
+                  {agent ? (
+                    <>
+                      <Avatar agent={agent} />
+                      {agent.name}
+                    </>
+                  ) : (
+                    "No agent yet"
+                  )}
+                </span>
+              </button>
+              {!todo.agentId && (
+                <button
+                  type="button"
+                  className="project-todos-send"
+                  disabled={!!sending}
+                  aria-label={`Send to new agent: ${todo.title}`}
+                  title="Create a new agent in this project and ask it to do this"
+                  onClick={() => void send(todo)}
+                >
+                  <Send size={13} aria-hidden="true" />
+                  {sending === todo.id ? "Sending…" : "Send"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {!!items.length && (
+        <button
+          type="button"
+          className="todo-link project-todos-more"
+          onClick={() => openProjectTodos(projectId)}
+        >
+          {page?.after ? "See all todos" : "Open in Todos"}
+        </button>
+      )}
+      {active && editing && (
+        <TodoEditor
+          key={draftKey}
+          id={editing}
+          draftKey={draftKey}
+          projectId={projectId}
+          agents={agents}
+          projects={snapshot.projects}
+          onClose={() => {
+            todoDrafts.delete(draftKey);
+            setEditing(null);
+          }}
+          onNavigate={() => {
+            todoDrafts.delete(draftKey);
+            setEditing(null);
+          }}
+        />
+      )}
+    </section>
   );
 }

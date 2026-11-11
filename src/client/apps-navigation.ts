@@ -9,6 +9,8 @@ export interface AppsLocation {
   todoId: string | null;
   /** Todos list filter from `/todos?agent=<id>`. */
   todoAgentId: string | null;
+  /** Todos list filter from `/todos?project=<id>`. */
+  todoProjectId: string | null;
   agentId: string | null;
   navigationId: string;
   focusAppId: string | null;
@@ -48,6 +50,7 @@ export function readAppsLocation(): AppsLocation {
     appId,
     todoId: todo?.[1] ?? null,
     todoAgentId: todo ? search.get("agent") || null : null,
+    todoProjectId: todo ? search.get("project") || null : null,
     agentId,
     navigationId,
     focusAppId:

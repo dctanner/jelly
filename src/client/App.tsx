@@ -2210,7 +2210,7 @@ export function App() {
       <div className="destination-layer apps-layer" data-active={location.destination === "apps"} inert={location.destination !== "apps"} aria-hidden={location.destination !== "apps"}>
         <AppsHome active={location.destination === "apps"} focusAppId={location.focusAppId} revision={revision} changedApp={changedApp} onLaunch={launch} onDetails={setDetails} onEdit={editApp} onAdd={() => setAddingApp(true)} onRemove={setRemoving} />
       </div>
-      <div className="destination-layer todos-layer" data-active={location.destination === "todos"} inert={location.destination !== "todos"} aria-hidden={location.destination !== "todos"}><HumanTodos snapshot={workspace} active={location.destination === "todos"} todoId={location.todoId} agentFilter={location.todoAgentId} /></div>
+      <div className="destination-layer todos-layer" data-active={location.destination === "todos"} inert={location.destination !== "todos"} aria-hidden={location.destination !== "todos"}><HumanTodos snapshot={workspace} active={location.destination === "todos"} todoId={location.todoId} agentFilter={location.todoAgentId} projectFilter={location.todoProjectId} /></div>
       {viewing && <AppViewer appId={location.appId!} navigationId={location.navigationId} changedApp={changedApp} revision={revision} onHome={() => navigate("apps", location.appId)} onLaunch={launch} onChanged={changed} onDetails={setDetails} onEdit={editApp} onRemove={setRemoving} />}
     </div>
     {mobileNavigation && destinationNavigation}

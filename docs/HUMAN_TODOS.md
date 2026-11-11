@@ -18,6 +18,18 @@ the linked agent is the requester and continuation destination.
   `/todos?agent=<id>`: the list filtered to that agent. The filter lives in the
   URL, so it survives opening a todo, reloads and Back; the To do count and New
   todo's default assignee follow it. Changing the dropdown updates the URL.
+- A todo with **No agent** can be scoped to a **project** (human-created only;
+  agents cannot set it). Assigning an agent clears it, since the agent's own
+  project then applies. Deleting a project leaves its todos unassigned.
+- Each project's agent list ends with a **Todos** section: the project's open
+  todos (its agents' and unassigned ones), a **+** that creates a todo in that
+  project with no agent, and **Open in Todos** (`/todos?project=<id>`, shown as a
+  removable chip). Project rows count unassigned project todos too.
+- **Send to new agent** (on an unassigned row in a project, or in the todo sheet)
+  creates a new agent in the todo's project, assigns the todo to it, starts it
+  with the title and body, and opens its conversation. It needs a connected
+  provider, checked before anything is created; retrying the same request never
+  creates a second agent or run.
 - **New todo** creates an action without calling a model. Agents can create and
   manage tasks assigned to themselves.
 - Tap the circle on a row to mark it done (no agent run); tap it on a completed

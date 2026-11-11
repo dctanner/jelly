@@ -607,7 +607,7 @@ test("schema v9 pins historical agent settings once, preserving Ultrafast and ar
       expect(store.agent(ultra.id)).toMatchObject({ model: "gpt-6-astra-ultrafast", effort: "max" });
       expect(store.agent(unused.id)).toMatchObject({ model: "gpt-6.1-sol", effort: "low" });
       expect(store.historyPage(ultra.id)).toEqual(history);
-      expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 20 });
+      expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 22 });
       expect(store.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
       // Later default changes and reopening must not rerun the backfill.
       store.setConfig("api", "gpt-6-astra", "medium");
@@ -689,7 +689,7 @@ test("schema v5 removes Role, preserves it in Instructions, and migrates only on
       expect(store.agent(withInstructions.id)).not.toHaveProperty("role");
       expect(store.agent(withInstructions.id)?.cwd).toBe(withInstructions.cwd);
       expect(store.db.query("PRAGMA user_version").get()).toEqual({
-        user_version: 20,
+        user_version: 22,
       });
     } finally {
       store.close();
@@ -1041,7 +1041,7 @@ test.each(["demo", "api", "chatgpt", "auto"])("schema v7 migrates %s safely with
   store = new Store(path);
   try {
     expect(store.instance()).toMatchObject({ id, mode: mode === "demo" ? "auto" : mode });
-    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 20 });
+    expect(store.db.query("PRAGMA user_version").get()).toEqual({ user_version: 22 });
     expect(store.agent(agent.id)).toEqual({ ...agent, mode: "auto", providerLocked: 1 });
     expect(store.run(run.id)?.mode).toBe("demo");
     expect(store.historyPage(agent.id).events).toContainEqual(event);
