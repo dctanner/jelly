@@ -118,7 +118,7 @@ function fixtureRpc(work: SessionWork, failStatus = () => false) {
   });
 }
 
-test("five-minute checkpoint reaches a real Pi model request while children remain running", async () => {
+test("15-minute default checkpoint reaches a real Pi model request while children remain running", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jelly-subagent-heartbeat-"));
   const { session, requests } = await parent(dir);
   let now = 0;
@@ -152,8 +152,8 @@ test("five-minute checkpoint reaches a real Pi model request while children rema
             agent: "worker",
             status: "running",
             currentTool: "bash",
-            lastActivityAt: 299900,
-            currentToolStartedAt: 280000,
+            lastActivityAt: 899900,
+            currentToolStartedAt: 880000,
             startedAt: 0,
           },
         ],
@@ -166,10 +166,10 @@ test("five-minute checkpoint reaches a real Pi model request while children rema
     });
     await work.refresh();
     expect(requests).toHaveLength(1);
-    now = 299999;
+    now = 899999;
     await work.refresh();
     expect(requests).toHaveLength(1);
-    now = 300000;
+    now = 900000;
     await work.refresh();
     await until(() => requests.length === 2);
     await session.waitForIdle();
@@ -217,17 +217,17 @@ test("heartbeat coalesces behind an open tool and cancellation disarms future wa
   await work.attach(session);
   work.bus.emit("subagent:async-started", { id: "child" });
   try {
-    now = 300000;
-    await work.refresh();
-    expect(sends).toBe(1);
-    now = 600000;
-    await work.refresh();
-    expect(sends).toBe(1);
     now = 900000;
     await work.refresh();
     expect(sends).toBe(1);
+    now = 1800000;
+    await work.refresh();
+    expect(sends).toBe(1);
+    now = 2700000;
+    await work.refresh();
+    expect(sends).toBe(1);
     await work.stop();
-    now = 1200000;
+    now = 3600000;
     await work.refresh();
     expect(sends).toBe(1);
   } finally {
@@ -500,7 +500,7 @@ test("snapshot activity overlays stale workflow files while unreadable roots can
     work.bus.emit("subagent:async-started", { id: "bad", asyncDir: bad });
     work.bus.emit("subagent:async-started", { id: "good", asyncDir: good });
     await work.refresh(); // establish the concrete attempt before overlaying a later snapshot
-    now = 300000;
+    now = 900000;
     await work.refresh();
     await until(() => requests.length === 1);
     expect(work.projection.snapshot().children).toHaveLength(1);

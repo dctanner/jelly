@@ -84,6 +84,8 @@ export function preparePi(dataDir: string) {
       JSON.stringify(
         {
           asyncByDefault: true,
+          // Uniform 6-hour run limit; per-call/agent overrides are patched out.
+          timeoutMs: 6 * 60 * 60 * 1000,
           artifactDir: "project",
           defaultSessionDir: join(dataDir, "subagent-sessions"),
           fleetView: false,

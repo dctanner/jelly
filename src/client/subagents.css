@@ -71,11 +71,6 @@
   vertical-align: middle;
   margin-right: 4px;
 }
-.subagent-attention {
-  display: block;
-  color: var(--error);
-  overflow-wrap: anywhere;
-}
 .subagent-details {
   min-width: 0;
   padding: 0 8px 8px;

@@ -88,7 +88,7 @@ ownership and stable no-follow descriptors. Missing/failed reads remain unknown,
 not completed, and do not suppress other roots or periodic model checkpoints.
 
 The same bounded projection feeds browser cards and a model-visible custom
-message every `JELLY_SUBAGENT_HEARTBEAT_MS` (default 300000; range 1000–3600000).
+message every `JELLY_SUBAGENT_HEARTBEAT_MS` (default 900000, i.e. 15 minutes; range 1000–3600000).
 Only one checkpoint can be pending; an idle parent wakes, while a busy one receives
 it at a safe boundary. User steering remains enabled during child settlement.
 Pi owns execution, supervisor delivery, native completion batching and descendant
@@ -98,6 +98,12 @@ cancellation ownership are separate: workflow-owned children do not require
 independent completion events, but remain stoppable after their workflow dispatch
 finishes. A missing completion event can be reconciled with canonical terminal
 status and an explicit parent wake, never silent success.
+
+Subagent run limits are uniform: every subagent run (single, workflow child,
+chain/parallel step, resume, scheduled) gets the same 6-hour deadline. Jelly's
+`pi-subagents` patch removes `timeoutMs`/`maxRuntimeMs` from the tool schema,
+strips them from every launch, ignores agent frontmatter `timeoutMs`, and gives
+workflows no parent deadline that could shorten a child's limit.
 
 Schema v11 adds `subagent_views`: one compact snapshot plus a private source map
 per Jelly run. Public cards use opaque IDs, capped at 128; raw session/artifact

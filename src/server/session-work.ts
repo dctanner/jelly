@@ -22,6 +22,8 @@ interface Root {
   reconciling?: boolean;
   status?: Record<string, any>;
 }
+/** Default parent status-checkpoint cadence while delegated work is active. */
+export const DEFAULT_HEARTBEAT_MS = 15 * 60 * 1000;
 interface Options {
   sessionRoot?: string;
   pollMs?: number;
@@ -504,7 +506,7 @@ export class SessionWork {
     if (
       !this.stopped &&
       (this.jobs.size || this.live()) &&
-      this.now() - this.lastHeartbeat >= (this.options.heartbeatMs ?? 300000) &&
+      this.now() - this.lastHeartbeat >= (this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS) &&
       !this.heartbeatPending &&
       !this.wakes.size
     ) {
@@ -539,7 +541,7 @@ export class SessionWork {
       return `${child.label} [run ${child.rootId}, child ${child.childId}]: ${child.state}${elapsed}${tool}; ${age}${child.attention ? `; ${child.attention}` : ""}`;
     });
     return [
-      `Subagent status checkpoint (${Math.round((this.options.heartbeatMs ?? 300000) / 60000)}-minute cadence):`,
+      `Subagent status checkpoint (${Math.round((this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS) / 60000)}-minute cadence):`,
       ...rows,
       ...(snapshot.error ? [snapshot.error] : []),
       `${this.jobs.size} owned root runs awaiting delivery; ${Math.max(0, snapshot.children.length - rows.length) + snapshot.omitted} children omitted.`,

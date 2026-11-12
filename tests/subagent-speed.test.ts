@@ -72,3 +72,22 @@ test("workflow speed defaults yield to children and never override retained resu
   const schema = createSubagentParamsSchema();
   expect(JSON.stringify(schema.properties.fast)).toContain("ultrafast");
 });
+
+test("callers cannot set subagent run limits; every run uses the uniform 6-hour limit", async () => {
+  const executor = await import("../node_modules/pi-subagents/src/runs/foreground/subagent-executor.js");
+  const asyncExecution = await import("../node_modules/pi-subagents/src/runs/background/async-execution.js");
+  const sixHours = 6 * 60 * 60 * 1000;
+  expect(executor.DEFAULT_FOREGROUND_TIMEOUT_MS).toBe(sixHours);
+  expect(asyncExecution.DEFAULT_ASYNC_TIMEOUT_MS).toBe(sixHours);
+  const properties = (createSubagentParamsSchema() as any).properties;
+  expect(properties.timeoutMs).toBeUndefined();
+  expect(properties.maxRuntimeMs).toBeUndefined();
+  // Workflow children inherit no parent deadline: the workflow itself has none.
+  const child = prepareWorkflowLaunchParams({}, { agent: "worker", task: "x" }, "wf", "step", {});
+  expect(child.workflowParentDeadlineAt).toBeUndefined();
+  // The single-agent resolver applies the uniform limit when no caller value survives.
+  expect(executor.resolveSingleAgentLaunchTimeout({ agent: "worker" }, true, sixHours)).toEqual({ timeoutMs: sixHours });
+  const source = await Bun.file("node_modules/pi-subagents/src/runs/foreground/subagent-executor.js").text();
+  expect(source).toContain("let requestParams = withoutCallerRunDeadline(normalizedGate.params);");
+  expect(source).toContain("const timeout = undefined; // Jelly");
+});

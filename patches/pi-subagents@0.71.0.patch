@@ -1,3 +1,57 @@
+diff --git a/docs/tool-reference.md b/docs/tool-reference.md
+index b27b31a0b99d43e76bca3ff5edcea718db4960c7..614d251d161c73a72c437acd0074ded6129bfe5b 100644
+--- a/docs/tool-reference.md
++++ b/docs/tool-reference.md
+@@ -117,7 +117,7 @@ The complete plain-JSON inventory is validated before the first launch (maximum
+ | `chatProgress` | `auto \| off \| live-card` | `auto` | WorkflowScript chat projection. `auto` renders a live in-chat card only for watched foreground workflows in the same Git repository, including managed worktrees; it is off otherwise. Explicit `live-card` requires `async:false` and the same Git repository. Async workflows have no inline live card, so omit `chatProgress` or use `auto`/`off`; use `async:false` only when the parent must block. |
+ | `isolation` | `none \| worktree` | - | Workflow child isolation. `none` runs in the shared cwd and does not need Git. `worktree` requires a managed Git worktree. Do not combine it with a contradictory `worktree` value. |
+ | `baseRef` | string | `HEAD` | `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. The ref must resolve to a commit at worktree allocation; omitted values default to `HEAD` resolved at that time. Source-checkout cleanliness is still checked. For workflowScript, set it on the outer request as a default or on an individual `runs.run`/`runs.all` child to override it. |
+-| `timeoutMs` / `maxRuntimeMs` | number | config `timeoutMs`, else 30 min foreground / single-agent async | Optional run-level max runtime in milliseconds. When omitted, the global [`timeoutMs`](configuration.md#timeoutms) config provides the default; absent that, foreground and plain single-agent async runs fall back to 30 minutes, while composite async runs (chains, parallel tasks, workflows) stay unbounded at the top level. Expiration of this run-level deadline is terminal. |
++| `timeoutMs` / `maxRuntimeMs` | — | ignored | **Disabled in Jelly.** Caller-supplied run deadlines (top-level, workflow defaults, `runs.run`/`runs.all` children, resume, schedules) and agent frontmatter `timeoutMs` are ignored. Every subagent run uses the uniform operator limit (6 hours); workflows impose no shorter parent deadline. |
+ | `toolTimeoutMs` | number | fast-tool default | Optional positive hard per-tool-call deadline in milliseconds. Precedence: call value → agent frontmatter → config → `PI_SUBAGENT_TOOL_TIMEOUT_MS`. The timer starts on `tool_execution_start`, clears on the matching `tool_execution_end`, and terminates the run with `timedOut: true` if the tool remains open. When omitted, known-fast built-in tools get a five-minute default; long-running tools get attention notices but no hard default. It never extends the run deadline; `contact_supervisor`, `intercom`, and `bg_wait` are exempt. |
+ | `checkpointBeforeDeadlineMs` | number | none | Async single-agent runs only. The runner requests that the child "checkpoint and stop" this many milliseconds before the run deadline (finish the current tool call, report changed files, build/test state, remaining work, commit/PR state; start no new work). This best-effort steer uses the normal steering lifecycle at the next tool boundary, so the receipt is visible in status and events; the ordinary deadline kill still applies. Precedence: call value → config `checkpointBeforeDeadlineMs`. Disarmed when the deadline leaves under one second before the checkpoint. |
+ | `toolBudget` | object | none | Optional child tool-call budget `{ soft?, hard, block? }`. At `soft` the child is nudged to finalize. After `hard`, configured tools are blocked; `block` defaults to `read`, `grep`, `find`, and `ls`, while `"*"` blocks every tool call. Final assistant text is never blocked. |
+@@ -136,7 +136,7 @@ The complete plain-JSON inventory is validated before the first launch (maximum
+ 
+ As a conservative orchestration policy, do not set a hard `toolBudget` or tight `usageBudget` on implementation workers, fix workers, reviewers with edit authority, or other mutation-capable children. A default tool budget blocks read/search tools rather than mutation tools, and reported usage has no reservation model, so neither tool-call counts nor token/cost totals measure whether a delivery slice is buildable or safe to hand off. Hard caps remain appropriate for explicitly read-only scouts, reviewers, and validators.
+ 
+-Bound writer work with a narrow task and an outer `timeoutMs` or `maxRuntimeMs` that leaves enough margin for the slice. An elapsed timeout is not a mutation-safe boundary and may still signal a child during tool work. Request a checkpoint after the current tool returns that records changed files, build/test state, and commit or PR state; for async single-agent runs, set `checkpointBeforeDeadlineMs`, otherwise steer by hand.
++Bound writer work with a narrow task. In Jelly every subagent run has the same 6-hour run limit and callers cannot change it; split long work into slices that end with a checkpoint recording changed files, build/test state, and commit or PR state. An elapsed timeout is not a mutation-safe boundary and may still signal a child during tool work. For async single-agent runs, set `checkpointBeforeDeadlineMs`, otherwise steer by hand.
+ 
+ ### Fork context details
+ 
+diff --git a/docs/workflows.md b/docs/workflows.md
+index 77cd1d73b702cf7be85336e05676a1b8d9b4eb99..dd7c59bab646948328b58b401f5136c3531d9998 100644
+--- a/docs/workflows.md
++++ b/docs/workflows.md
+@@ -104,13 +104,12 @@ subagent({
+     const scan = await runs.run("scan", { agent: "scout", task: "Inspect the named files." });
+     return runs.run("review", { agent: "reviewer", task: "Review:\n" + scan.output });
+   `,
+-  timeoutMs: 900000,
+   toolBudget: { soft: 40, hard: 60 },
+   usageBudget: { tokens: { soft: 100000, hard: 150000 } }
+ });
+ ```
+ 
+-- `timeoutMs` sets the workflow deadline and bounds child deadlines to the remaining time.
++- Jelly: `timeoutMs`/`maxRuntimeMs` are ignored everywhere. Each child run gets the uniform operator limit (6 hours); the workflow imposes no parent deadline.
+ - `toolBudget` becomes the default for each child unless that child supplies a narrower value.
+ - `usageBudget` accounts for reported usage across completed workflow children. Once exhausted, it rejects later child launches but does not stop children that are already running.
+ - Budget and timeout stops return a structured `terminalOutcome` with `state: "partial"` and reason `budget_exhausted` or `timeout`. Workflow receipts keep settled child evidence for recovery.
+diff --git a/skills/pi-subagents/references/management-authoring-rpc.md b/skills/pi-subagents/references/management-authoring-rpc.md
+index 720667849dbd296aa7174def64b61b6c085aaa5b..0e77c0a800626f06e52e949d07e97b4045303941 100644
+--- a/skills/pi-subagents/references/management-authoring-rpc.md
++++ b/skills/pi-subagents/references/management-authoring-rpc.md
+@@ -125,7 +125,7 @@ That is only a starting point. Omit `package` for the traditional unqualified ru
+ - `acceptance`
+ - `acceptanceRole`
+ - `async` — single-agent default for background launch (`true`/`false`); explicit tool-call `async` wins
+-- `timeoutMs` — single-agent default run-level max runtime in ms; foreground calls use a 30-minute package default only when neither the call nor agent provides one (tool alias `maxRuntimeMs` is also accepted)
++- `timeoutMs` — ignored in Jelly: every subagent run uses the uniform 6-hour operator limit; agent and call values cannot override it
+ 
+ `aliases` is an optional comma-separated or block-list set of alternate names for selecting an agent. Aliases resolve to the canonical `name` for execution, status, persistence, and config. Exact canonical names take precedence over aliases, and alias collisions between distinct canonical agents fail as ambiguous. Management create/update accepts a comma-separated string, string array, or `false`/empty string to clear aliases.
+ 
 diff --git a/src/agents/agent-serializer.js b/src/agents/agent-serializer.js
 index 146ce2d701a4e8274042e22f1dc6c228c00c5315..c9868950521ae3f9975f353bee9b65551a5b3b65 100644
 --- a/src/agents/agent-serializer.js
@@ -168,7 +222,7 @@ index b7fe811629c88feb12caf445184a18a68db0d444..12417f2346f1261614e79c478aa815af
          catch (error) {
              console.error("Failed to dispose in-process child sessions:", error);
 diff --git a/src/extension/schemas.d.ts b/src/extension/schemas.d.ts
-index 77b9d0309a77fb14e94fdebaed7edd42e0b943af..d5449a6af07c590fda78cb705f26d7d198028efe 100644
+index 77b9d0309a77fb14e94fdebaed7edd42e0b943af..057e9fc487881b158788a00ee8d93b71924bd97b 100644
 --- a/src/extension/schemas.d.ts
 +++ b/src/extension/schemas.d.ts
 @@ -18,7 +18,7 @@ export declare const ParallelTaskSchema: Type.TObject<{
@@ -198,7 +252,16 @@ index 77b9d0309a77fb14e94fdebaed7edd42e0b943af..d5449a6af07c590fda78cb705f26d7d1
      toolBudget: Type.TOptional<Type.TObject<{
          soft: Type.TOptional<Type.TInteger>;
          hard: Type.TInteger;
-@@ -233,7 +233,7 @@ export declare const SubagentParams: Type.TObject<{
+@@ -193,8 +193,6 @@ export declare const SubagentParams: Type.TObject<{
+     }>>;
+     context: Type.TOptional<Type.TString>;
+     async: Type.TOptional<Type.TBoolean>;
+-    timeoutMs: Type.TOptional<Type.TInteger>;
+-    maxRuntimeMs: Type.TOptional<Type.TInteger>;
+     checkpointBeforeDeadlineMs: Type.TOptional<Type.TInteger>;
+     toolTimeoutMs: Type.TOptional<Type.TInteger>;
+     toolBudget: Type.TOptional<Type.TObject<{
+@@ -233,7 +231,7 @@ export declare const SubagentParams: Type.TObject<{
      outputMode: Type.TOptional<Type.TString>;
      skill: Type.TOptional<Type.TUnsafe<unknown>>;
      model: Type.TOptional<Type.TString>;
@@ -208,7 +271,7 @@ index 77b9d0309a77fb14e94fdebaed7edd42e0b943af..d5449a6af07c590fda78cb705f26d7d1
      agentContract: Type.TOptional<Type.TObject<{
          version: Type.TInteger;
 diff --git a/src/extension/schemas.js b/src/extension/schemas.js
-index 2af5790913431e46d81764e91ee39a5e175b97da..ba5c85b49a72eb0bcab1058743222a03fe718087 100644
+index 2af5790913431e46d81764e91ee39a5e175b97da..fecac820b4edb1a55c866312eacbe4270761f271 100644
 --- a/src/extension/schemas.js
 +++ b/src/extension/schemas.js
 @@ -145,7 +145,7 @@ export const ParallelTaskSchema = Type.Object({
@@ -238,7 +301,16 @@ index 2af5790913431e46d81764e91ee39a5e175b97da..ba5c85b49a72eb0bcab1058743222a03
      toolBudget: Type.Optional(ToolBudgetOverride),
      acceptance: Type.Optional(AcceptanceOverride),
      agentContract: Type.Optional(AgentContractOverride),
-@@ -357,7 +357,7 @@ const SubagentParamProperties = {
+@@ -332,8 +332,6 @@ const SubagentParamProperties = {
+         description: "fresh/fork overrides every child; profile requires agent's declared defaultContext, ignoring config. Omitted: defaultSubagentContext wins over each agent defaultContext; implicit fork needs persisted parent + leaf, else fresh. forkContext may prune forks before spawn.",
+     })),
+     async: Type.Optional(Type.Boolean({ description: "Background; default asyncByDefault. false only to block parent." })),
+-    timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Timeout. Foreground and single async runs use config timeoutMs, else 30m; async composites have no default parent deadline. Alias maxRuntimeMs." })),
+-    maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias timeoutMs (same defaults)." })),
+     checkpointBeforeDeadlineMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Async single-agent runs only: the runner requests that the child checkpoint and stop this many ms before the run deadline (best-effort; the deadline kill still applies)." })),
+     toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-tool deadline (ms); fast builtins default 5m." })),
+     toolBudget: Type.Optional(ToolBudgetOverride),
+@@ -357,7 +355,7 @@ const SubagentParamProperties = {
      outputMode: Type.Optional(OutputModeOverride),
      skill: Type.Optional(SkillOverride),
      model: Type.Optional(Type.String({ description: "Child model provider/id; bare id only if unique. Suffix :off/minimal/low/medium/high/xhigh/max overrides agent thinking default." })),
@@ -279,9 +351,18 @@ index d668e957de687b5ee434a07fb8d36ade282eee95..d1d48034f466638f7db5591de17a62d4
      configToolBudget?: ResolvedToolBudget;
      /** Optional per-call hard toolTimeoutMs override from the subagent invocation. */
 diff --git a/src/runs/background/async-execution.js b/src/runs/background/async-execution.js
-index 06782770c9717adbd5bfdb3114d5ab53a0c0d168..2ec46b6cf9cd41ba310e9bfe9b05ef9e4de0f3e2 100644
+index 06782770c9717adbd5bfdb3114d5ab53a0c0d168..f6ea574ed672f80d729a7c907b24286581ceb372 100644
 --- a/src/runs/background/async-execution.js
 +++ b/src/runs/background/async-execution.js
+@@ -128,7 +128,7 @@ function supportsNativeRunner(nodeExecutable) {
+         && nodeExecutable === process.execPath
+         && !sourceUnderNodeModules;
+ }
+-export const DEFAULT_ASYNC_TIMEOUT_MS = 30 * 60 * 1000;
++export const DEFAULT_ASYNC_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+ export function formatAsyncStartedMessage(headline, interactive) {
+     const guidance = interactive
+         ? [
 @@ -745,7 +745,7 @@ export function buildAsyncRunnerSteps(id, params) {
                  unsupported.push("acceptance/agent contract");
              if (s.toolBudget !== undefined || params.toolBudget !== undefined || a.toolBudget !== undefined || params.configToolBudget !== undefined)
@@ -291,6 +372,15 @@ index 06782770c9717adbd5bfdb3114d5ab53a0c0d168..2ec46b6cf9cd41ba310e9bfe9b05ef9e
                  unsupported.push("fast mode");
              if (params.contextForAgent?.(s.agent) === "fork")
                  unsupported.push("fork context");
+@@ -916,7 +916,7 @@ export function buildAsyncRunnerSteps(id, params) {
+             outputMode: behavior.outputMode,
+             sessionFile,
+             maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
+-            timeoutMs: a.defaultTimeoutMs ?? DEFAULT_ASYNC_TIMEOUT_MS,
++            timeoutMs: DEFAULT_ASYNC_TIMEOUT_MS,
+             toolTimeoutMs: resolvedToolTimeout.toolTimeoutMs,
+             waitToolEnabled: params.waitToolEnabled,
+             waitToolDefaultTimeoutMs: params.waitToolDefaultTimeoutMs,
 @@ -1416,7 +1416,7 @@ export function executeAsyncSingle(id, params) {
          const unsupported = [];
          if (params.modelOverride !== undefined)
@@ -422,7 +512,7 @@ index b75a5472031c5cbaa9b0c5c58b8cfa60446da26f..f5cb7e59fda032a20eb01427be7d9ae5
      state: SubagentState;
      config: ExtensionConfig;
 diff --git a/src/runs/foreground/subagent-executor.js b/src/runs/foreground/subagent-executor.js
-index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c492bb984 100644
+index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..c83cdfaed388e70a4877dac0b62ec0e949c8ca16 100644
 --- a/src/runs/foreground/subagent-executor.js
 +++ b/src/runs/foreground/subagent-executor.js
 @@ -428,6 +428,7 @@ function rememberForegroundRun(state, input) {
@@ -442,7 +532,47 @@ index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c
          modelOverrideFromParent: recoveryDescriptor?.modelOverrideFromParent,
          modelOrigin: recoveryDescriptor?.modelOrigin ?? (recoveryDescriptor?.modelOverrideFromParent ? "inherited" : undefined),
          thinkingOverride: recoveryDescriptor?.thinking ?? target.thinking,
-@@ -2915,7 +2916,7 @@ async function runAsyncPath(data, deps) {
+@@ -2419,16 +2420,13 @@ function applySingleAgentLaunchDefaults(params, agents) {
+     const agent = agents.find((candidate) => candidate.name === params.agent);
+     if (!agent)
+         return params;
+-    const parentTimeoutMs = params.timeoutMs === undefined && params.maxRuntimeMs === undefined && agent.defaultTimeoutMs === undefined && params.workflowParentDeadlineAt !== undefined
++    const parentTimeoutMs = params.timeoutMs === undefined && params.maxRuntimeMs === undefined && params.workflowParentDeadlineAt !== undefined
+         ? Math.max(1, params.workflowParentDeadlineAt - Date.now())
+         : undefined;
+     const outputSchema = params.outputSchema === false ? false : resolveEffectiveOutputSchema(agent, params.outputSchema);
+     return {
+         ...params,
+         ...(params.async === undefined && agent.defaultAsync !== undefined ? { async: agent.defaultAsync } : {}),
+-        ...(params.timeoutMs === undefined && params.maxRuntimeMs === undefined && agent.defaultTimeoutMs !== undefined
+-            ? { timeoutMs: agent.defaultTimeoutMs }
+-            : {}),
+         ...(parentTimeoutMs !== undefined ? { timeoutMs: parentTimeoutMs } : {}),
+         ...(params.acceptance === undefined && agent.defaultAcceptance !== undefined
+             ? { acceptance: agent.defaultAcceptance }
+@@ -2458,12 +2456,19 @@ function validateLaunchOutputSchemaOverrides(params) {
+     }
+     return undefined;
+ }
+-export const DEFAULT_FOREGROUND_TIMEOUT_MS = 30 * 60 * 1000;
++export const DEFAULT_FOREGROUND_TIMEOUT_MS = 6 * 60 * 60 * 1000;
++/** Jelly: caller-supplied run deadlines are ignored; every subagent gets the uniform limit. */
++function withoutCallerRunDeadline(params) {
++    if (!params || typeof params !== "object" || (!Object.hasOwn(params, "timeoutMs") && !Object.hasOwn(params, "maxRuntimeMs")))
++        return params;
++    const { timeoutMs: _timeoutMs, maxRuntimeMs: _maxRuntimeMs, ...rest } = params;
++    return rest;
++}
+ // Async single-agent runs also need a wall-clock backstop: a child whose bash
+ // tool blocks forever (e.g. a background process inheriting the terminal with
+ // no bash `timeout` arg) would otherwise hang the parent indefinitely with
+ // zero signal. Same generous default as foreground; explicit timeoutMs/
+-// maxRuntimeMs and agent-level defaultTimeoutMs remain authoritative.
++// Jelly: caller and agent-level timeouts are ignored (uniform 6-hour limit).
+ //
+ // Deliberately NOT applied at the workflow level: async scripted workflows
+ // stay unbounded as a whole, while each runner child has its own deadline.
+@@ -2915,7 +2920,7 @@ async function runAsyncPath(data, deps) {
          const externalRunnerWithoutExplicitModel = (a.runner?.type === "external-cli" || a.runner?.type === "external-job")
              && params.model === undefined
              && (a.model === undefined || (a.modelSource?.type === "subagents.defaultModel" && a.model === a.modelSource.model));
@@ -451,7 +581,7 @@ index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c
              return buildRequestedModeError(params, `Agent '${a.name}' uses runner.type='${a.runner.type}' and does not support fast mode.`);
          }
          const modelScopes = resolveModelScopesForAgent(data.modelScope, a.name, parentModel);
-@@ -3476,6 +3477,7 @@ async function runSinglePath(data, deps) {
+@@ -3476,6 +3481,7 @@ async function runSinglePath(data, deps) {
          const launched = await runSync(ctx.cwd, agents, params.agent, task, compactOptional({
              machine: foregroundMachine,
              parentProviderRegistry: ctx.modelRegistry,
@@ -459,7 +589,18 @@ index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c
              remoteReads: foregroundMachine ? readsOverride : undefined,
              permissions: deps.config.permissions,
              runtimeSnapshotHost: deps.pi,
-@@ -4482,6 +4484,12 @@ export function createSubagentExecutor(deps) {
+@@ -4447,7 +4453,9 @@ export function createSubagentExecutor(deps) {
+         const normalizedGate = normalizeGateParams(params);
+         if (!normalizedGate.ok)
+             return buildRequestedModeError(params, normalizedGate.error);
+-        let requestParams = normalizedGate.params;
++        // Jelly policy: run-level deadlines are uniform and operator-owned.
++        // Parents cannot set or shorten them per launch or per workflow child.
++        let requestParams = withoutCallerRunDeadline(normalizedGate.params);
+         const capacityOverrideError = validateWorkflowCapacityOverrides(requestParams);
+         if (capacityOverrideError)
+             return buildRequestedModeError(requestParams, capacityOverrideError);
+@@ -4482,6 +4490,12 @@ export function createSubagentExecutor(deps) {
              return buildWorkflowValidationResult(validation, "management", workflowPreflight);
          }
          const normalizedAction = typeof requestParams.action === "string" ? requestParams.action.trim() : requestParams.action;
@@ -472,6 +613,15 @@ index 03eb3c71166a74b2660ee4c9a4240a54c944c78b..5caca13baa8945f96b7bc44fa6c7717c
          if (normalizedAction === "resume" && requestParams.extensionBindings !== undefined)
              return buildRequestedModeError(requestParams, "extensionBindings is not supported with action='resume'; resume uses the original retained child binding.");
          let workflowResource;
+@@ -4536,7 +4550,7 @@ export function createSubagentExecutor(deps) {
+                 }
+             }
+             const parentCwd = ctx.cwd;
+-            const timeout = requestParams.timeoutMs ?? requestParams.maxRuntimeMs ?? (requestParams.async === false ? resolveConfigDefaultTimeoutMs(deps.config.timeoutMs) ?? DEFAULT_FOREGROUND_TIMEOUT_MS : undefined);
++            const timeout = undefined; // Jelly: each workflow child has its own uniform deadline.
+             const workflowUsageBudget = validateUsageBudgetConfig(requestParams.usageBudget ?? deps.config.usageBudget, requestParams.usageBudget ? "usageBudget" : "config.usageBudget");
+             if (workflowUsageBudget.error)
+                 return buildRequestedModeError(requestParams, workflowUsageBudget.error);
 diff --git a/src/runs/shared/child-hooks.js b/src/runs/shared/child-hooks.js
 index 2d5c77eba499bd56855bb88925d299a456457d6b..f00b43860c64974c53ca6b3bf3de90288d181525 100644
 --- a/src/runs/shared/child-hooks.js

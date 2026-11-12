@@ -298,11 +298,8 @@ function ChildCard({
                   : `Last activity ${duration(age)} ago`}
             </span>
           </span>
-          {child.attention && (
-            <span className="subagent-attention">
-              Needs attention: {child.attention}
-            </span>
-          )}
+          {/* child.attention is model-facing (parent checkpoint digest); the
+              user cannot act on it, so it is intentionally not rendered. */}
         </span>
       </summary>
       {expanded && (
