@@ -15,7 +15,7 @@ export class Connections {
   private closed = false;
   constructor(
     private auth: JellyAuth,
-    private connected: (mode: "chatgpt" | "api" | "auto") => void,
+    private connected: (mode: "chatgpt" | "api" | "gemini" | "auto") => void,
     login: ChatGPTLogin | undefined,
     private ttlMs = 15 * 60 * 1000,
   ) {
@@ -28,6 +28,9 @@ export class Connections {
       apiReady: this.auth.hasAuth("openai"),
       apiStored: this.auth.get("openai")?.type === "api_key",
       apiSource: this.auth.getAuthStatus("openai").source ?? null,
+      geminiReady: this.auth.hasAuth("google"),
+      geminiStored: this.auth.get("google")?.type === "api_key",
+      geminiSource: this.auth.getAuthStatus("google").source ?? null,
       busy: !!this.flow && !this.flow.finished,
       flow: this.flow?.owner === owner ? this.flow.view : null,
     };
@@ -48,7 +51,17 @@ export class Connections {
     this.connected("api");
     return { ok: true };
   }
-  async remove(provider: "openai" | "openai-codex") {
+  async saveGeminiKey(key: unknown) {
+    if (this.flow && !this.flow.finished)
+      throw new HttpError(409, "Finish or cancel ChatGPT sign-in first.");
+    if (typeof key !== "string" || !/^[A-Za-z0-9_.-]{20,1020}$/.test(key.trim()))
+      throw new HttpError(400, "Enter a valid Gemini API key from Google AI Studio.");
+    await this.auth.saveKey(key.trim(), "google");
+    this.flow = undefined;
+    this.connected("gemini");
+    return { ok: true };
+  }
+  async remove(provider: "openai" | "openai-codex" | "google") {
     if (this.flow && !this.flow.finished)
       throw new HttpError(409, "Finish or cancel ChatGPT sign-in first.");
     await this.auth.remove(provider);

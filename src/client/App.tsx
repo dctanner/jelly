@@ -1254,6 +1254,7 @@ function AgentsWorkspace({ active, destinationReady, explicitAgentId, explicitNa
   const connectionReady = selectedConfig?.ready ?? (
     selectedConfig?.activeMode === "chatgpt" ? selectedConfig.chatgptReady
       : selectedConfig?.activeMode === "claude-code" ? selectedConfig.claudeReady
+        : selectedConfig?.activeMode === "gemini" ? selectedConfig.geminiReady
         : selectedConfig?.activeMode === "api" && selectedConfig.apiReady
   );
   const agent = data?.agents.find(

@@ -9,7 +9,7 @@ export function Connections({
   onDirty,
 }: {
   onConnected: (mode: Mode) => void;
-  only?: "chatgpt" | "api" | "claude-code";
+  only?: "chatgpt" | "api" | "claude-code" | "gemini";
   onDirty?: (dirty: boolean) => void;
 }) {
   const [status, setStatus] = useState<ConnectionStatus | null>(null),
@@ -17,6 +17,7 @@ export function Connections({
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const key = useRef<HTMLInputElement>(null),
+    geminiKey = useRef<HTMLInputElement>(null),
     seen = useRef("");
   const notify = useRef(onConnected);
   notify.current = onConnected;
@@ -74,6 +75,17 @@ export function Connections({
       notify.current("api");
     });
   }
+  function saveGeminiKey(e: FormEvent) {
+    e.preventDefault();
+    const value = geminiKey.current?.value ?? "";
+    if (geminiKey.current) geminiKey.current.value = "";
+    onDirty?.(false);
+    void act(async () => {
+      await control("/auth/gemini-key", { key: value });
+      setNotice("Gemini API key saved. Agents using Gemini API can use it on their next run.");
+      notify.current("gemini");
+    });
+  }
   const flow = status?.flow,
     signingIn = flow && ["starting", "waiting"].includes(flow.status);
   return (
@@ -81,7 +93,7 @@ export function Connections({
       <legend>
         {only === "claude-code" ? "Claude subscription" : only === "chatgpt"
           ? "ChatGPT account"
-          : only === "api"
+          : only === "api" || only === "gemini"
             ? "API credentials"
             : "Connect an account"}
       </legend>
@@ -261,6 +273,73 @@ export function Connections({
             </div>
           </form>
           {status?.apiSource === "environment" && (
+            <p className="subtle">
+              A key is also configured in the server environment.
+            </p>
+          )}
+          <p className="subtle">
+            Saved privately on this Jelly computer, never in chat or browser
+            storage. The next model request checks access.
+          </p>
+        </div>
+      )}
+      {(!only || only === "gemini") && (
+        <div className="account-block">
+          <div className="account-title">
+            <strong>Gemini API key</strong>
+            {status?.geminiReady && (
+              <span>
+                <Check size={14} /> Configured
+              </span>
+            )}
+          </div>
+          <p className="subtle">
+            Gemini API usage is billed by Google.{" "}
+            <a
+              href="https://aistudio.google.com/apikey"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Create an API key
+            </a>
+          </p>
+          <form onSubmit={saveGeminiKey}>
+            <label>
+              {status?.geminiStored ? "Replace saved API key" : "API key"}
+              <input
+                ref={geminiKey}
+                onChange={(e) => onDirty?.(!!e.target.value)}
+                type="password"
+                aria-label="Gemini API key"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={1024}
+                placeholder="AIza…"
+                required
+                disabled={busy || status?.busy}
+              />
+            </label>
+            <div className="account-actions">
+              <button type="submit" disabled={busy || status?.busy}>
+                Save API key
+              </button>
+              {status?.geminiStored && (
+                <button
+                  type="button"
+                  disabled={busy || status.busy}
+                  onClick={() =>
+                    void act(async () => {
+                      await control("/auth/remove", { provider: "google" });
+                      notify.current("auto");
+                    })
+                  }
+                >
+                  Remove saved key
+                </button>
+              )}
+            </div>
+          </form>
+          {status?.geminiSource === "environment" && (
             <p className="subtle">
               A key is also configured in the server environment.
             </p>

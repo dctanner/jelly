@@ -3133,7 +3133,7 @@ test("a connection is required to send, Settings has no demo option, and connect
   expect(app.store.runs(app.store.agents()[0]!.id)).toEqual([]);
   fireEvent.click(screen.getByRole("button", { name: "Connect an account" }));
   fireEvent.click(screen.getByRole("button", { name: "New agent provider" }));
-  expect(screen.getAllByRole("radio")).toHaveLength(4);
+  expect(screen.getAllByRole("radio")).toHaveLength(5);
   expect(screen.queryByRole("radio", { name: /demo/i })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Back" }));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

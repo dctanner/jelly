@@ -1,5 +1,6 @@
 import { BROWSER_GUIDANCE } from "./browser/repl-docs";
 import { createJellyClaudeProvider } from "./claude-code-provider";
+import { createJellyGeminiProvider } from "./gemini-provider";
 import { ClaudeCodeConnection, type ClaudeStatusCheck } from "./claude-code";
 import { generatedAgentName } from "../shared/agent-names";
 import { Mcps } from "./mcps";
@@ -95,6 +96,7 @@ export class Harness {
       apiKey: { ...provider.auth!.apiKey!, check: async () => harness.claude.status().claudeReady
         ? { type: "oauth", source: "Claude Code subscription" } : undefined },
     } });
+    runtime.registerNativeProvider(createJellyGeminiProvider());
     return harness;
   }
   config(
@@ -107,13 +109,14 @@ export class Harness {
     this.auth.reload();
     const chatgptReady = this.auth.hasAuth("openai-codex");
     const apiReady = this.auth.hasAuth("openai");
+    const geminiReady = this.auth.hasAuth("google");
     const { claudeReady, claudeNotice } = this.claude.status();
     const activeMode =
       mode === "auto"
         ? chatgptReady ? "chatgpt" : apiReady ? "api" : null
         : mode;
-    const ready = activeMode === "claude-code" ? claudeReady : activeMode === "chatgpt" ? chatgptReady : activeMode === "api" && apiReady;
-    const provider = activeMode === "claude-code" ? "claude-code" : activeMode === "chatgpt" ? "openai-codex" : activeMode === "api" ? "openai" : "";
+    const ready = activeMode === "claude-code" ? claudeReady : activeMode === "chatgpt" ? chatgptReady : activeMode === "gemini" ? geminiReady : activeMode === "api" && apiReady;
+    const provider = activeMode === "claude-code" ? "claude-code" : activeMode === "chatgpt" ? "openai-codex" : activeMode === "api" ? "openai" : activeMode === "gemini" ? "google" : "";
     return {
       mode,
       selectedModel: settings.model,
@@ -126,15 +129,20 @@ export class Harness {
       claudeNotice,
       chatgptReady,
       apiReady,
+      geminiReady,
       notice: activeMode === "claude-code" ? claudeNotice : !ready
-        ? activeMode === "chatgpt"
+        ? activeMode === "gemini"
+          ? "No Gemini API key is configured. Add a Gemini API key in Settings."
+          : activeMode === "chatgpt"
           ? "ChatGPT is not connected. Connect your ChatGPT subscription in Settings."
           : activeMode === "api"
             ? "No OpenAI API key is configured. Add an API key in Settings."
             : "Connect ChatGPT or add an OpenAI API key in Settings to use Jelly."
         : activeMode === "chatgpt"
           ? "ChatGPT subscription"
-          : "OpenAI API · Usage billed separately",
+          : activeMode === "gemini"
+            ? "Gemini API · Usage billed separately"
+            : "OpenAI API · Usage billed separately",
     };
   }
   requireConnection(config: ConnectionConfig) {
@@ -149,8 +157,9 @@ export class Harness {
       messages: [{ role: "user", content: prompt.slice(0, 4000), timestamp: Date.now() }],
     }, {
       signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-      maxTokens: 128,
-      reasoning: config.activeMode === "claude-code" ? "low" : "minimal",
+      // Gemini 4 always thinks, and thinking shares the output budget.
+      maxTokens: config.activeMode === "gemini" ? 4096 : 128,
+      reasoning: config.activeMode === "claude-code" || config.activeMode === "gemini" ? "low" : "minimal",
       maxRetries: 0,
       transport: "sse",
       ...serviceTierOptions({}, modelServiceTier(config.selectedModel)),
@@ -215,7 +224,7 @@ export class Harness {
         // Detached Pi children discover the provider through settings.json.
         // This shared host runtime already owns it: do not stack one per session.
         loaded.runtime.pendingNativeProviderRegistrations = loaded.runtime.pendingNativeProviderRegistrations
-          .filter(({ provider }) => provider.id !== "claude-code");
+          .filter(({ provider }) => provider.id !== "claude-code" && provider.id !== "google");
         return loaded;
       },
       // Empty (not undefined) bypasses SYSTEM.md discovery while retaining Pi's

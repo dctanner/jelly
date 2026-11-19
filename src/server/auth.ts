@@ -25,6 +25,7 @@ export class JellyAuth {
     return (
       this.has(provider) ||
       (provider === "openai" && !!process.env.OPENAI_API_KEY) ||
+      (provider === "google" && !!process.env.GEMINI_API_KEY) ||
       this.runtime.hasConfiguredAuth(provider)
     );
   }
@@ -40,8 +41,8 @@ export class JellyAuth {
   setRuntimeApiKey(provider: string, key: string) {
     return this.runtime.setRuntimeApiKey(provider, key);
   }
-  async saveKey(key: string) {
-    await this.runtime.login("openai", "api_key", {
+  async saveKey(key: string, provider: "openai" | "google" = "openai") {
+    await this.runtime.login(provider, "api_key", {
       prompt: async () => key,
       notify: () => {},
     });

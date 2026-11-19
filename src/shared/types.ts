@@ -1,5 +1,5 @@
 import type { ModelId, Effort } from "./models";
-export type Mode = "auto" | "chatgpt" | "api" | "claude-code";
+export type Mode = "auto" | "chatgpt" | "api" | "claude-code" | "gemini";
 export type Status = "idle" | "running" | "waiting" | "error" | "interrupted";
 export type MessageMode = "queue" | "steer";
 export interface PendingMessage {
@@ -72,6 +72,7 @@ export interface ConnectionConfig {
   claudeNotice?: string;
   chatgptReady: boolean;
   apiReady: boolean;
+  geminiReady?: boolean;
   notice: string;
 }
 export interface HistoryPage {
@@ -144,6 +145,9 @@ export interface ConnectionStatus {
   apiReady: boolean;
   apiStored: boolean;
   apiSource: string | null;
+  geminiReady?: boolean;
+  geminiStored?: boolean;
+  geminiSource?: string | null;
   busy: boolean;
   flow: LoginFlow | null;
 }

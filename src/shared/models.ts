@@ -11,6 +11,10 @@ export const MODEL_OPTIONS = [
   { id: "claude-fable-5-2", label: "Claude Fable 5.2" },
   { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "gemini-4-carbon", label: "Gemini 4 Carbon" },
+  { id: "gemini-4-neon", label: "Gemini 4 Neon" },
+  { id: "gemini-4-argon", label: "Gemini 4 Argon" },
+  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" },
 ] as const;
 export const EFFORT_OPTIONS = [
   { id: "low", label: "Low" },
@@ -61,21 +65,28 @@ export const MODE_OPTIONS = [
   { id: "chatgpt", label: "ChatGPT" },
   { id: "claude-code", label: "Claude subscription" },
   { id: "api", label: "OpenAI API" },
+  { id: "gemini", label: "Gemini API" },
 ] as const;
+function modelFamily(model: string) {
+  return model.startsWith("claude-") ? "claude-code" : model.startsWith("gemini-") ? "gemini" : "openai";
+}
 export function modelsForMode(mode: string) {
-  return MODEL_OPTIONS.filter(
-    (model) => model.id.startsWith("claude-") === (mode === "claude-code"),
-  );
+  const family = mode === "claude-code" || mode === "gemini" ? mode : "openai";
+  return MODEL_OPTIONS.filter((model) => modelFamily(model.id) === family);
 }
 export function defaultModelForMode(mode: string): ModelId {
-  return mode === "claude-code" ? "claude-opus-5-5" : DEFAULT_MODEL;
+  return mode === "claude-code" ? "claude-opus-5-5" : mode === "gemini" ? "gemini-4-hydrogen" : DEFAULT_MODEL;
 }
+// Gemini 4 thinking levels: low/medium/high everywhere; xhigh on Neon/Hydrogen.
+const GEMINI_XHIGH: readonly string[] = ["gemini-4-neon", "gemini-4-hydrogen"];
 export function effortsForModel(model: ModelId) {
-  // All currently offered routes support these five levels, including the
-  // explicit Claude routes in the pinned catalog. Unknown models fail closed.
-  return MODEL_OPTIONS.some((option) => option.id === model)
-    ? EFFORT_OPTIONS
-    : [];
+  // OpenAI and the explicit Claude routes support all five levels. Unknown
+  // models fail closed.
+  if (!MODEL_OPTIONS.some((option) => option.id === model)) return [];
+  if (modelFamily(model) !== "gemini") return EFFORT_OPTIONS;
+  return EFFORT_OPTIONS.filter((option) =>
+    option.id === "low" || option.id === "medium" || option.id === "high" ||
+    (option.id === "xhigh" && GEMINI_XHIGH.includes(model)));
 }
 export function compatibleModel(mode: string, model: ModelId): boolean {
   return modelsForMode(mode).some((option) => option.id === model);
@@ -87,7 +98,9 @@ export function modelSummary(
 ): string {
   const providerLabel = mode === "claude-code"
     ? "Claude"
+    : mode === "gemini"
+      ? "Gemini"
     : MODE_OPTIONS.find((option) => option.id === mode)?.label ?? mode;
   const modelLabel = MODEL_OPTIONS.find((option) => option.id === model)?.label ?? model;
-  return `${providerLabel} · ${mode === "claude-code" ? modelLabel.replace(/^Claude /, "") : modelLabel} · ${EFFORT_OPTIONS.find((option) => option.id === effort)?.label ?? effort}`;
+  return `${providerLabel} · ${mode === "claude-code" ? modelLabel.replace(/^Claude /, "") : mode === "gemini" ? modelLabel.replace(/^Gemini /, "") : modelLabel} · ${EFFORT_OPTIONS.find((option) => option.id === effort)?.label ?? effort}`;
 }

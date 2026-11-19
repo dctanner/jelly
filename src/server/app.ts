@@ -460,6 +460,14 @@ export async function startApp(options: AppOptions) {
                 return json({ ...connections.status(session.id), ...await service.harness.claude.refresh() });
               if (url.pathname === "/api/auth/claude-code/refresh")
                 return json(await service.harness.claude.refresh(true));
+              if (url.pathname === "/api/auth/gemini-key") {
+                const input = await body(req);
+                try {
+                  return json(await connections.saveGeminiKey(input.key));
+                } finally {
+                  delete input.key;
+                }
+              }
               if (url.pathname === "/api/auth/api-key") {
                 const input = await body(req);
                 try {
@@ -478,7 +486,8 @@ export async function startApp(options: AppOptions) {
                 const input = await body(req);
                 if (
                   input.provider !== "openai" &&
-                  input.provider !== "openai-codex"
+                  input.provider !== "openai-codex" &&
+                  input.provider !== "google"
                 )
                   throw new HttpError(400, "Unknown provider.");
                 return json(await connections.remove(input.provider));
@@ -748,7 +757,7 @@ export async function startApp(options: AppOptions) {
               const input = await body(req);
               if (
                 input.mode !== undefined &&
-                !["auto", "chatgpt", "api", "claude-code"].includes(String(input.mode))
+                !["auto", "chatgpt", "api", "claude-code", "gemini"].includes(String(input.mode))
               )
                 throw new HttpError(400, "Unknown connection mode.");
               if (

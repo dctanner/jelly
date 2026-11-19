@@ -378,7 +378,7 @@ export class JellyService {
       if (input.agentId !== undefined) throw new HttpError(400, "Chrome settings are global.");
       this.chrome.validate(selection);
     }
-    if (input.mode !== undefined && !["auto", "chatgpt", "api", "claude-code"].includes(input.mode))
+    if (input.mode !== undefined && !["auto", "chatgpt", "api", "claude-code", "gemini"].includes(input.mode))
       throw new HttpError(400, "Unknown connection mode.");
     const current = this.store.instance();
     const agent = input.agentId !== undefined ? this.store.agent(input.agentId) : null;

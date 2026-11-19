@@ -135,6 +135,13 @@ export function Settings({
         ? "API key configured · billed separately"
         : "Add an API key in Settings.",
     },
+    {
+      id: "gemini" as const,
+      label: "Gemini API",
+      detail: data.config.geminiReady
+        ? "API key configured · billed separately"
+        : "Add a Gemini API key in Settings.",
+    },
   ];
   async function save() {
     setBusy(true);
@@ -246,6 +253,11 @@ export function Settings({
                 value={data.config.apiReady ? "Connected" : "Not connected"}
                 onClick={() => setPage("OpenAI API")}
               />
+              <SettingsRow
+                label="Gemini API"
+                value={data.config.geminiReady ? "Connected" : "Not connected"}
+                onClick={() => setPage("Gemini API")}
+              />
             </div>
           </section>
           <section className="settings-section">
@@ -322,10 +334,10 @@ export function Settings({
           onChange={(next) => { setMode(next); if (!modelsForMode(next).some(option => option.id === model)) setModel(defaultModelForMode(next)); }}
         />
       )}
-      {(page === "ChatGPT" || page === "OpenAI API" || page === "Claude subscription") && (
+      {(page === "ChatGPT" || page === "OpenAI API" || page === "Gemini API" || page === "Claude subscription") && (
         <Connections
           onDirty={setDetailDirty}
-          only={page === "Claude subscription" ? "claude-code" : page === "ChatGPT" ? "chatgpt" : "api"}
+          only={page === "Claude subscription" ? "claude-code" : page === "ChatGPT" ? "chatgpt" : page === "Gemini API" ? "gemini" : "api"}
           onConnected={() => { void refresh(); }}
         />
       )}

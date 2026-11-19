@@ -73,7 +73,10 @@ test("preparePi disables only the two Claude profiles for new and existing setti
       const expected = structuredClone(existing);
       Object.assign(expected.subagents.agentOverrides["claude-code"], { disabled: true });
       Object.assign(expected.subagents.agentOverrides["claude-code-writer"], { disabled: true });
-      expect(settings).toEqual({ ...expected, extensions: [fileURLToPath(new URL("../src/server/claude-code-provider.ts", import.meta.url))] });
+      expect(settings).toEqual({ ...expected, extensions: [
+        fileURLToPath(new URL("../src/server/claude-code-provider.ts", import.meta.url)),
+        fileURLToPath(new URL("../src/server/gemini-provider.ts", import.meta.url)),
+      ] });
     } else {
       expect(settings.defaultTools).toEqual(ALL_PI_TOOLS);
       expect(settings.subagents.agentOverrides.worker.disabled).toBeUndefined();
@@ -92,6 +95,7 @@ test("preparePi replaces only the exact raw Claude extension with the shared sub
   expect(JSON.parse(readFileSync(path, "utf8")).extensions).toEqual([
     "/fixture/other.ts",
     fileURLToPath(new URL("../src/server/claude-code-provider.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/server/gemini-provider.ts", import.meta.url)),
   ]);
 });
 test("preparePi refuses malformed settings without overwriting them", () => {

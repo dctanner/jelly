@@ -62,6 +62,8 @@ export function preparePi(dataDir: string) {
   // Replace only our previous exact upstream path; preserve other resources.
   const guardedExtensions = extensions.filter(path => path !== upstreamClaudeExtension);
   if (!guardedExtensions.includes(claudeExtension)) guardedExtensions.push(claudeExtension);
+  const geminiExtension = fileURLToPath(new URL("./gemini-provider.ts", import.meta.url));
+  if (!guardedExtensions.includes(geminiExtension)) guardedExtensions.push(geminiExtension);
   let changed = JSON.stringify(extensions) !== JSON.stringify(guardedExtensions);
   if (changed) current.extensions = guardedExtensions;
   for (const name of ["claude-code", "claude-code-writer"]) {
