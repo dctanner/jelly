@@ -39,6 +39,7 @@
     },
   },
   "patchedDependencies": {
+    "@earendil-works/pi-ai@0.87.1": "patches/@earendil-works%2Fpi-ai@0.87.1.patch",
     "pi-subagents@0.71.0": "patches/pi-subagents@0.71.0.patch",
   },
   "overrides": {

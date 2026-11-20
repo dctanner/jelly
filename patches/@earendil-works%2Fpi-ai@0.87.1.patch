@@ -1,0 +1,29 @@
+diff --git a/dist/api/openai-codex-responses.js b/dist/api/openai-codex-responses.js
+index dfdb6ec3651febbba6b8788f16118ecbf4b38fa8..5cb4e0055cb381d2dce6233b8aa2586363081b28 100644
+--- a/dist/api/openai-codex-responses.js
++++ b/dist/api/openai-codex-responses.js
+@@ -376,8 +376,11 @@ function buildRequestBody(model, context, options, cacheSessionId, grammarToolIn
+     const supportsAdditionalTools = model.compat?.supportsAdditionalTools ?? false;
+     const supportsToolSearch = model.compat?.supportsToolSearch ?? false;
+     const transcriptTools = resolveTranscriptTools(context.messages, supportsAdditionalTools || supportsToolSearch);
++    // GPT-6.2 never prompt-caches the top-level `instructions` field
++    // (openai/codex#62312), so the system prompt leads `input` as a developer
++    // message instead. This is byte-stable and also caches on older models.
+     const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+-        includeSystemPrompt: false,
++        includeSystemPrompt: true,
+         grammarToolInputProperties,
+         supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
+         supportsAdditionalTools,
+@@ -390,8 +393,9 @@ function buildRequestBody(model, context, options, cacheSessionId, grammarToolIn
+         model: model.id,
+         store: false,
+         stream: true,
+-        instructions: instructions || "You are a helpful assistant.",
+-        input: messages,
++        input: instructions
++            ? messages
++            : [{ role: model.reasoning ? "developer" : "system", content: "You are a helpful assistant." }, ...messages],
+         text: { verbosity: options?.textVerbosity || "low" },
+         include: ["reasoning.encrypted_content"],
+         prompt_cache_key: cacheSessionId,
