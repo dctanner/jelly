@@ -204,7 +204,7 @@ test("Harness composes Pi guidance with Jelly policy, append instructions, proje
       "PI_CLAUDE_CODE_COMMAND",
       "Use Claude CLI's own authentication, not Jelly/Pi credentials",
       "native --model option",
-      "never use permission-bypass flags",
+      "Report missing CLI, authentication, or permission failures rather than claiming success.",
       "Check the process exit status and actual output",
       "Direct CLI work is not a Pi-managed subagent",
       "Use request_sudo for privileged commands",
