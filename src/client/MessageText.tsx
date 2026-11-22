@@ -2,28 +2,28 @@ import { Fragment, type ReactNode } from "react";
 import { GeneratedImages } from "./GeneratedImages";
 import { tableHeader, tableRow } from "./markdown-tables";
 import { isGeneratedImageUrl } from "../shared/generated-images";
+import { isRenderedFileUrl } from "../shared/rendered-files";
 /** A small, safe renderer: model text never becomes HTML or executable markup. */
 function inline(text: string): ReactNode[] {
   return text
-    .split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g)
-    .map((part, i) =>
-      part.startsWith("`") ? (
+    .split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\((?:https?:\/\/|\/api\/rendered-files\/)[^\s)]+\))/g)
+    .map((part, i) => {
+      const link = part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
+      if (link) {
+        const [, label, href] = link;
+        if (isRenderedFileUrl(href))
+          return <a key={i} href={href} download>{label}</a>;
+        if (href && /^https?:\/\//.test(href))
+          return <a key={i} href={href} target="_blank" rel="noopener noreferrer">{label}</a>;
+      }
+      return part.startsWith("`") ? (
         <code key={i}>{part.slice(1, -1)}</code>
       ) : part.startsWith("**") ? (
         <strong key={i}>{part.slice(2, -2)}</strong>
-      ) : part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/) ? (
-        (() => {
-          const m = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/)!;
-          return (
-            <a key={i} href={m[2]} target="_blank" rel="noopener noreferrer">
-              {m[1]}
-            </a>
-          );
-        })()
       ) : (
         <Fragment key={i}>{part}</Fragment>
-      ),
-    );
+      );
+    });
 }
 export function MessageText({ text }: { text: string }) {
   const lines = text.split("\n"),

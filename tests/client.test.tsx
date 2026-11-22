@@ -3752,6 +3752,17 @@ test("project front avatar spins while any active member works, independently of
   expect(within(row).getByRole("img", { name: "Needs attention" })).toBeDefined();
 });
 
+test("Markdown attachment links download directly and reject noncanonical paths", async () => {
+  const { MessageText } = await import("../src/client/MessageText");
+  const href = "/api/rendered-files/9d06df0d-9469-4b90-9144-8092e81b96c8";
+  const { container } = render(<MessageText text={`[Download the revised leg ZIP](${href}) and [Bad](${href}/../../control-session) or \`[Example](${href})\``} />);
+  const links = container.querySelectorAll("a");
+  expect(links).toHaveLength(1);
+  expect(links[0]!.textContent).toBe("Download the revised leg ZIP");
+  expect(links[0]!.getAttribute("href")).toBe(href);
+  expect(links[0]!.hasAttribute("download")).toBe(true);
+});
+
 test("Markdown tables render semantic aligned cells and safe inline formatting beside paragraphs", async () => {
   const { MessageText } = await import("../src/client/MessageText");
   render(<MessageText text={'Before the table\n| Name | Status | Count |\n| :--- | :---: | ---: |\n| **Jelly** | `a|b` | 2 |\n| [Docs](https://example.com) | a\\|b | <img src=x onerror=alert(1)> |\nAfter the table'} />);
