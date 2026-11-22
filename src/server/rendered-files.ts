@@ -26,11 +26,11 @@ async function readRegularFile(path: string, limit: number, noFollow = false) {
     const stat = await file.stat();
     if (!stat.isFile())
       throw new Error(
-        "Render a regular image, audio, video or text file, not a directory or device.",
+        "Provide a regular file, not a directory or device.",
       );
     if (stat.size > limit)
       throw new Error(
-        "File is too large to render (100 MiB audio/video, 20 MiB images, 2 MiB text).",
+        `File is too large (${limit / 1024 / 1024} MiB maximum).`,
       );
     // Bound the read even if another process grows the source after stat().
     const buffer = Buffer.alloc(stat.size + 1);
@@ -75,14 +75,15 @@ export class RenderedFiles {
     path: string,
     cwd: string,
     signal?: AbortSignal,
+    downloadOnly = false,
   ): Promise<RenderedFile> {
     signal?.throwIfAborted();
     const source = resolve(cwd, path);
-    const bytes = await readRegularFile(source, isMediaName(source) ? MAX_MEDIA : MAX_FILE);
-    const imageType = rasterMime(bytes);
-    const media = imageType ? null : mediaType(bytes, source);
+    const bytes = await readRegularFile(source, downloadOnly || isMediaName(source) ? MAX_MEDIA : MAX_FILE);
+    const imageType = downloadOnly ? null : rasterMime(bytes);
+    const media = downloadOnly || imageType ? null : mediaType(bytes, source);
     if (imageType && bytes.length > MAX_FILE) throw new Error("Image is too large to render (20 MiB maximum).");
-    if (!imageType && !media) {
+    if (!downloadOnly && !imageType && !media) {
       if (isMediaName(source)) throw new Error("Unsupported or invalid audio/video file.");
       textContents(bytes);
     }
@@ -92,8 +93,8 @@ export class RenderedFiles {
       id,
       url: `/api/rendered-files/${id}`,
       name: basename(source),
-      kind: imageType ? "image" : media?.kind ?? "text",
-      mimeType: imageType ?? media?.mimeType ?? "text/plain; charset=utf-8",
+      kind: downloadOnly ? "download" : imageType ? "image" : media?.kind ?? "text",
+      mimeType: downloadOnly ? "application/octet-stream" : imageType ?? media?.mimeType ?? "text/plain; charset=utf-8",
       size: bytes.length,
     };
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -138,7 +139,7 @@ export class RenderedFiles {
         return null;
       const bytes = await readRegularFile(
         join(this.directory, `${id}.bin`),
-        metadata.kind === "audio" || metadata.kind === "video" ? MAX_MEDIA : MAX_FILE,
+        metadata.kind === "audio" || metadata.kind === "video" || metadata.kind === "download" ? MAX_MEDIA : MAX_FILE,
         true,
       );
       if (bytes.length !== metadata.size) return null;
@@ -147,6 +148,8 @@ export class RenderedFiles {
       } else if (metadata.kind === "audio" || metadata.kind === "video") {
         const media = mediaType(bytes, metadata.name);
         if (media?.kind !== metadata.kind || media.mimeType !== metadata.mimeType) return null;
+      } else if (metadata.kind === "download") {
+        if (metadata.mimeType !== "application/octet-stream") return null;
       } else {
         if (metadata.mimeType !== "text/plain; charset=utf-8") return null;
         textContents(bytes);
@@ -169,6 +172,9 @@ export function renderFileTool(
     description:
       "Display an existing local image, audio, video or UTF-8 text file in chat without reading its contents into model context. Audio and video appear in embedded players with playback controls (no autoplay). Images appear inline; HTML files render in a sandboxed iframe with inline scripts enabled, isolated from Jelly; external resources remain blocked; Markdown files (.md/.markdown) get an expandable formatted Markdown preview with raw HTML kept inert; other text gets an expandable plain-text preview. All files remain downloadable. Returns only metadata. Use this when asked to show a file; no prior read is needed. Supports MP4/M4V/MOV and WebM video, MP3/M4A/AAC/WAV/FLAC and Ogg audio/video (up to 100 MiB; codec playback depends on the browser), PNG, JPEG, GIF, WebP and BMP (up to 20 MiB), and HTML, Markdown, and text/code/SVG previews (up to 2 MiB). Relative paths use the agent working directory. Files are copied privately so attachments survive source edits. Do not repeat the attachment in Markdown.",
     parameters: Type.Object({
+      downloadOnly: Type.Optional(Type.Boolean({
+        description: "Set true to attach any file type (e.g. STL, ZIP, or PDF) as a direct download without a preview. Maximum 100 MiB. No HTML wrapper needed.",
+      })),
       path: Type.String({
         minLength: 1,
         maxLength: 4096,
@@ -182,7 +188,7 @@ export function renderFileTool(
         args.path.length > 4096
       )
         throw new Error("Provide a local file path.");
-      const file = await files.save(args.path, cwd, signal);
+      const file = await files.save(args.path, cwd, signal, args.downloadOnly === true);
       try {
         report("file_rendered", { files: [file] });
       } catch (error) {

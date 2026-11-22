@@ -160,6 +160,26 @@ test("text is an inert, bounded, on-demand preview with full download and no mod
   expect(await response.text()).toBe(text);
 });
 
+test("downloadOnly attaches the original bytes without previewing them", async () => {
+  const f = await fixture();
+  const bytes = Buffer.from([0, 255, 17, 0]);
+  const name = "my model.stl";
+  writeFileSync(join(f.dir, name), bytes);
+  let url = "";
+  const tool = renderFileTool(f.app.service.harness.files, f.dir, (_type, data) => {
+    const [file] = data.files as any[];
+    expect(file).toMatchObject({ kind: "download", name, size: bytes.length });
+    url = file.url;
+  });
+  await tool.execute("attach", { path: name, downloadOnly: true }, undefined, undefined, {} as never);
+  rmSync(join(f.dir, name));
+  expect((await f.get(url, { cookie: "" })).status).toBe(401);
+  const response = await f.get(url + "?inline=1&preview=1");
+  expect(response.headers.get("content-type")).toBe("application/octet-stream");
+  expect(response.headers.get("content-disposition")).toBe("attachment; filename*=UTF-8''my%20model.stl");
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+});
+
 test("rendered attachments survive service restart", async () => {
   const f = await fixture();
   const source = join(f.dir, "note.md");

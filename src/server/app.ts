@@ -623,7 +623,7 @@ export async function startApp(options: AppOptions) {
                 const preview = text.slice(0, 16000).split("\n").slice(0, 200).join("\n");
                 return json({ text: preview, truncated: preview.length < text.length });
               }
-              const download = url.searchParams.get("download") === "1";
+              const download = file.metadata.kind === "download" || url.searchParams.get("download") === "1";
               const html = !download && url.searchParams.get("inline") === "1" && isHtmlFile(file.metadata);
               const headers = new Headers({
                 "Content-Type": html ? "text/html; charset=utf-8" : file.metadata.mimeType,

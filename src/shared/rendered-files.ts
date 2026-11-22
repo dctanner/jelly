@@ -2,7 +2,7 @@ export interface RenderedFile {
   id: string;
   url: string;
   name: string;
-  kind: "image" | "text" | "audio" | "video";
+  kind: "image" | "text" | "audio" | "video" | "download";
   mimeType: string;
   size: number;
 }
@@ -30,6 +30,7 @@ export function isRenderedFile(value: unknown): value is RenderedFile {
     typeof file.name === "string" &&
     (file.kind === "image" ||
       file.kind === "text" ||
+      file.kind === "download" ||
       file.kind === "audio" ||
       file.kind === "video") &&
     typeof file.mimeType === "string" &&

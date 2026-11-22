@@ -214,6 +214,11 @@ export function RenderedFiles({ files }: { files: unknown }) {
             />
           ) : file.kind === "audio" || file.kind === "video" ? (
             <MediaFile key={file.url} file={file} />
+          ) : file.kind === "download" ? (
+            <p key={file.url}>
+              <a href={file.url} download={file.name}>Download {file.name}</a>
+              {" "}<small>({file.size.toLocaleString()} bytes)</small>
+            </p>
           ) : isHtmlFile(file) ? (
             <HtmlFile key={file.url} file={file} />
           ) : (
