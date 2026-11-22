@@ -116,7 +116,7 @@
   gap: 8px;
   margin-top: 6px;
 }
-.app .chat-form-card .chat-form-actions > button {
+.app .chat-form-card .chat-form-actions > :is(button, a.primary) {
   min-width: 0;
   min-height: 44px;
   padding: 10px 12px;
@@ -127,6 +127,14 @@
 }
 .chat-form-actions > :only-child {
   grid-column: 1 / -1;
+}
+.app .chat-form-card .chat-form-actions > a.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--button-text);
+  text-decoration: none;
 }
 .app .chat-form-card .chat-form-actions > .chat-form-secondary {
   background: transparent;

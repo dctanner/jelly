@@ -3752,6 +3752,18 @@ test("project front avatar spins while any active member works, independently of
   expect(within(row).getByRole("img", { name: "Needs attention" })).toBeDefined();
 });
 
+test("download-only attachments use a named card with file details and a native download link", async () => {
+  const { RenderedFiles } = await import("../src/client/RenderedFiles");
+  const url = "/api/rendered-files/9d06df0d-9469-4b90-9144-8092e81b96c8";
+  render(<RenderedFiles files={[{ url, name: "revised leg.zip", kind: "download", mimeType: "application/octet-stream", size: 3 * 1024 ** 2 }]} />);
+  const card = screen.getByRole("region", { name: "revised leg.zip" });
+  expect(card.classList.contains("chat-form-card")).toBe(true);
+  expect(card.textContent).toContain("ZIP file · 3 MiB");
+  const link = screen.getByRole("link", { name: "Download revised leg.zip" });
+  expect(link.getAttribute("download")).toBe("revised leg.zip");
+  expect(link.getAttribute("href")).toBe(url);
+});
+
 test("Markdown attachment links download directly and reject noncanonical paths", async () => {
   const { MessageText } = await import("../src/client/MessageText");
   const href = "/api/rendered-files/9d06df0d-9469-4b90-9144-8092e81b96c8";

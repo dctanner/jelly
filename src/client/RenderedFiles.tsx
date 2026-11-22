@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { Download, File } from "lucide-react";
+import { ChatFormActions, ChatFormCard } from "./ChatFormCard";
 import {
   isRenderedFile,
   isHtmlFile,
@@ -8,6 +10,23 @@ import {
 import { GeneratedImages } from "./GeneratedImages";
 import { MessageText } from "./MessageText";
 import { api } from "./api";
+
+function DownloadFile({ file }: { file: RenderedFile }) {
+  const extension = /\.([a-z0-9]{1,12})$/i.exec(file.name)?.[1]?.toUpperCase();
+  const size = file.size < 1024 ? `${file.size} ${file.size === 1 ? "byte" : "bytes"}`
+    : file.size < 1024 ** 2 ? `${(file.size / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`
+    : `${(file.size / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 1 })} MiB`;
+  return (
+    <ChatFormCard title={file.name} icon={<File size={20} />}
+      status={`${extension ? `${extension} file` : "File"} · ${size}`}>
+      <ChatFormActions>
+        <a className="primary" href={file.url} download={file.name} aria-label={`Download ${file.name}`}>
+          <Download size={16} aria-hidden="true" /> Download
+        </a>
+      </ChatFormActions>
+    </ChatFormCard>
+  );
+}
 
 function HtmlFile({ file }: { file: RenderedFile }) {
   const [ready, setReady] = useState(false);
@@ -215,10 +234,7 @@ export function RenderedFiles({ files }: { files: unknown }) {
           ) : file.kind === "audio" || file.kind === "video" ? (
             <MediaFile key={file.url} file={file} />
           ) : file.kind === "download" ? (
-            <p key={file.url}>
-              <a href={file.url} download={file.name}>Download {file.name}</a>
-              {" "}<small>({file.size.toLocaleString()} bytes)</small>
-            </p>
+            <DownloadFile key={file.url} file={file} />
           ) : isHtmlFile(file) ? (
             <HtmlFile key={file.url} file={file} />
           ) : (
