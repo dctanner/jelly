@@ -1,4 +1,10 @@
 export const MODEL_OPTIONS = [
+  { id: "gpt-6.2-astra", label: "GPT-6.2 Astra" },
+  { id: "gpt-6.2-astra-fast", label: "GPT-6.2 Astra Fast" },
+  { id: "gpt-6.2-astra-ultrafast", label: "GPT-6.2 Astra Ultrafast" },
+  { id: "gpt-6.2-sol", label: "GPT-6.2 Sol" },
+  { id: "gpt-6.2-sol-fast", label: "GPT-6.2 Sol Fast" },
+  { id: "gpt-6.2-sol-ultrafast", label: "GPT-6.2 Sol Ultrafast" },
   { id: "gpt-6-astra", label: "GPT-6 Astra" },
   { id: "gpt-6-astra-fast", label: "GPT-6 Astra Fast" },
   { id: "gpt-6-astra-ultrafast", label: "GPT-6 Astra Ultrafast" },
@@ -30,6 +36,12 @@ export function upstreamModel(
   model: ModelId,
 ): Exclude<ModelId, `${string}-fast` | `${string}-ultrafast`> {
   switch (model) {
+    case "gpt-6.2-astra-fast":
+    case "gpt-6.2-astra-ultrafast":
+      return "gpt-6.2-astra";
+    case "gpt-6.2-sol-fast":
+    case "gpt-6.2-sol-ultrafast":
+      return "gpt-6.2-sol";
     case "gpt-6-astra-fast":
     case "gpt-6-astra-ultrafast":
       return "gpt-6-astra";

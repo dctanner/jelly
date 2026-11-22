@@ -3,6 +3,88 @@
     "openai": {
       "models": [
         {
+          "id": "gpt-6.2-astra",
+          "name": "GPT-6.2 Astra",
+          "api": "openai-responses",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "cost": {
+            "input": 8,
+            "output": 40,
+            "cacheRead": 0.4,
+            "cacheWrite": 10,
+            "tiers": [
+              {
+                "inputTokensAbove": 272000,
+                "input": 16,
+                "output": 60,
+                "cacheRead": 0.8,
+                "cacheWrite": 20
+              }
+            ]
+          },
+          "compat": {
+            "supportsStrictMode": true,
+            "supportsOpenAIGrammarTools": true,
+            "supportsAdditionalTools": true,
+            "supportsToolSearch": true,
+            "supportsMidConvoSystemMessages": true,
+            "supportsExplicitPromptCacheMode": true
+          }
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "name": "GPT-6.2 Sol",
+          "api": "openai-responses",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "cost": {
+            "input": 2,
+            "output": 10,
+            "cacheRead": 0.1,
+            "cacheWrite": 2.5,
+            "tiers": [
+              {
+                "inputTokensAbove": 272000,
+                "input": 4,
+                "output": 15,
+                "cacheRead": 0.2,
+                "cacheWrite": 5
+              }
+            ]
+          },
+          "compat": {
+            "supportsStrictMode": true,
+            "supportsOpenAIGrammarTools": true,
+            "supportsAdditionalTools": true,
+            "supportsToolSearch": true,
+            "supportsMidConvoSystemMessages": true,
+            "supportsExplicitPromptCacheMode": true
+          }
+        },
+        {
           "id": "gpt-6.1-sol",
           "name": "GPT-6.1 Sol",
           "api": "openai-responses",
@@ -47,6 +129,84 @@
     },
     "openai-codex": {
       "models": [
+        {
+          "id": "gpt-6.2-astra",
+          "name": "GPT-6.2 Astra",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "cost": {
+            "input": 8,
+            "output": 40,
+            "cacheRead": 0.4,
+            "cacheWrite": 10,
+            "tiers": [
+              {
+                "inputTokensAbove": 272000,
+                "input": 16,
+                "output": 60,
+                "cacheRead": 0.8,
+                "cacheWrite": 20
+              }
+            ]
+          },
+          "compat": {
+            "supportsOpenAIGrammarTools": true,
+            "supportsAdditionalTools": true,
+            "supportsToolSearch": true,
+            "supportsMidConvoSystemMessages": true
+          }
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "name": "GPT-6.2 Sol",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "cost": {
+            "input": 2,
+            "output": 10,
+            "cacheRead": 0.1,
+            "cacheWrite": 2.5,
+            "tiers": [
+              {
+                "inputTokensAbove": 272000,
+                "input": 4,
+                "output": 15,
+                "cacheRead": 0.2,
+                "cacheWrite": 5
+              }
+            ]
+          },
+          "compat": {
+            "supportsOpenAIGrammarTools": true,
+            "supportsAdditionalTools": true,
+            "supportsToolSearch": true,
+            "supportsMidConvoSystemMessages": true
+          }
+        },
         {
           "id": "gpt-6.1-sol",
           "name": "GPT-6.1 Sol",

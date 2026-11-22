@@ -10,6 +10,12 @@ import { modelsForMode, modelServiceTier, upstreamModel } from "../src/shared/mo
 import { getModel } from "@earendil-works/pi-ai/compat";
 
 const MODEL_CHOICES = [
+  ["gpt-6.2-astra", "gpt-6.2-astra", undefined],
+  ["gpt-6.2-astra-fast", "gpt-6.2-astra", "priority"],
+  ["gpt-6.2-astra-ultrafast", "gpt-6.2-astra", "ultrafast"],
+  ["gpt-6.2-sol", "gpt-6.2-sol", undefined],
+  ["gpt-6.2-sol-fast", "gpt-6.2-sol", "priority"],
+  ["gpt-6.2-sol-ultrafast", "gpt-6.2-sol", "ultrafast"],
   ["gpt-6-astra", "gpt-6-astra", undefined],
   ["gpt-6-sol", "gpt-6-sol", undefined],
   ["gpt-6.1-sol", "gpt-6.1-sol", undefined],
@@ -49,7 +55,12 @@ test("speed tiers preserve payload hooks and only affect supported providers and
     expect(await options.onPayload!({ model: sol61.id }, sol61)).toEqual({
       model: sol61.id, instructions: "preserved", service_tier: "ultrafast",
     });
-    for (const model of [astra, sol, { ...sol, id: "gpt-6.1-sol" }]) {
+    for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) {
+      expect(await options.onPayload!({ model: id }, { ...sol, id, provider })).toEqual({
+        model: id, instructions: "preserved", service_tier: "ultrafast",
+      });
+    }
+    for (const model of [astra, sol, { ...sol, id: "gpt-6.1-sol" }, { ...sol, id: "gpt-6.2-astra" }, { ...sol, id: "gpt-6.2-sol" }]) {
       const options = serviceTierOptions(original, "priority");
       expect(await options.onPayload!({ model: model.id }, { ...model, provider })).toEqual({
         model: model.id, instructions: "preserved", service_tier: "priority",
